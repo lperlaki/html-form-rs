@@ -14,8 +14,22 @@
 //! what the string itself holds until then, so `{{ field.label }}` renders
 //! something either way. Resolve them with [`FormView::localize`], or let the
 //! template do it from the key.
+//!
+//! # Why every string here is a `Cow`
+//!
+//! Nearly everything in a view was copied out of a [`FormSpec`], where it is
+//! already `&'static str`, so the view borrows it: building one allocates only
+//! for what a spec cannot know — the values the user submitted, the ids derived
+//! from a field's name, and anything a caller supplies at render time. The
+//! owned half of the [`Cow`] is what keeps the view a plain owned value that a
+//! handler can return, and what lets `set_value`, `set_choices` and `localize`
+//! put runtime strings in.
+//!
+//! Serialisation is unaffected: a `Cow` serialises as the string it holds, so a
+//! template sees exactly what it always did.
 
-use std::fmt;
+use std::borrow::Cow;
+use std::fmt::{self, Write as _};
 
 use serde::Serialize;
 
@@ -25,12 +39,13 @@ use crate::spec::{Attr, Choice, FormEncType, FormMethod, FormSpec, Text, sanitiz
 use crate::values::Values;
 
 /// Split a spec [`Text`] into the string to render now and the key that is
-/// still waiting to be resolved.
-fn split(text: Option<&Text>) -> (Option<String>, Option<String>) {
+/// still waiting to be resolved. Both borrow the spec unless it was itself
+/// built at runtime.
+fn split(text: Option<&Text>) -> (Option<Cow<'static, str>>, Option<Cow<'static, str>>) {
     match text {
         Some(text) => (
-            Some(text.content.to_string()),
-            text.key_str().map(str::to_owned),
+            Some(text.content.clone()),
+            text.is_key.then(|| text.content.clone()),
         ),
         None => (None, None),
     }
@@ -39,7 +54,11 @@ fn split(text: Option<&Text>) -> (Option<String>, Option<String>) {
 /// Look one key up, and drop it once it has been resolved so that nothing
 /// downstream translates it twice. An unrecognised key is left in place, key and
 /// all: showing `signup.email.label` is a bug a reader can report.
-fn resolve(text: &mut Option<String>, key: &mut Option<String>, translate: &Translate<'_>) {
+fn resolve(
+    text: &mut Option<Cow<'static, str>>,
+    key: &mut Option<Cow<'static, str>>,
+    translate: &Translate<'_>,
+) {
     let Some(found) = key.as_deref().and_then(translate) else {
         return;
     };
@@ -49,27 +68,27 @@ fn resolve(text: &mut Option<String>, key: &mut Option<String>, translate: &Tran
 
 /// The erased form of the translation function, so the recursive walk down to
 /// each choice is not generic over the whole tree.
-type Translate<'a> = dyn Fn(&str) -> Option<String> + 'a;
+type Translate<'a> = dyn Fn(&str) -> Option<Cow<'static, str>> + 'a;
 
 /// A whole form, ready to render.
 #[derive(Debug, Clone, Serialize)]
 pub struct FormView {
-    pub id: Option<String>,
-    pub name: Option<String>,
-    pub action: Option<String>,
+    pub id: Option<Cow<'static, str>>,
+    pub name: Option<Cow<'static, str>>,
+    pub action: Option<Cow<'static, str>>,
     /// `"post"`, `"get"` or `"dialog"`. Defaults to `"post"`.
     pub method: &'static str,
     pub enctype: Option<&'static str>,
     pub novalidate: bool,
-    pub class: Option<String>,
+    pub class: Option<Cow<'static, str>>,
     /// Caption of the submit button the built-in renderer emits.
-    pub submit_label: String,
+    pub submit_label: Cow<'static, str>,
     /// Set while [`FormView::submit_label`] is still an unresolved i18n key.
-    pub submit_label_key: Option<String>,
+    pub submit_label_key: Option<Cow<'static, str>>,
     /// Attributes the crate has no opinion about, in declaration order.
     pub attrs: Vec<AttrView>,
     /// Errors that belong to the form as a whole rather than to one field.
-    pub errors: Vec<String>,
+    pub errors: Vec<Cow<'static, str>>,
     /// True when the form or any of its fields has an error.
     pub has_errors: bool,
     pub fields: Vec<FieldView>,
@@ -79,12 +98,12 @@ pub struct FormView {
 #[derive(Debug, Clone, Serialize)]
 pub struct FieldView {
     /// Full submitted name, including any flatten prefixes.
-    pub name: String,
+    pub name: Cow<'static, str>,
     /// DOM id of the control.
-    pub id: String,
-    pub label: Option<String>,
+    pub id: Cow<'static, str>,
+    pub label: Option<Cow<'static, str>>,
     /// Set while [`FieldView::label`] is still an unresolved i18n key.
-    pub label_key: Option<String>,
+    pub label_key: Option<Cow<'static, str>>,
     /// `"text"`, `"email"`, `"select"`, …
     pub kind: FieldKind,
     /// `"input"`, `"select"` or `"textarea"`.
@@ -93,9 +112,9 @@ pub struct FieldView {
     pub input_type: Option<&'static str>,
     /// The current value: what the user submitted, or the field's default on a
     /// blank form.
-    pub value: Option<String>,
+    pub value: Option<Cow<'static, str>>,
     /// Every current value, for controls that accept more than one.
-    pub values: Vec<String>,
+    pub values: Vec<Cow<'static, str>>,
     /// Current state of a checkbox.
     pub checked: bool,
     pub required: bool,
@@ -103,48 +122,48 @@ pub struct FieldView {
     pub disabled: bool,
     pub readonly: bool,
     pub autofocus: bool,
-    pub placeholder: Option<String>,
+    pub placeholder: Option<Cow<'static, str>>,
     /// Set while [`FieldView::placeholder`] is still an unresolved i18n key.
-    pub placeholder_key: Option<String>,
-    pub autocomplete: Option<String>,
-    pub help: Option<String>,
+    pub placeholder_key: Option<Cow<'static, str>>,
+    pub autocomplete: Option<Cow<'static, str>>,
+    pub help: Option<Cow<'static, str>>,
     /// Set while [`FieldView::help`] is still an unresolved i18n key.
-    pub help_key: Option<String>,
-    pub pattern: Option<String>,
+    pub help_key: Option<Cow<'static, str>>,
+    pub pattern: Option<Cow<'static, str>>,
     pub minlength: Option<usize>,
     pub maxlength: Option<usize>,
-    pub min: Option<String>,
-    pub max: Option<String>,
-    pub step: Option<String>,
-    pub accept: Option<String>,
+    pub min: Option<Cow<'static, str>>,
+    pub max: Option<Cow<'static, str>>,
+    pub step: Option<Cow<'static, str>>,
+    pub accept: Option<Cow<'static, str>>,
     pub rows: Option<u32>,
     pub cols: Option<u32>,
-    pub class: Option<String>,
+    pub class: Option<Cow<'static, str>>,
     /// Attributes the crate has no opinion about, in declaration order.
     pub attrs: Vec<AttrView>,
     /// Options of a `<select>`, radio group or checkbox group.
     pub choices: Vec<ChoiceView>,
     /// Messages to show under the control.
-    pub errors: Vec<String>,
+    pub errors: Vec<Cow<'static, str>>,
     pub has_errors: bool,
     /// Legend of the flattened group this field belongs to, if any.
-    pub group: Option<String>,
+    pub group: Option<Cow<'static, str>>,
     /// Set while [`FieldView::group`] is still an unresolved i18n key.
-    pub group_key: Option<String>,
+    pub group_key: Option<Cow<'static, str>>,
     /// Id of the element listing this field's errors.
-    pub error_id: String,
+    pub error_id: Cow<'static, str>,
     /// Id of the element carrying this field's help text.
-    pub help_id: String,
+    pub help_id: Cow<'static, str>,
     /// Id of the caption naming a radio or checkbox group.
-    pub label_id: String,
+    pub label_id: Cow<'static, str>,
 }
 
 /// One custom attribute, ready to render.
 #[derive(Debug, Clone, Serialize)]
 pub struct AttrView {
-    pub name: String,
+    pub name: Cow<'static, str>,
     /// `None` renders a bare boolean attribute.
-    pub value: Option<String>,
+    pub value: Option<Cow<'static, str>>,
 }
 
 impl AttrView {
@@ -152,8 +171,8 @@ impl AttrView {
         attrs
             .iter()
             .map(|attr| AttrView {
-                name: attr.name.to_owned(),
-                value: attr.value.map(str::to_owned),
+                name: Cow::Borrowed(attr.name),
+                value: attr.value.map(Cow::Borrowed),
             })
             .collect()
     }
@@ -162,15 +181,15 @@ impl AttrView {
 /// One option of a `<select>`, radio group or checkbox group.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChoiceView {
-    pub value: String,
-    pub label: String,
+    pub value: Cow<'static, str>,
+    pub label: Cow<'static, str>,
     /// Set while [`ChoiceView::label`] is still an unresolved i18n key.
-    pub label_key: Option<String>,
+    pub label_key: Option<Cow<'static, str>>,
     pub disabled: bool,
     pub selected: bool,
-    pub group: Option<String>,
+    pub group: Option<Cow<'static, str>>,
     /// Set while [`ChoiceView::group`] is still an unresolved i18n key.
-    pub group_key: Option<String>,
+    pub group_key: Option<Cow<'static, str>>,
 }
 
 impl ChoiceView {
@@ -178,7 +197,7 @@ impl ChoiceView {
     pub fn localize<S, F>(&mut self, translate: F)
     where
         F: Fn(&str) -> Option<S>,
-        S: Into<String>,
+        S: Into<Cow<'static, str>>,
     {
         self.localize_in(&|key| translate(key).map(Into::into));
     }
@@ -214,37 +233,36 @@ impl FormView {
     /// errors it produced); pass `None` for a blank form, where each field
     /// falls back to its declared default.
     pub fn build(spec: &FormSpec, values: Option<&Values>, errors: &FormErrors) -> FormView {
-        let fields: Vec<FieldView> = spec
-            .fields()
-            .into_iter()
-            .map(|resolved| {
-                FieldView::build(
-                    &resolved.name,
-                    resolved.spec,
-                    resolved.group,
-                    values,
-                    errors,
-                )
-            })
-            .collect();
+        // The flattened field list is walked straight into the view rather than
+        // collected first: nothing but the `FieldView`s themselves is built.
+        let mut fields = Vec::new();
+        spec.walk(|resolved| {
+            fields.push(FieldView::build(
+                resolved.name,
+                resolved.spec,
+                resolved.group,
+                values,
+                errors,
+            ));
+        });
 
-        let form_errors: Vec<String> = errors
+        let form_errors: Vec<Cow<'static, str>> = errors
             .form_errors()
             .iter()
-            .map(|e| e.message.to_string())
+            .map(|e| e.message.clone())
             .collect();
 
         let (submit_label, submit_label_key) = split(spec.submit_label.as_ref());
 
         FormView {
-            id: spec.id.map(str::to_owned),
-            name: spec.name.map(str::to_owned),
-            action: spec.action.map(str::to_owned),
+            id: spec.id.map(Cow::Borrowed),
+            name: spec.name.map(Cow::Borrowed),
+            action: spec.action.map(Cow::Borrowed),
             method: method_str(spec.method),
             enctype: enctype_str(spec.enctype),
             novalidate: spec.novalidate,
-            class: spec.class.map(str::to_owned),
-            submit_label: submit_label.unwrap_or_else(|| "Submit".to_owned()),
+            class: spec.class.map(Cow::Borrowed),
+            submit_label: submit_label.unwrap_or(Cow::Borrowed("Submit")),
             submit_label_key,
             attrs: AttrView::build(spec.attrs),
             has_errors: !form_errors.is_empty() || fields.iter().any(|f| f.has_errors),
@@ -277,7 +295,7 @@ impl FormView {
     pub fn localize<S, F>(&mut self, translate: F)
     where
         F: Fn(&str) -> Option<S>,
-        S: Into<String>,
+        S: Into<Cow<'static, str>>,
     {
         self.localize_in(&|key| translate(key).map(Into::into));
     }
@@ -287,7 +305,7 @@ impl FormView {
     pub fn localized<S, F>(mut self, translate: F) -> Self
     where
         F: Fn(&str) -> Option<S>,
-        S: Into<String>,
+        S: Into<Cow<'static, str>>,
     {
         self.localize(translate);
         self
@@ -317,7 +335,7 @@ impl FormView {
     /// only the database could detect.
     ///
     /// Returns `false` if no such field exists.
-    pub fn add_field_error(&mut self, name: &str, message: impl Into<String>) -> bool {
+    pub fn add_field_error(&mut self, name: &str, message: impl Into<Cow<'static, str>>) -> bool {
         match self.field_mut(name) {
             Some(field) => {
                 field.add_error(message);
@@ -331,12 +349,12 @@ impl FormView {
     /// Set a custom attribute on the `<form>`, replacing any of the same name.
     ///
     /// Pass `None` as the value for a bare boolean attribute.
-    pub fn set_attr(&mut self, name: impl Into<String>, value: Option<&str>) {
+    pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) {
         set_attr(&mut self.attrs, name.into(), value);
     }
 
     /// Attach a form-level error.
-    pub fn add_error(&mut self, message: impl Into<String>) {
+    pub fn add_error(&mut self, message: impl Into<Cow<'static, str>>) {
         self.errors.push(message.into());
         self.has_errors = true;
     }
@@ -354,14 +372,12 @@ impl FormView {
         attr_opt(&mut out, "action", self.action.as_deref());
         attr(&mut out, "method", self.method);
         attr_opt(&mut out, "enctype", self.enctype);
-        attr(
-            &mut out,
-            "class",
-            &match &self.class {
-                Some(class) => format!("web-form {class}"),
-                None => "web-form".to_string(),
-            },
-        );
+        out.push_str(" class=\"web-form");
+        if let Some(class) = &self.class {
+            out.push(' ');
+            escape_into(&mut out, class);
+        }
+        out.push('"');
         flag(&mut out, "novalidate", self.novalidate);
         write_attrs(&mut out, &self.attrs);
         out.push_str(">\n");
@@ -413,21 +429,26 @@ impl fmt::Display for FormView {
 
 impl FieldView {
     fn build(
-        full_name: &str,
-        spec: &crate::spec::FieldSpec,
+        name: Cow<'static, str>,
+        spec: &'static crate::spec::FieldSpec,
         group: Option<&Text>,
         values: Option<&Values>,
         errors: &FormErrors,
     ) -> FieldView {
         let control = &spec.control;
         let kind = control.kind();
+        let full_name = &name;
 
         // On a blank form the default is the value; on a re-render the
         // submission is, so that an unchecked box or a cleared field stays that
-        // way.
-        let current: Vec<String> = match values {
-            Some(values) => values.all(full_name).map(str::to_owned).collect(),
-            None => spec.default.iter().map(|d| (*d).to_owned()).collect(),
+        // way. A default comes from the spec and is borrowed; only what the user
+        // typed has to be copied out of the submission.
+        let current: Vec<Cow<'static, str>> = match values {
+            Some(values) => values
+                .all(full_name)
+                .map(|value| Cow::Owned(value.to_owned()))
+                .collect(),
+            None => spec.default.iter().copied().map(Cow::Borrowed).collect(),
         };
 
         let checked = if control.is_checkable() {
@@ -458,7 +479,6 @@ impl FieldView {
             _ => current,
         };
 
-        let selected: Vec<&str> = current.iter().map(String::as_str).collect();
         let choices = control
             .choices()
             .iter()
@@ -466,31 +486,29 @@ impl FieldView {
                 // An option with no label of its own is labelled by its value,
                 // which is literal text however the others were declared.
                 let (label, label_key) = if choice.label.is_empty() {
-                    (choice.value.to_string(), None)
+                    (choice.value.clone(), None)
                 } else {
                     let (label, key) = split(Some(&choice.label));
                     (label.unwrap_or_default(), key)
                 };
                 let (group, group_key) = split(choice.group.as_ref());
                 ChoiceView {
-                    value: choice.value.to_string(),
+                    selected: current.contains(&choice.value),
+                    value: choice.value.clone(),
                     label,
                     label_key,
                     disabled: choice.disabled,
-                    selected: selected.contains(&choice.value.as_ref()),
                     group,
                     group_key,
                 }
             })
             .collect();
 
-        let messages: Vec<String> = errors
-            .field(full_name)
-            .map(|e| e.message.to_string())
-            .collect();
+        let messages: Vec<Cow<'static, str>> =
+            errors.field(full_name).map(|e| e.message.clone()).collect();
 
-        let id = spec.id_for(full_name);
         let base = sanitize_id(full_name);
+        let id = spec.id_for(full_name);
         let bounds = control.bounds();
         let (label, label_key) = split(spec.label.as_ref());
         let (help, help_key) = split(spec.help.as_ref());
@@ -498,10 +516,9 @@ impl FieldView {
         let (group, group_key) = split(group);
 
         FieldView {
-            name: full_name.to_owned(),
-            error_id: format!("{base}-error"),
-            help_id: format!("{base}-help"),
-            label_id: format!("{base}-label"),
+            error_id: suffixed(&base, "-error"),
+            help_id: suffixed(&base, "-help"),
+            label_id: suffixed(&base, "-label"),
             id,
             label,
             label_key,
@@ -510,6 +527,7 @@ impl FieldView {
             input_type: kind.input_type(),
             value: current.first().cloned(),
             values: current,
+            name,
             checked,
             required: spec.required,
             multiple: control.multiple(),
@@ -518,19 +536,19 @@ impl FieldView {
             autofocus: spec.autofocus,
             placeholder,
             placeholder_key,
-            autocomplete: spec.autocomplete.map(str::to_owned),
+            autocomplete: spec.autocomplete.map(Cow::Borrowed),
             help,
             help_key,
-            pattern: control.pattern().map(str::to_owned),
+            pattern: control.pattern().map(Cow::Borrowed),
             minlength: control.minlength(),
             maxlength: control.maxlength(),
-            min: bounds.and_then(|b| b.min).map(str::to_owned),
-            max: bounds.and_then(|b| b.max).map(str::to_owned),
-            step: bounds.and_then(|b| b.step).map(str::to_owned),
-            accept: control.accept().map(str::to_owned),
+            min: bounds.and_then(|b| b.min).map(Cow::Borrowed),
+            max: bounds.and_then(|b| b.max).map(Cow::Borrowed),
+            step: bounds.and_then(|b| b.step).map(Cow::Borrowed),
+            accept: control.accept().map(Cow::Borrowed),
             rows: control.rows(),
             cols: control.cols(),
-            class: spec.class.map(str::to_owned),
+            class: spec.class.map(Cow::Borrowed),
             attrs: AttrView::build(spec.attrs),
             choices,
             has_errors: !messages.is_empty(),
@@ -545,7 +563,7 @@ impl FieldView {
     pub fn localize<S, F>(&mut self, translate: F)
     where
         F: Fn(&str) -> Option<S>,
-        S: Into<String>,
+        S: Into<Cow<'static, str>>,
     {
         self.localize_in(&|key| translate(key).map(Into::into));
     }
@@ -561,12 +579,12 @@ impl FieldView {
     }
 
     /// Replace the current value.
-    pub fn set_value(&mut self, value: impl Into<String>) {
+    pub fn set_value(&mut self, value: impl Into<Cow<'static, str>>) {
         let value = value.into();
         for choice in &mut self.choices {
             choice.selected = choice.value == value;
         }
-        self.checked = matches!(value.as_str(), "true" | "on" | "1" | "yes");
+        self.checked = matches!(value.as_ref(), "true" | "on" | "1" | "yes");
         self.values = vec![value.clone()];
         self.value = Some(value);
     }
@@ -576,15 +594,15 @@ impl FieldView {
     where
         I: IntoIterator<Item = Choice>,
     {
-        let selected: Vec<&str> = self.values.iter().map(String::as_str).collect();
+        let current = std::mem::take(&mut self.values);
         self.choices = choices
             .into_iter()
             .map(|choice| {
                 let (label, label_key) = split(Some(&choice.label));
                 let (group, group_key) = split(choice.group.as_ref());
                 ChoiceView {
-                    selected: selected.contains(&choice.value.as_ref()),
-                    value: choice.value.into_owned(),
+                    selected: current.contains(&choice.value),
+                    value: choice.value,
                     label: label.unwrap_or_default(),
                     label_key,
                     disabled: choice.disabled,
@@ -593,43 +611,58 @@ impl FieldView {
                 }
             })
             .collect();
+        self.values = current;
     }
 
     /// Set a custom attribute on this control, replacing any of the same name.
     ///
     /// Pass `None` as the value for a bare boolean attribute.
-    pub fn set_attr(&mut self, name: impl Into<String>, value: Option<&str>) {
+    pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) {
         set_attr(&mut self.attrs, name.into(), value);
     }
 
     /// Attach another error message to this field.
-    pub fn add_error(&mut self, message: impl Into<String>) {
+    pub fn add_error(&mut self, message: impl Into<Cow<'static, str>>) {
         self.errors.push(message.into());
         self.has_errors = true;
     }
 
     /// The value of `aria-describedby`, linking help text and error list.
-    pub fn described_by(&self) -> Option<String> {
+    ///
+    /// Borrowed from the field itself unless both ids have to be listed.
+    pub fn described_by(&self) -> Option<Cow<'_, str>> {
         match (self.help.is_some(), self.has_errors) {
             (false, false) => None,
-            (true, false) => Some(self.help_id.clone()),
-            (false, true) => Some(self.error_id.clone()),
-            (true, true) => Some(format!("{} {}", self.help_id, self.error_id)),
+            (true, false) => Some(Cow::Borrowed(self.help_id.as_ref())),
+            (false, true) => Some(Cow::Borrowed(self.error_id.as_ref())),
+            (true, true) => {
+                let mut both = String::with_capacity(self.help_id.len() + 1 + self.error_id.len());
+                both.push_str(&self.help_id);
+                both.push(' ');
+                both.push_str(&self.error_id);
+                Some(Cow::Owned(both))
+            }
         }
     }
 
     /// Render just the control, without label, help text or errors.
     pub fn control_html(&self) -> String {
-        let mut out = String::new();
+        let mut out = String::with_capacity(self.html_size());
         self.write_control(&mut out);
         out
     }
 
     /// Render the label, control, help text and error list.
     pub fn to_html(&self) -> String {
-        let mut out = String::new();
+        let mut out = String::with_capacity(self.html_size());
         self.write_html(&mut out);
         out
+    }
+
+    /// Roughly what this field's markup will come to, so the buffer it is
+    /// written into does not have to grow its way there.
+    fn html_size(&self) -> usize {
+        256 + self.choices.len() * 96 + self.errors.len() * 64
     }
 
     fn write_html(&self, out: &mut String) {
@@ -762,12 +795,8 @@ impl FieldView {
         attr_opt(out, "max", self.max.as_deref());
         attr_opt(out, "step", self.step.as_deref());
         attr_opt(out, "accept", self.accept.as_deref());
-        if let Some(minlength) = self.minlength {
-            attr(out, "minlength", &minlength.to_string());
-        }
-        if let Some(maxlength) = self.maxlength {
-            attr(out, "maxlength", &maxlength.to_string());
-        }
+        attr_num(out, "minlength", self.minlength);
+        attr_num(out, "maxlength", self.maxlength);
         flag(out, "multiple", self.multiple);
 
         if matches!(
@@ -790,18 +819,10 @@ impl FieldView {
         out.push_str("<textarea");
         self.write_common(out, &self.id);
         attr_opt(out, "placeholder", self.placeholder.as_deref());
-        if let Some(rows) = self.rows {
-            attr(out, "rows", &rows.to_string());
-        }
-        if let Some(cols) = self.cols {
-            attr(out, "cols", &cols.to_string());
-        }
-        if let Some(minlength) = self.minlength {
-            attr(out, "minlength", &minlength.to_string());
-        }
-        if let Some(maxlength) = self.maxlength {
-            attr(out, "maxlength", &maxlength.to_string());
-        }
+        attr_num(out, "rows", self.rows);
+        attr_num(out, "cols", self.cols);
+        attr_num(out, "minlength", self.minlength);
+        attr_num(out, "maxlength", self.maxlength);
         out.push('>');
         if let Some(value) = &self.value {
             escape_into(out, value);
@@ -858,10 +879,11 @@ impl FieldView {
             attr(out, "aria-labelledby", &self.label_id);
         }
         out.push_str(">\n");
+        let mut id = ChoiceId::new(&self.id);
         for (index, choice) in self.choices.iter().enumerate() {
-            let id = format!("{}-{index}", self.id);
+            let id = id.nth(index);
             out.push_str("      <label class=\"web-form__radio\"><input type=\"radio\"");
-            self.write_common(out, &id);
+            self.write_common(out, id);
             attr(out, "value", &choice.value);
             flag(out, "checked", choice.selected);
             flag(out, "disabled", choice.disabled);
@@ -883,10 +905,11 @@ impl FieldView {
             attr(out, "aria-required", "true");
         }
         out.push_str(">\n");
+        let mut id = ChoiceId::new(&self.id);
         for (index, choice) in self.choices.iter().enumerate() {
-            let id = format!("{}-{index}", self.id);
+            let id = id.nth(index);
             out.push_str("      <label class=\"web-form__checkbox\"><input type=\"checkbox\"");
-            self.write_common(out, &id);
+            self.write_common(out, id);
             attr(out, "value", &choice.value);
             flag(out, "checked", choice.selected);
             flag(out, "disabled", choice.disabled);
@@ -920,9 +943,54 @@ fn attr_opt(out: &mut String, name: &str, value: Option<&str>) {
     }
 }
 
+/// A numeric attribute, written straight into the output rather than through a
+/// `String` of its own.
+fn attr_num(out: &mut String, name: &str, value: Option<impl fmt::Display>) {
+    if let Some(value) = value {
+        out.push(' ');
+        out.push_str(name);
+        out.push_str("=\"");
+        // Writing to a `String` cannot fail, and a number never needs escaping.
+        let _ = write!(out, "{value}");
+        out.push('"');
+    }
+}
+
+/// The `id` of the *n*-th option of a radio or checkbox group: one buffer,
+/// rewound for each option, rather than one `String` per option.
+struct ChoiceId {
+    buffer: String,
+    base: usize,
+}
+
+impl ChoiceId {
+    fn new(id: &str) -> Self {
+        let mut buffer = String::with_capacity(id.len() + 4);
+        buffer.push_str(id);
+        Self {
+            base: buffer.len(),
+            buffer,
+        }
+    }
+
+    fn nth(&mut self, index: usize) -> &str {
+        self.buffer.truncate(self.base);
+        let _ = write!(self.buffer, "-{index}");
+        &self.buffer
+    }
+}
+
+/// `base` with `suffix` appended — the ids the view derives from a field name.
+fn suffixed(base: &str, suffix: &str) -> Cow<'static, str> {
+    let mut out = String::with_capacity(base.len() + suffix.len());
+    out.push_str(base);
+    out.push_str(suffix);
+    Cow::Owned(out)
+}
+
 /// Overwrite an attribute in place, keeping its position, or append it.
-fn set_attr(attrs: &mut Vec<AttrView>, name: String, value: Option<&str>) {
-    let value = value.map(str::to_owned);
+fn set_attr(attrs: &mut Vec<AttrView>, name: Cow<'static, str>, value: Option<&str>) {
+    let value = value.map(|value| Cow::Owned(value.to_owned()));
     match attrs.iter_mut().find(|a| a.name == name) {
         Some(existing) => existing.value = value,
         None => attrs.push(AttrView { name, value }),
@@ -945,22 +1013,43 @@ fn flag(out: &mut String, name: &str, on: bool) {
     }
 }
 
-/// Escape text for use in element content or a double-quoted attribute.
-pub fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    escape_into(&mut out, text);
-    out
+/// The entity `byte` has to be written as, if any. Every character that needs
+/// escaping is ASCII, so this can look one byte at a time.
+const fn entity(byte: u8) -> Option<&'static str> {
+    match byte {
+        b'&' => Some("&amp;"),
+        b'<' => Some("&lt;"),
+        b'>' => Some("&gt;"),
+        b'"' => Some("&quot;"),
+        b'\'' => Some("&#39;"),
+        _ => None,
+    }
 }
 
-fn escape_into(out: &mut String, text: &str) {
-    for ch in text.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
+/// Escape text for use in element content or a double-quoted attribute.
+///
+/// Text with nothing to escape — which is most text — is handed back as it is.
+pub fn escape(text: &str) -> Cow<'_, str> {
+    match text.bytes().position(|byte| entity(byte).is_some()) {
+        None => Cow::Borrowed(text),
+        Some(first) => {
+            let mut out = String::with_capacity(text.len() + 16);
+            out.push_str(&text[..first]);
+            escape_into(&mut out, &text[first..]);
+            Cow::Owned(out)
         }
     }
+}
+
+/// Append `text`, escaped, copying the stretches between entities in one go
+/// rather than a character at a time.
+fn escape_into(out: &mut String, text: &str) {
+    let mut plain = 0;
+    for (at, byte) in text.bytes().enumerate() {
+        let Some(entity) = entity(byte) else { continue };
+        out.push_str(&text[plain..at]);
+        out.push_str(entity);
+        plain = at + 1;
+    }
+    out.push_str(&text[plain..]);
 }

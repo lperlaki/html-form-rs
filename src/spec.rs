@@ -1,10 +1,16 @@
 //! The declarative description of a form: what the derive macro produces and
 //! what both the renderer and the parser read.
 //!
-//! A [`FormSpec`] is built entirely from `const` data so `#[derive(WebForm)]`
-//! can emit it as a `static` item and hand out a `&'static` reference — no
-//! allocation, no lazy initialisation. [`Control`] and everything inside it is
-//! `Copy`, which is what makes the merge the derive performs a plain `const fn`.
+//! A [`FormSpec`] is built entirely from `const` data, so `#[derive(WebForm)]`
+//! emits it as the associated constant [`WebForm::SPEC`](crate::WebForm::SPEC)
+//! and hands out a `&'static` reference to memory the compiler laid out — no
+//! allocation, no lazy initialisation, and nothing to run at render time.
+//! [`Control`] and everything inside it is `Copy`, which is what makes the merge
+//! the derive performs a plain `const fn`.
+//!
+//! Every string here is `&'static str` or a `'static` [`Cow`], which is what
+//! lets the render format borrow the lot rather than copy it — see
+//! [`FormView`](crate::FormView).
 //!
 //! Every string a person reads — a label, help text, a legend — is a [`Text`],
 //! which is either literal text or an i18n key. The crate never resolves a key
@@ -584,32 +590,43 @@ impl FieldSpec {
     };
 
     /// The `id` used for the control, defaulting to the (prefixed) field name.
-    pub fn id_for(&self, full_name: &str) -> String {
+    // Not `&str`: the point is to hand back the name itself when it is already
+    // a usable id, which needs the borrow the `Cow` is carrying.
+    #[allow(clippy::ptr_arg)]
+    pub fn id_for(&self, full_name: &Cow<'static, str>) -> Cow<'static, str> {
         match self.id {
-            Some(id) => id.to_owned(),
+            Some(id) => Cow::Borrowed(id),
             None => sanitize_id(full_name),
         }
     }
 }
 
 /// Turn a field path such as `billing.street` into something usable as a DOM id.
-pub(crate) fn sanitize_id(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-            out.push(ch);
-        } else {
-            out.push('-');
-        }
+///
+/// A name that is already a usable id — which every name written as a Rust
+/// identifier is — is handed back untouched rather than rebuilt.
+#[allow(clippy::ptr_arg)] // See `id_for`.
+pub(crate) fn sanitize_id(name: &Cow<'static, str>) -> Cow<'static, str> {
+    fn is_id_char(ch: char) -> bool {
+        ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'
     }
-    out
+
+    if name.chars().all(is_id_char) {
+        return name.clone();
+    }
+    Cow::Owned(
+        name.chars()
+            .map(|ch| if is_id_char(ch) { ch } else { '-' })
+            .collect(),
+    )
 }
 
 /// A sub-form spliced into an enclosing form.
 ///
-/// Produced by `#[field(flatten)]`. The sub-form's spec is referenced through a
-/// function pointer rather than a reference so that the two `static` items do
-/// not have to be initialised in any particular order.
+/// Produced by `#[field(flatten)]`. The sub-form's spec is referenced directly:
+/// [`WebForm::SPEC`](crate::WebForm::SPEC) is an associated *constant*, so the
+/// reference is resolved while the enclosing spec is const-evaluated rather
+/// than by a call at render time.
 #[derive(Debug, Clone)]
 pub struct Flattened {
     /// Prepended to every field name of the sub-form. Empty for a plain flatten;
@@ -617,7 +634,7 @@ pub struct Flattened {
     pub prefix: &'static str,
     /// A legend rendered above the group by the built-in renderer.
     pub legend: Option<Text>,
-    pub spec: fn() -> &'static FormSpec,
+    pub spec: &'static FormSpec,
 }
 
 /// One item in a form's field list.
@@ -704,20 +721,24 @@ impl FormSpec {
         }
     }
 
-    /// Every field of this form and of any flattened sub-form, in render order,
-    /// with names resolved against the accumulated prefixes.
-    pub fn fields(&self) -> Vec<ResolvedField> {
-        let mut out = Vec::new();
-        self.collect_fields("", None, 0, &mut out);
-        out
+    /// Visit every field of this form and of any flattened sub-form, in render
+    /// order, with names resolved against the accumulated prefixes.
+    ///
+    /// This is what the renderer walks. Nothing is allocated for a form that
+    /// flattens nothing — a resolved name *is* the name in the spec, borrowed —
+    /// and only a field reached through a non-empty prefix has its name built.
+    pub fn walk(&self, mut visit: impl FnMut(ResolvedField)) {
+        self.walk_in("", None, 0, &mut visit);
     }
 
-    fn collect_fields(
+    // `dyn FnMut` rather than a second generic parameter: the recursion would
+    // otherwise instantiate one copy of this function per nesting depth.
+    fn walk_in(
         &self,
         prefix: &str,
         group: Option<&'static Text>,
         depth: usize,
-        out: &mut Vec<ResolvedField>,
+        visit: &mut dyn FnMut(ResolvedField),
     ) {
         assert!(
             depth < MAX_FLATTEN_DEPTH,
@@ -726,33 +747,59 @@ impl FormSpec {
         );
         for entry in self.entries {
             match entry {
-                Entry::Field(field) => out.push(ResolvedField {
-                    name: format!("{prefix}{}", field.name),
+                Entry::Field(field) => visit(ResolvedField {
+                    name: join(prefix, field.name),
                     spec: field,
                     group,
                 }),
                 Entry::Flatten(flat) => {
-                    let sub = (flat.spec)();
-                    let nested = format!("{prefix}{}", flat.prefix);
+                    let nested = join(prefix, flat.prefix);
                     let group = flat.legend.as_ref().or(group);
-                    sub.collect_fields(&nested, group, depth + 1, out);
+                    flat.spec.walk_in(&nested, group, depth + 1, visit);
                 }
             }
         }
     }
 
+    /// Every field of this form and of any flattened sub-form, in render order,
+    /// collected. [`FormSpec::walk`] is the same thing without the `Vec`.
+    pub fn fields(&self) -> Vec<ResolvedField> {
+        let mut out = Vec::new();
+        self.walk(|field| out.push(field));
+        out
+    }
+
     /// Look up a resolved field by its full (prefixed) name.
     pub fn field(&self, full_name: &str) -> Option<ResolvedField> {
-        self.fields().into_iter().find(|f| f.name == full_name)
+        let mut found = None;
+        self.walk(|field| {
+            if found.is_none() && field.name == full_name {
+                found = Some(field);
+            }
+        });
+        found
     }
+}
+
+/// `prefix` and `name` joined, borrowing `name` outright when there is no
+/// prefix to prepend — which is every field of a form that flattens nothing.
+fn join(prefix: &str, name: &'static str) -> Cow<'static, str> {
+    if prefix.is_empty() {
+        return Cow::Borrowed(name);
+    }
+    let mut joined = String::with_capacity(prefix.len() + name.len());
+    joined.push_str(prefix);
+    joined.push_str(name);
+    Cow::Owned(joined)
 }
 
 /// A field together with the full name it is submitted under.
 #[derive(Debug, Clone)]
 pub struct ResolvedField {
-    /// Fully-qualified submitted name, including any flatten prefixes. Owned
-    /// because prefixes are concatenated while walking the spec.
-    pub name: String,
+    /// Fully-qualified submitted name, including any flatten prefixes. A
+    /// [`Cow`] because a prefix has to be concatenated onto the name in the
+    /// spec, but only when there is one.
+    pub name: Cow<'static, str>,
     pub spec: &'static FieldSpec,
     /// The legend of the innermost flattened group this field came from.
     pub group: Option<&'static Text>,

@@ -161,7 +161,7 @@ fn ticked_boxes_survive_a_failed_submission() {
         .choices
         .iter()
         .filter(|c| c.selected)
-        .map(|c| c.value.as_str())
+        .map(|c| c.value.as_ref())
         .collect();
     assert_eq!(ticked, ["pro"]);
     assert!(view.to_html().contains(r#"value="pro" checked"#));

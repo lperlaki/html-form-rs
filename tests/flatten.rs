@@ -3,6 +3,7 @@
 //! Reusing one form inside another: `#[field(flatten)]`, with and without a
 //! name prefix.
 
+use std::borrow::Cow;
 use web_form::{ErrorKind, WebForm};
 
 #[derive(WebForm, Debug, PartialEq)]
@@ -56,7 +57,8 @@ fn order_body() -> String {
 
 #[test]
 fn a_flattened_form_contributes_its_fields_to_the_parent() {
-    let names: Vec<String> = Order::spec().fields().into_iter().map(|f| f.name).collect();
+    let names: Vec<Cow<'static, str>> =
+        Order::spec().fields().into_iter().map(|f| f.name).collect();
     assert_eq!(
         names,
         [
@@ -82,7 +84,7 @@ fn the_same_sub_form_can_be_embedded_twice() {
 
 #[test]
 fn without_a_prefix_the_names_are_shared_with_the_parent() {
-    let names: Vec<String> = Profile::spec()
+    let names: Vec<Cow<'static, str>> = Profile::spec()
         .fields()
         .into_iter()
         .map(|f| f.name)
@@ -92,6 +94,25 @@ fn without_a_prefix_the_names_are_shared_with_the_parent() {
     let profile =
         Profile::from_urlencoded("name=Ada&street=Main+1&postcode=12345&country=de").unwrap();
     assert_eq!(profile.address.street, "Main 1");
+}
+
+/// Only a name that a prefix actually changes is built; the rest, error keys
+/// included, stay borrowed from the spec.
+#[test]
+fn only_a_prefixed_name_is_built() {
+    let unprefixed = Profile::spec().field("street").unwrap();
+    assert!(matches!(unprefixed.name, Cow::Borrowed("street")));
+
+    let prefixed = Order::spec().field("billing_street").unwrap();
+    assert!(matches!(prefixed.name, Cow::Owned(_)));
+
+    let errors = Profile::from_urlencoded("").unwrap_err();
+    let keys: Vec<&str> = errors.iter().map(|(name, _)| name).collect();
+    assert!(keys.contains(&"street"));
+
+    let errors = Order::from_urlencoded("").unwrap_err();
+    let keys: Vec<&str> = errors.iter().map(|(name, _)| name).collect();
+    assert!(keys.contains(&"billing_street"));
 }
 
 #[test]
@@ -186,7 +207,7 @@ fn nesting_more_than_one_level_deep_composes() {
         contact: Contact,
     }
 
-    let names: Vec<String> = Employee::spec()
+    let names: Vec<Cow<'static, str>> = Employee::spec()
         .fields()
         .into_iter()
         .map(|f| f.name)
@@ -230,7 +251,7 @@ fn a_sub_form_is_still_a_form_on_its_own() {
     let address = Address::from_urlencoded("street=Main+1&postcode=12345&country=de").unwrap();
     assert_eq!(address.street, "Main 1");
 
-    let names: Vec<String> = Address::spec()
+    let names: Vec<Cow<'static, str>> = Address::spec()
         .fields()
         .into_iter()
         .map(|f| f.name)

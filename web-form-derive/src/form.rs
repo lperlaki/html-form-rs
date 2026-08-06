@@ -96,7 +96,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 ::web_form::Entry::Flatten(::web_form::Flattened {
                     prefix: #prefix,
                     legend: #legend,
-                    spec: <#ty as ::web_form::WebForm>::spec,
+                    // The sub-form's own `SPEC` constant, resolved while this
+                    // one is const-evaluated.
+                    spec: <#ty as ::web_form::WebForm>::SPEC,
                 })
             });
             parse_steps.push(quote! {
@@ -201,26 +203,24 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     Ok(quote! {
         #[automatically_derived]
         impl ::web_form::WebForm for #ident {
-            fn spec() -> &'static ::web_form::FormSpec {
-                // A `static`, not a `const`: a const would be inlined and
-                // `&SPEC` would borrow a temporary.
-                static SPEC: ::web_form::FormSpec = ::web_form::FormSpec {
-                    id: #form_id,
-                    name: #form_name,
-                    action: #form_action,
-                    method: #form_method,
-                    enctype: #form_enctype,
-                    novalidate: #novalidate,
-                    class: #form_class,
-                    submit_label: #form_submit,
-                    attrs: &[#(#form_attrs),*],
-                    entries: &[#(#entries),*],
-                };
-                &SPEC
-            }
+            // The whole description is one const-evaluated value: the reference
+            // is to memory the compiler laid out, so nothing here runs, or
+            // allocates, at render time.
+            const SPEC: &'static ::web_form::FormSpec = &::web_form::FormSpec {
+                id: #form_id,
+                name: #form_name,
+                action: #form_action,
+                method: #form_method,
+                enctype: #form_enctype,
+                novalidate: #novalidate,
+                class: #form_class,
+                submit_label: #form_submit,
+                attrs: &[#(#form_attrs),*],
+                entries: &[#(#entries),*],
+            };
 
             fn parse_in(__ctx: &mut ::web_form::ParseCtx<'_>) -> ::core::option::Option<Self> {
-                let __spec = <Self as ::web_form::WebForm>::spec();
+                let __spec = <Self as ::web_form::WebForm>::SPEC;
                 // Every field is read before anything is returned, so one pass
                 // collects every error.
                 #(#parse_steps)*

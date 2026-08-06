@@ -115,7 +115,8 @@ let view = article.render_filled().localized(|key| bundle.get(key));
 let view = outcome.view().unwrap().localized(&translate);
 ```
 
-`translate` is any `Fn(&str) -> Option<impl Into<String>>`.
+`translate` is any `Fn(&str) -> Option<impl Into<Cow<'static, str>>>`, so a
+lookup that hands back `&'static str` costs nothing to apply.
 
 Or leave it to the template. Every translatable string comes with a companion
 `…_key`, set only while the key is still unresolved:
@@ -243,6 +244,31 @@ view.field_mut("room")
 
 `view.add_field_error("email", "That address is already registered.")` covers the
 errors only your database knows about.
+
+### What rendering costs
+
+A spec is `const`: `WebForm::SPEC` is one const-evaluated value, flattened
+sub-forms and all, so there is nothing to build the first time a form renders,
+and no call to make to reach a sub-form's description.
+
+Every string in the render format is a `Cow<'static, str>`, and rendering borrows
+from the spec wherever it can. What a blank form still allocates is what the spec
+does not contain:
+
+| Borrowed from the spec | Built per render |
+|---|---|
+| names, labels, help text, placeholders | the three ids derived from each field's name |
+| options, constraints, custom attributes | the `Vec`s of fields and of options |
+| defaults, and the built-in error messages | the values a user submitted, which do not outlive the request |
+
+The owned half of each `Cow` is what keeps the view an ordinary owned value a
+handler can return, and what `set_value`, `set_choices` and `localize` put
+runtime strings into. Serialisation is unaffected — a `Cow` serialises as the
+string it holds.
+
+The same holds while parsing: a field's name reaches `FormErrors` borrowed from
+the spec, and only `#[field(flatten, prefix = "…")]` makes a name that has to be
+built.
 
 ## Attributes
 

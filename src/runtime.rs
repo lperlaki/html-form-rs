@@ -68,8 +68,17 @@ impl<'a> ParseCtx<'a> {
     }
 
     /// A field's name qualified by the current prefix.
-    pub fn full_name(&self, name: &str) -> String {
-        format!("{}{}", self.prefix, name)
+    ///
+    /// Outside a flatten there is no prefix to prepend, so the name in the spec
+    /// is handed back as it stands.
+    pub fn full_name(&self, name: &'static str) -> Cow<'static, str> {
+        if self.prefix.is_empty() {
+            return Cow::Borrowed(name);
+        }
+        let mut full = String::with_capacity(self.prefix.len() + name.len());
+        full.push_str(&self.prefix);
+        full.push_str(name);
+        Cow::Owned(full)
     }
 
     /// Errors found so far.
@@ -88,7 +97,7 @@ impl<'a> ParseCtx<'a> {
 
     /// Record an error against a field of the form currently being parsed.
     /// The name is qualified with the active prefix.
-    pub fn push_error(&mut self, name: &str, error: FieldError) {
+    pub fn push_error(&mut self, name: &'static str, error: FieldError) {
         let full = self.full_name(name);
         self.errors.push(full, error);
     }
@@ -102,8 +111,11 @@ impl<'a> ParseCtx<'a> {
     /// active prefix. This is what a `#[form(validate = ...)]` function's
     /// errors go through.
     pub fn merge_errors(&mut self, errors: FormErrors) {
-        let prefix = self.prefix.clone();
+        // Lent out and put back, rather than copied, so that a sub-form's
+        // errors cost nothing to qualify.
+        let prefix = std::mem::take(&mut self.prefix);
         self.errors.merge_prefixed(&prefix, errors);
+        self.prefix = prefix;
     }
 
     /// Parse a required-by-default scalar field.
@@ -152,27 +164,24 @@ impl<'a> ParseCtx<'a> {
     /// and the hidden empty option of a checkbox group produce.
     pub fn many<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<Vec<T>> {
         let full = self.full_name(spec.name);
-        let raws: Vec<&str> = self
-            .values
-            .all(&full)
-            .filter(|value| !is_blank(value))
-            .collect();
+        // The submission outlives the parse, so the values can be walked as
+        // they are converted rather than collected first.
+        let values = self.values;
+        let mut out = Vec::new();
+        let mut ok = true;
+        for raw in values.all(&full).filter(|value| !is_blank(value)) {
+            match self.convert::<T>(spec, &full, raw) {
+                Some(value) => out.push(value),
+                None => ok = false,
+            }
+        }
 
-        if raws.is_empty() {
+        if out.is_empty() && ok {
             if spec.required {
                 self.errors.push(full, validate::required_error(spec));
                 return None;
             }
             return Some(Vec::new());
-        }
-
-        let mut out = Vec::with_capacity(raws.len());
-        let mut ok = true;
-        for raw in raws {
-            match self.convert::<T>(spec, &full, raw) {
-                Some(value) => out.push(value),
-                None => ok = false,
-            }
         }
         ok.then_some(out)
     }
@@ -241,18 +250,26 @@ impl<'a> ParseCtx<'a> {
     ///
     /// Both steps always run: a value that is both malformed *and* out of range
     /// reports the constraint violation, which says more than "not a number".
-    fn convert<T: FormValue>(&mut self, spec: &FieldSpec, full: &str, raw: &str) -> Option<T> {
+    // `full` is a `&Cow` rather than a `&str` because an error takes a copy of
+    // it, and copying a name that is already `'static` should cost nothing.
+    #[allow(clippy::ptr_arg)]
+    fn convert<T: FormValue>(
+        &mut self,
+        spec: &FieldSpec,
+        full: &Cow<'static, str>,
+        raw: &str,
+    ) -> Option<T> {
         let violations = validate::check(spec, raw);
         let had_violations = !violations.is_empty();
         for error in violations {
-            self.errors.push(full.to_owned(), error);
+            self.errors.push(full.clone(), error);
         }
 
         match T::parse_form_value(raw) {
             Ok(value) => Some(value),
             Err(e) => {
                 if !had_violations {
-                    self.errors.push(full.to_owned(), FieldError::from(e));
+                    self.errors.push(full.clone(), FieldError::from(e));
                 }
                 None
             }

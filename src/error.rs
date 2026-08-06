@@ -42,26 +42,36 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// The built-in English message for this kind.
-    pub fn default_message(&self) -> String {
+    ///
+    /// The kinds whose message says nothing about the value carry a `'static`
+    /// message — which is most submissions, since `Required` is the error users
+    /// produce most.
+    pub fn default_message(&self) -> Cow<'static, str> {
         match self {
             ErrorKind::Required => "This field is required.".into(),
-            ErrorKind::Invalid { expected } => format!("Enter {expected}."),
+            ErrorKind::Invalid { expected } => format!("Enter {expected}.").into(),
             ErrorKind::Pattern { .. } => "This value is not in the expected format.".into(),
             ErrorKind::TooShort { minlength, length } => format!(
                 "Enter at least {minlength} character{} (currently {length}).",
                 plural(*minlength)
-            ),
+            )
+            .into(),
             ErrorKind::TooLong { maxlength, length } => format!(
                 "Enter at most {maxlength} character{} (currently {length}).",
                 plural(*maxlength)
-            ),
+            )
+            .into(),
             // A bound on a date reads as a point in time, one on a number as a
             // quantity.
-            ErrorKind::TooSmall { min } if is_number(min) => format!("Must be {min} or more."),
-            ErrorKind::TooSmall { min } => format!("Must be {min} or later."),
-            ErrorKind::TooLarge { max } if is_number(max) => format!("Must be {max} or less."),
-            ErrorKind::TooLarge { max } => format!("Must be {max} or earlier."),
-            ErrorKind::Step { step } => format!("Must be a multiple of {step}."),
+            ErrorKind::TooSmall { min } if is_number(min) => {
+                format!("Must be {min} or more.").into()
+            }
+            ErrorKind::TooSmall { min } => format!("Must be {min} or later.").into(),
+            ErrorKind::TooLarge { max } if is_number(max) => {
+                format!("Must be {max} or less.").into()
+            }
+            ErrorKind::TooLarge { max } => format!("Must be {max} or earlier.").into(),
+            ErrorKind::Step { step } => format!("Must be a multiple of {step}.").into(),
             ErrorKind::NotAChoice => "Select one of the available options.".into(),
             ErrorKind::Custom => "This value is not valid.".into(),
         }
@@ -86,7 +96,7 @@ pub struct FieldError {
 impl FieldError {
     /// An error carrying the built-in message for its kind.
     pub fn new(kind: ErrorKind) -> Self {
-        let message = kind.default_message().into();
+        let message = kind.default_message();
         Self { kind, message }
     }
 
@@ -121,10 +131,16 @@ impl fmt::Display for FieldError {
 /// Errors are keyed by the *full* field name, so a field inside a flattened
 /// sub-form appears under its prefixed name. A field may carry more than one
 /// error.
+///
+/// The key is a [`Cow`] rather than a `String`: a name comes from the spec,
+/// where it is already `'static`, and only a flatten prefix makes a new one
+/// necessary. It is not an enum of the form's own field names, because errors
+/// from a flattened sub-form, from a `#[form(validate = ...)]` function and
+/// from the caller (`add_field_error`) all land in the same set.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FormErrors {
     form: Vec<FieldError>,
-    fields: Vec<(String, FieldError)>,
+    fields: Vec<(Cow<'static, str>, FieldError)>,
 }
 
 impl FormErrors {
@@ -145,7 +161,7 @@ impl FormErrors {
     }
 
     /// Record an error against a field.
-    pub fn push(&mut self, field: impl Into<String>, error: FieldError) {
+    pub fn push(&mut self, field: impl Into<Cow<'static, str>>, error: FieldError) {
         self.fields.push((field.into(), error));
     }
 
@@ -163,7 +179,7 @@ impl FormErrors {
     /// Convenience for rejecting one field with a custom message.
     pub fn reject_field(
         &mut self,
-        field: impl Into<String>,
+        field: impl Into<Cow<'static, str>>,
         message: impl Into<Cow<'static, str>>,
     ) {
         self.push(field, FieldError::custom(message));
@@ -189,7 +205,7 @@ impl FormErrors {
 
     /// Every `(field name, error)` pair.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &FieldError)> {
-        self.fields.iter().map(|(k, e)| (k.as_str(), e))
+        self.fields.iter().map(|(k, e)| (k.as_ref(), e))
     }
 
     /// Fold `other` into `self`.
@@ -200,14 +216,21 @@ impl FormErrors {
 
     /// Fold `other` in, prefixing each of its field names — used when a
     /// sub-form is validated on its own and then spliced into a parent.
+    ///
+    /// An empty prefix keeps every key exactly as it was, so the common case
+    /// rebuilds nothing.
     pub fn merge_prefixed(&mut self, prefix: &str, other: FormErrors) {
         self.form.extend(other.form);
-        self.fields.extend(
-            other
-                .fields
-                .into_iter()
-                .map(|(k, e)| (format!("{prefix}{k}"), e)),
-        );
+        if prefix.is_empty() {
+            self.fields.extend(other.fields);
+            return;
+        }
+        self.fields.extend(other.fields.into_iter().map(|(k, e)| {
+            let mut key = String::with_capacity(prefix.len() + k.len());
+            key.push_str(prefix);
+            key.push_str(&k);
+            (Cow::Owned(key), e)
+        }));
     }
 
     /// All errors as `(field name, message)`, form-level ones under `None`.
@@ -218,7 +241,7 @@ impl FormErrors {
             .chain(
                 self.fields
                     .iter()
-                    .map(|(k, e)| (Some(k.as_str()), e.message.as_ref())),
+                    .map(|(k, e)| (Some(k.as_ref()), e.message.as_ref())),
             )
             .collect()
     }
@@ -246,7 +269,7 @@ impl From<&'static str> for FormErrors {
     }
 }
 
-impl<F: Into<String>, M: Into<Cow<'static, str>>> From<(F, M)> for FormErrors {
+impl<F: Into<Cow<'static, str>>, M: Into<Cow<'static, str>>> From<(F, M)> for FormErrors {
     /// Shorthand for rejecting one named field: `Err(("password", "…"))`.
     fn from((field, message): (F, M)) -> Self {
         let mut errors = FormErrors::new();
@@ -290,7 +313,7 @@ impl Serialize for FormErrors {
         let mut fields: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for (name, error) in &self.fields {
             fields
-                .entry(name.as_str())
+                .entry(name.as_ref())
                 .or_default()
                 .push(error.message.as_ref());
         }

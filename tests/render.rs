@@ -2,6 +2,7 @@
 
 //! Rendering a blank form: the spec, the view and the built-in HTML.
 
+use std::borrow::Cow;
 use web_form::{FieldKind, WebForm};
 
 #[derive(WebForm)]
@@ -41,7 +42,7 @@ struct Signup {
 
 #[test]
 fn fields_keep_declaration_order_and_skip_is_excluded() {
-    let names: Vec<String> = Signup::spec()
+    let names: Vec<Cow<'static, str>> = Signup::spec()
         .fields()
         .into_iter()
         .map(|f| f.name)
@@ -264,4 +265,60 @@ fn a_control_carries_only_the_attributes_that_control_accepts() {
 
     assert_eq!(spec.field("bio").unwrap().spec.control.rows(), Some(4));
     assert!(spec.field("plan").unwrap().spec.control.restricts_choices());
+}
+
+/// Everything a view copies out of the spec is borrowed from it, so rendering a
+/// form allocates only for what the spec cannot know.
+#[test]
+fn a_view_borrows_what_the_spec_already_holds() {
+    // Which half of the `Cow` it is *is* the assertion here, so `&str` — what
+    // clippy would rather see — would defeat the test.
+    #[allow(clippy::ptr_arg)]
+    fn borrowed(value: &Cow<'static, str>) -> bool {
+        matches!(value, Cow::Borrowed(_))
+    }
+
+    let view = Signup::render();
+    assert!(borrowed(&view.submit_label));
+
+    let email = view.field("email").unwrap();
+    assert!(borrowed(&email.name));
+    assert!(borrowed(email.label.as_ref().unwrap()));
+    assert!(borrowed(email.placeholder.as_ref().unwrap()));
+    assert!(borrowed(email.autocomplete.as_ref().unwrap()));
+    // Nothing in the name needs replacing, so the id is the name itself.
+    assert!(borrowed(&email.id));
+
+    let age = view.field("age").unwrap();
+    assert!(borrowed(age.min.as_ref().unwrap()));
+    assert!(borrowed(age.max.as_ref().unwrap()));
+
+    // A blank form's values are its declared defaults, which are in the spec.
+    let source = view.field("source").unwrap();
+    assert!(borrowed(source.value.as_ref().unwrap()));
+
+    // As are the options of a `<select>` declared with `#[option(...)]`.
+    let plan = view.field("plan").unwrap();
+    assert!(borrowed(&plan.choices[1].value));
+    assert!(borrowed(&plan.choices[1].label));
+
+    // What the user typed is the exception: it has to be copied out of the
+    // submission, which does not outlive the view.
+    let submitted = Signup::render_with(
+        &web_form::Values::parse("email=a@b.com"),
+        &web_form::FormErrors::new(),
+    );
+    let email = submitted.field("email").unwrap();
+    assert!(matches!(email.value, Some(Cow::Owned(_))));
+    assert!(borrowed(&email.name));
+}
+
+/// Escaping hands back text that has nothing to escape, rather than copying it.
+#[test]
+fn escaping_copies_only_what_it_changes() {
+    assert!(matches!(web_form::escape("plain text"), Cow::Borrowed(_)));
+    assert_eq!(web_form::escape("a<b & c"), "a&lt;b &amp; c");
+    assert_eq!(web_form::escape("\"'"), "&quot;&#39;");
+    // Non-ASCII is left alone, and not cut in half by the search for entities.
+    assert_eq!(web_form::escape("Grüße <hier>"), "Grüße &lt;hier&gt;");
 }

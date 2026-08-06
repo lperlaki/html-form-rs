@@ -124,7 +124,7 @@
 //! }
 //!
 //! let view = Order::render();
-//! let names: Vec<&str> = view.fields.iter().map(|f| f.name.as_str()).collect();
+//! let names: Vec<&str> = view.fields.iter().map(|f| f.name.as_ref()).collect();
 //! assert_eq!(
 //!     names,
 //!     [
@@ -189,12 +189,31 @@
 //! carries the attributes that control accepts and no others — there is no way
 //! to give a date a `minlength` or a `<select>` an `accept`.
 //!
-//! [`FormView`] is the runtime one: flat, owned, serialisable, and carrying the
-//! things a spec cannot know — what the user typed, what was wrong with it, and
-//! options loaded from a database.
+//! [`FormView`] is the runtime one: flat, serialisable, and carrying the things
+//! a spec cannot know — what the user typed, what was wrong with it, and options
+//! loaded from a database.
 //!
 //! [`Text`] is what every person-facing string in the spec is: literal text, or
 //! an i18n key. Both end up in the view, the key alongside the string.
+//!
+//! # What rendering costs
+//!
+//! A spec is `const`: [`WebForm::SPEC`] is one const-evaluated value, flattened
+//! sub-forms and all, so nothing is built the first time a form is rendered.
+//!
+//! Every string in a [`FormView`] is a `Cow<'static, str>`, and rendering
+//! borrows from the spec wherever it can. What a blank form still allocates is
+//! what the spec does not contain: the three ids derived from each field's name,
+//! the `Vec`s holding the fields and their options, and — on a re-render — the
+//! values the user submitted, which do not outlive the request they came in on.
+//! Names, labels, help text, placeholders, options, constraints and error
+//! messages are borrowed. The owned half of each `Cow` is what keeps the view an
+//! ordinary owned value that a handler can return, and what lets `set_value`,
+//! `set_choices` and [`FormView::localize`] put runtime strings in.
+//!
+//! The same holds while parsing: a field's name reaches [`FormErrors`] borrowed
+//! from the spec, and only a `#[field(flatten, prefix = "…")]` makes a name that
+//! has to be built.
 
 #[cfg(feature = "axum")]
 mod axum;
@@ -285,7 +304,12 @@ impl<T> Outcome<T> {
 /// derive generates; everything else is provided.
 pub trait WebForm: Sized {
     /// The static description of this form.
-    fn spec() -> &'static FormSpec;
+    ///
+    /// A constant rather than a function: the derive builds it entirely at
+    /// const-evaluation time, so a flattened sub-form is a reference the
+    /// compiler has already resolved rather than a call made at render time,
+    /// and `SPEC` can be read from any `const` context.
+    const SPEC: &'static FormSpec;
 
     /// Parse the form out of `ctx`, honouring the flatten prefix in scope.
     ///
@@ -297,6 +321,11 @@ pub trait WebForm: Sized {
     /// Write this value back out as raw submitted values, so an existing record
     /// can be rendered into the form it came from.
     fn fill_in(&self, values: &mut Values, prefix: &str);
+
+    /// [`WebForm::SPEC`], for call sites that would rather not name the type.
+    fn spec() -> &'static FormSpec {
+        Self::SPEC
+    }
 
     /// Parse and validate a submission.
     fn from_values(values: &Values) -> Result<Self, FormErrors> {
@@ -333,7 +362,7 @@ pub trait WebForm: Sized {
 
     /// A blank form, with each field showing its declared default.
     fn render() -> FormView {
-        FormView::build(Self::spec(), None, &FormErrors::new())
+        FormView::build(Self::SPEC, None, &FormErrors::new())
     }
 
     /// A blank form with every i18n key already resolved.
@@ -344,7 +373,7 @@ pub trait WebForm: Sized {
     fn render_localized<S, F>(translate: F) -> FormView
     where
         F: Fn(&str) -> Option<S>,
-        S: Into<String>,
+        S: Into<std::borrow::Cow<'static, str>>,
     {
         Self::render().localized(translate)
     }
@@ -352,12 +381,12 @@ pub trait WebForm: Sized {
     /// The form as it should be shown after a submission: the submitted values
     /// with the errors attached to their fields.
     fn render_with(values: &Values, errors: &FormErrors) -> FormView {
-        FormView::build(Self::spec(), Some(values), errors)
+        FormView::build(Self::SPEC, Some(values), errors)
     }
 
     /// The form filled in from an existing value — an edit form.
     fn render_filled(&self) -> FormView {
-        FormView::build(Self::spec(), Some(&self.to_values()), &FormErrors::new())
+        FormView::build(Self::SPEC, Some(&self.to_values()), &FormErrors::new())
     }
 
     /// This value as raw submitted values.
