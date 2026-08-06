@@ -6,16 +6,50 @@
 //! through `serde` into a MiniJinja context, and template authors should not
 //! have to know about Rust enums. [`crate::Control`] is where the same
 //! information lives in a form the compiler can check.
+//!
+//! # Localised strings
+//!
+//! Every string a person reads comes with a companion `…_key` field. It is
+//! `Some` only while the string is still an unresolved i18n key — which is also
+//! what the string itself holds until then, so `{{ field.label }}` renders
+//! something either way. Resolve them with [`FormView::localize`], or let the
+//! template do it from the key.
 
-use std::borrow::Cow;
 use std::fmt;
 
 use serde::Serialize;
 
 use crate::error::FormErrors;
 use crate::kind::FieldKind;
-use crate::spec::{Attr, Choice, FormEncType, FormMethod, FormSpec, sanitize_id};
+use crate::spec::{Attr, Choice, FormEncType, FormMethod, FormSpec, Text, sanitize_id};
 use crate::values::Values;
+
+/// Split a spec [`Text`] into the string to render now and the key that is
+/// still waiting to be resolved.
+fn split(text: Option<&Text>) -> (Option<String>, Option<String>) {
+    match text {
+        Some(text) => (
+            Some(text.content.to_string()),
+            text.key_str().map(str::to_owned),
+        ),
+        None => (None, None),
+    }
+}
+
+/// Look one key up, and drop it once it has been resolved so that nothing
+/// downstream translates it twice. An unrecognised key is left in place, key and
+/// all: showing `signup.email.label` is a bug a reader can report.
+fn resolve(text: &mut Option<String>, key: &mut Option<String>, translate: &Translate<'_>) {
+    let Some(found) = key.as_deref().and_then(translate) else {
+        return;
+    };
+    *text = Some(found);
+    *key = None;
+}
+
+/// The erased form of the translation function, so the recursive walk down to
+/// each choice is not generic over the whole tree.
+type Translate<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
 /// A whole form, ready to render.
 #[derive(Debug, Clone, Serialize)]
@@ -30,6 +64,8 @@ pub struct FormView {
     pub class: Option<String>,
     /// Caption of the submit button the built-in renderer emits.
     pub submit_label: String,
+    /// Set while [`FormView::submit_label`] is still an unresolved i18n key.
+    pub submit_label_key: Option<String>,
     /// Attributes the crate has no opinion about, in declaration order.
     pub attrs: Vec<AttrView>,
     /// Errors that belong to the form as a whole rather than to one field.
@@ -47,6 +83,8 @@ pub struct FieldView {
     /// DOM id of the control.
     pub id: String,
     pub label: Option<String>,
+    /// Set while [`FieldView::label`] is still an unresolved i18n key.
+    pub label_key: Option<String>,
     /// `"text"`, `"email"`, `"select"`, …
     pub kind: FieldKind,
     /// `"input"`, `"select"` or `"textarea"`.
@@ -66,8 +104,12 @@ pub struct FieldView {
     pub readonly: bool,
     pub autofocus: bool,
     pub placeholder: Option<String>,
+    /// Set while [`FieldView::placeholder`] is still an unresolved i18n key.
+    pub placeholder_key: Option<String>,
     pub autocomplete: Option<String>,
     pub help: Option<String>,
+    /// Set while [`FieldView::help`] is still an unresolved i18n key.
+    pub help_key: Option<String>,
     pub pattern: Option<String>,
     pub minlength: Option<usize>,
     pub maxlength: Option<usize>,
@@ -87,6 +129,8 @@ pub struct FieldView {
     pub has_errors: bool,
     /// Legend of the flattened group this field belongs to, if any.
     pub group: Option<String>,
+    /// Set while [`FieldView::group`] is still an unresolved i18n key.
+    pub group_key: Option<String>,
     /// Id of the element listing this field's errors.
     pub error_id: String,
     /// Id of the element carrying this field's help text.
@@ -120,9 +164,31 @@ impl AttrView {
 pub struct ChoiceView {
     pub value: String,
     pub label: String,
+    /// Set while [`ChoiceView::label`] is still an unresolved i18n key.
+    pub label_key: Option<String>,
     pub disabled: bool,
     pub selected: bool,
     pub group: Option<String>,
+    /// Set while [`ChoiceView::group`] is still an unresolved i18n key.
+    pub group_key: Option<String>,
+}
+
+impl ChoiceView {
+    /// Resolve this option's i18n keys. See [`FormView::localize`].
+    pub fn localize<S, F>(&mut self, translate: F)
+    where
+        F: Fn(&str) -> Option<S>,
+        S: Into<String>,
+    {
+        self.localize_in(&|key| translate(key).map(Into::into));
+    }
+
+    fn localize_in(&mut self, translate: &Translate<'_>) {
+        let mut label = Some(std::mem::take(&mut self.label));
+        resolve(&mut label, &mut self.label_key, translate);
+        self.label = label.unwrap_or_default();
+        resolve(&mut self.group, &mut self.group_key, translate);
+    }
 }
 
 fn method_str(method: Option<FormMethod>) -> &'static str {
@@ -168,6 +234,8 @@ impl FormView {
             .map(|e| e.message.to_string())
             .collect();
 
+        let (submit_label, submit_label_key) = split(spec.submit_label.as_ref());
+
         FormView {
             id: spec.id.map(str::to_owned),
             name: spec.name.map(str::to_owned),
@@ -176,11 +244,61 @@ impl FormView {
             enctype: enctype_str(spec.enctype),
             novalidate: spec.novalidate,
             class: spec.class.map(str::to_owned),
-            submit_label: spec.submit_label.unwrap_or("Submit").to_owned(),
+            submit_label: submit_label.unwrap_or_else(|| "Submit".to_owned()),
+            submit_label_key,
             attrs: AttrView::build(spec.attrs),
             has_errors: !form_errors.is_empty() || fields.iter().any(|f| f.has_errors),
             errors: form_errors,
             fields,
+        }
+    }
+
+    /// Resolve every i18n key in the form to the text `translate` returns for
+    /// it, leaving literal text and unrecognised keys alone.
+    ///
+    /// The crate has no opinion about your i18n stack: `translate` is any
+    /// `Fn(&str) -> Option<impl Into<String>>`, so a closure over whatever your
+    /// backend calls a bundle is enough.
+    ///
+    /// ```
+    /// # use web_form::WebForm;
+    /// # #[derive(WebForm)]
+    /// # struct Signup {
+    /// #     #[field(label = t("signup.email"))]
+    /// #     email: String,
+    /// # }
+    /// let mut view = Signup::render();
+    /// view.localize(|key| match key {
+    ///     "signup.email" => Some("E-Mail-Adresse"),
+    ///     _ => None,
+    /// });
+    /// assert_eq!(view.field("email").unwrap().label.as_deref(), Some("E-Mail-Adresse"));
+    /// ```
+    pub fn localize<S, F>(&mut self, translate: F)
+    where
+        F: Fn(&str) -> Option<S>,
+        S: Into<String>,
+    {
+        self.localize_in(&|key| translate(key).map(Into::into));
+    }
+
+    /// [`FormView::localize`], by value, so it can be chained onto `render()`.
+    #[must_use]
+    pub fn localized<S, F>(mut self, translate: F) -> Self
+    where
+        F: Fn(&str) -> Option<S>,
+        S: Into<String>,
+    {
+        self.localize(translate);
+        self
+    }
+
+    fn localize_in(&mut self, translate: &Translate<'_>) {
+        let mut label = Some(std::mem::take(&mut self.submit_label));
+        resolve(&mut label, &mut self.submit_label_key, translate);
+        self.submit_label = label.unwrap_or_default();
+        for field in &mut self.fields {
+            field.localize_in(translate);
         }
     }
 
@@ -297,7 +415,7 @@ impl FieldView {
     fn build(
         full_name: &str,
         spec: &crate::spec::FieldSpec,
-        group: Option<&str>,
+        group: Option<&Text>,
         values: Option<&Values>,
         errors: &FormErrors,
     ) -> FieldView {
@@ -343,16 +461,25 @@ impl FieldView {
         let choices = control
             .choices()
             .iter()
-            .map(|choice| ChoiceView {
-                value: choice.value.to_string(),
-                label: if choice.label.is_empty() {
-                    choice.value.to_string()
+            .map(|choice| {
+                // An option with no label of its own is labelled by its value,
+                // which is literal text however the others were declared.
+                let (label, label_key) = if choice.label.is_empty() {
+                    (choice.value.to_string(), None)
                 } else {
-                    choice.label.to_string()
-                },
-                disabled: choice.disabled,
-                selected: selected.contains(&choice.value.as_ref()),
-                group: choice.group.as_ref().map(|g| g.to_string()),
+                    let (label, key) = split(Some(&choice.label));
+                    (label.unwrap_or_default(), key)
+                };
+                let (group, group_key) = split(choice.group.as_ref());
+                ChoiceView {
+                    value: choice.value.to_string(),
+                    label,
+                    label_key,
+                    disabled: choice.disabled,
+                    selected: selected.contains(&choice.value.as_ref()),
+                    group,
+                    group_key,
+                }
             })
             .collect();
 
@@ -364,6 +491,10 @@ impl FieldView {
         let id = spec.id_for(full_name);
         let base = sanitize_id(full_name);
         let bounds = control.bounds();
+        let (label, label_key) = split(spec.label.as_ref());
+        let (help, help_key) = split(spec.help.as_ref());
+        let (placeholder, placeholder_key) = split(spec.placeholder.as_ref());
+        let (group, group_key) = split(group);
 
         FieldView {
             name: full_name.to_owned(),
@@ -371,7 +502,8 @@ impl FieldView {
             help_id: format!("{base}-help"),
             label_id: format!("{base}-label"),
             id,
-            label: spec.label.map(str::to_owned),
+            label,
+            label_key,
             kind,
             element: kind.element(),
             input_type: kind.input_type(),
@@ -383,9 +515,11 @@ impl FieldView {
             disabled: spec.disabled,
             readonly: spec.readonly,
             autofocus: spec.autofocus,
-            placeholder: spec.placeholder.map(str::to_owned),
+            placeholder,
+            placeholder_key,
             autocomplete: spec.autocomplete.map(str::to_owned),
-            help: spec.help.map(str::to_owned),
+            help,
+            help_key,
             pattern: control.pattern().map(str::to_owned),
             minlength: control.minlength(),
             maxlength: control.maxlength(),
@@ -400,7 +534,28 @@ impl FieldView {
             choices,
             has_errors: !messages.is_empty(),
             errors: messages,
-            group: group.map(str::to_owned),
+            group,
+            group_key,
+        }
+    }
+
+    /// Resolve this field's i18n keys — its label, help text, placeholder,
+    /// group legend and the label of every option. See [`FormView::localize`].
+    pub fn localize<S, F>(&mut self, translate: F)
+    where
+        F: Fn(&str) -> Option<S>,
+        S: Into<String>,
+    {
+        self.localize_in(&|key| translate(key).map(Into::into));
+    }
+
+    fn localize_in(&mut self, translate: &Translate<'_>) {
+        resolve(&mut self.label, &mut self.label_key, translate);
+        resolve(&mut self.help, &mut self.help_key, translate);
+        resolve(&mut self.placeholder, &mut self.placeholder_key, translate);
+        resolve(&mut self.group, &mut self.group_key, translate);
+        for choice in &mut self.choices {
+            choice.localize_in(translate);
         }
     }
 
@@ -423,12 +578,18 @@ impl FieldView {
         let selected: Vec<&str> = self.values.iter().map(String::as_str).collect();
         self.choices = choices
             .into_iter()
-            .map(|choice| ChoiceView {
-                selected: selected.contains(&choice.value.as_ref()),
-                value: choice.value.into_owned(),
-                label: choice.label.into_owned(),
-                disabled: choice.disabled,
-                group: choice.group.map(Cow::into_owned),
+            .map(|choice| {
+                let (label, label_key) = split(Some(&choice.label));
+                let (group, group_key) = split(choice.group.as_ref());
+                ChoiceView {
+                    selected: selected.contains(&choice.value.as_ref()),
+                    value: choice.value.into_owned(),
+                    label: label.unwrap_or_default(),
+                    label_key,
+                    disabled: choice.disabled,
+                    group,
+                    group_key,
+                }
             })
             .collect();
     }

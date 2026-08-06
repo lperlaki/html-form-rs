@@ -4,7 +4,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Error, Fields, Result};
 
-use crate::attrs::{ChoiceAttrs, opt_cow};
+use crate::attrs::{ChoiceAttrs, opt_text};
 
 pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     if !input.generics.params.is_empty() {
@@ -46,17 +46,25 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             .value
             .clone()
             .unwrap_or_else(|| kebab_case(&variant_ident.to_string()));
-        let label = attrs
-            .label
-            .clone()
-            .unwrap_or_else(|| title_case(&variant_ident.to_string()));
+        // An explicit label may be an i18n key; the one derived from the
+        // variant's own name is necessarily literal text.
+        let label = match &attrs.label {
+            Some(label) => label.tokens(),
+            None => {
+                let text = title_case(&variant_ident.to_string());
+                quote!(::web_form::Text {
+                    content: ::std::borrow::Cow::Borrowed(#text),
+                    is_key: false,
+                })
+            }
+        };
         let disabled = attrs.disabled;
-        let group = opt_cow(&attrs.group);
+        let group = opt_text(&attrs.group);
 
         choices.push(quote! {
             ::web_form::Choice {
                 value: ::std::borrow::Cow::Borrowed(#value),
-                label: ::std::borrow::Cow::Borrowed(#label),
+                label: #label,
                 disabled: #disabled,
                 group: #group,
             }

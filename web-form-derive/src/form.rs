@@ -4,7 +4,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Error, Fields, Ident, Result, Type};
 
-use crate::attrs::{CustomAttr, FieldAttrs, FormAttrs, opt_cow, opt_str, opt_u32, opt_usize};
+use crate::attrs::{CustomAttr, FieldAttrs, FormAttrs, opt_str, opt_text, opt_u32, opt_usize};
 
 /// What a struct field maps to in a submission.
 enum Shape<'a> {
@@ -91,7 +91,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 ));
             }
             let prefix = attrs.prefix.clone().unwrap_or_default();
-            let legend = opt_str(&attrs.legend);
+            let legend = opt_text(&attrs.legend);
             entries.push(quote! {
                 ::web_form::Entry::Flatten(::web_form::Flattened {
                     prefix: #prefix,
@@ -185,7 +185,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let form_name = opt_str(&form.name);
     let form_action = opt_str(&form.action);
     let form_class = opt_str(&form.class);
-    let form_submit = opt_str(&form.submit);
+    let form_submit = opt_text(&form.submit);
     let form_method = method_tokens(form.method.as_ref())?;
     let form_enctype = enctype_tokens(form.enctype.as_ref())?;
     let novalidate = form.novalidate;
@@ -271,8 +271,8 @@ fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<To
     let required = attrs.required.unwrap_or(matches!(shape, Shape::Scalar(_)));
     let label = label_tokens(attrs, ident);
     let default = opt_str(&attrs.default);
-    let placeholder = opt_str(&attrs.placeholder);
-    let help = opt_str(&attrs.help);
+    let placeholder = opt_text(&attrs.placeholder);
+    let help = opt_text(&attrs.help);
     let autocomplete = opt_str(&attrs.autocomplete);
     let id = opt_str(&attrs.id);
     let class = opt_str(&attrs.class);
@@ -367,14 +367,20 @@ fn control_tokens(
 ///
 /// `label = ""` means "render no label", which is what a hidden field wants.
 fn label_tokens(attrs: &FieldAttrs, ident: &Ident) -> TokenStream {
-    match attrs.label.as_deref() {
-        Some("") => quote!(::core::option::Option::None),
-        Some(label) => opt_str(&Some(label.to_owned())),
+    match &attrs.label {
+        Some(label) if label.is_blank() => quote!(::core::option::Option::None),
+        Some(label) => {
+            let label = label.tokens();
+            quote!(::core::option::Option::Some(#label))
+        }
         None => {
             if matches!(attrs.kind.as_ref().map(|(k, _)| k.as_str()), Some("hidden")) {
                 return quote!(::core::option::Option::None);
             }
-            opt_str(&Some(humanize(&ident.to_string())))
+            // A label nobody wrote is derived from the field name, so it is
+            // literal text — there is no key to guess.
+            let text = humanize(&ident.to_string());
+            quote!(::core::option::Option::Some(::web_form::Text::literal(#text)))
         }
     }
 }
@@ -493,13 +499,24 @@ fn choices_tokens(attrs: &FieldAttrs) -> Result<TokenStream> {
         }
         let items = attrs.options.iter().map(|option| {
             let value = &option.value;
-            let label = option.label.clone().unwrap_or_else(|| option.value.clone());
+            // An option with no label of its own is labelled by its value,
+            // which is text, never a key.
+            let label = match &option.label {
+                Some(label) => label.tokens(),
+                None => {
+                    let text = &option.value;
+                    quote!(::web_form::Text {
+                        content: ::std::borrow::Cow::Borrowed(#text),
+                        is_key: false,
+                    })
+                }
+            };
             let disabled = option.disabled;
-            let group = opt_cow(&option.group);
+            let group = opt_text(&option.group);
             quote! {
                 ::web_form::Choice {
                     value: ::std::borrow::Cow::Borrowed(#value),
-                    label: ::std::borrow::Cow::Borrowed(#label),
+                    label: #label,
                     disabled: #disabled,
                     group: #group,
                 }

@@ -49,6 +49,7 @@ match Signup::submit_urlencoded(body) {
 | **Collect** | Validation never stops at the first failure; one pass reports every problem on every field |
 | **Re-render** | `Outcome::Invalid` gives back a `FormView` with the submitted values and per-field messages |
 | **Reuse** | `#[field(flatten)]` splices one form into another, optionally under a name prefix |
+| **Localise** | Any label, help text, placeholder, legend or option label can be an i18n key instead of text |
 
 ## Collecting every error
 
@@ -72,6 +73,64 @@ Errors carry a typed `ErrorKind` alongside the built-in English message, so you
 can match on `ErrorKind::TooShort { minlength, length }` and write your own (or
 localised) text. `FormErrors` also serialises to
 `{"form": [...], "fields": {"email": [...]}}` for JSON APIs.
+
+## Localisation
+
+Anywhere a person-facing string is accepted, `t("…")` names an i18n key instead
+of giving the text:
+
+```rust
+#[derive(WebForm)]
+#[form(submit = t("signup.submit"))]
+struct Signup {
+    #[field(type = "email",
+            label = t("signup.email.label"),
+            help = t("signup.email.help"),
+            placeholder = t("signup.email.placeholder"))]
+    email: String,
+
+    #[field(label = "Age")]                     // still plain text
+    age: Option<u32>,
+
+    #[field(label = t("signup.country"))]
+    #[option("de", t("country.de"))]
+    #[option("ch", t("country.ch"), group = t("country.non-eu"))]
+    country: String,
+}
+```
+
+`label`, `help`, `placeholder`, `legend`, `submit`, and the labels and
+`group`s of `#[option(...)]` and `#[choice(...)]` all take either form. The two
+are told apart in the spec by `Text`, and the difference survives into the
+render format.
+
+The crate resolves nothing itself — it has no more opinion about your i18n stack
+than about your HTTP stack. Hand it a lookup and it walks the view:
+
+```rust
+let view = Signup::render_localized(|key| bundle.get(key));
+
+// …or on a view from anywhere else
+let view = article.render_filled().localized(|key| bundle.get(key));
+let view = outcome.view().unwrap().localized(&translate);
+```
+
+`translate` is any `Fn(&str) -> Option<impl Into<String>>`.
+
+Or leave it to the template. Every translatable string comes with a companion
+`…_key`, set only while the key is still unresolved:
+
+```jinja
+{{ field.label_key and t(field.label_key) or field.label }}
+```
+
+Until a key is resolved the string *is* the key, so `{{ field.label }}` renders
+something either way, and a key no backend recognises stays visible rather than
+turning into a blank label — a bug a reader can report. Once resolved, the
+`…_key` is cleared, so nothing translates twice.
+
+`Choice::keyed("de", "country.de")` and `Choice::owned_keyed(id, key)` build
+keyed options at render time, next to `Choice::new` and `Choice::owned`.
 
 ## Reuse: flattening one form into another
 
@@ -195,7 +254,7 @@ errors only your database knows about.
 | `method = "post"` | `get`, `post` or `dialog` |
 | `enctype = "multipart/form-data"` | For file uploads |
 | `novalidate` | Turn off the browser's own validation (the server still validates) |
-| `submit = "Create account"` | Caption of the built-in submit button |
+| `submit = "Create account"` | Caption of the built-in submit button; `submit = t("key")` for an i18n key |
 | `validate = path::to::fn` | Cross-field check: `fn(&Self) -> Result<(), E>` |
 | `attr("hx-post" = "/signup")` | Anything the crate has no opinion about, rendered verbatim |
 
@@ -205,6 +264,7 @@ errors only your database knows about.
 |---|---|
 | `type = "email"` | The control; inferred from the Rust type otherwise |
 | `label`, `placeholder`, `help`, `autocomplete`, `id`, `class`, `rows`, `cols` | Presentation. `label` defaults to the humanised field name; `label = ""` renders none |
+| `label = t("key")` | `label`, `help`, `placeholder` and `legend` also take an i18n key |
 | `name = "e-mail"` | Submitted name; defaults to the field name |
 | `required` / `optional` | Overrides the inferred default |
 | `default = "…"` | Value shown on a blank form |
@@ -397,7 +457,7 @@ and feed the text fields in through `Values::from_pairs`.
 
 | | |
 |---|---|
-| `src/spec.rs` | `FormSpec`/`FieldSpec`/`Control` — the `const` description the derive emits |
+| `src/spec.rs` | `FormSpec`/`FieldSpec`/`Control`/`Text` — the `const` description the derive emits |
 | `src/view.rs` | `FormView`/`FieldView` — the render format, plus the built-in HTML |
 | `src/runtime.rs` | `ParseCtx` — the error-collecting parse, and the `const` control assembly |
 | `src/validate.rs` | Server-side re-checking of every HTML constraint |

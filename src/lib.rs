@@ -63,6 +63,38 @@
 //! assert!(signup.newsletter);
 //! ```
 //!
+//! # Localisation
+//!
+//! Any string a person reads — a label, help text, a placeholder, a legend, an
+//! option's label — can be written as `t("key")` instead of as text. The crate
+//! resolves nothing itself; hand [`FormView::localize`] a lookup, or read the
+//! `…_key` companion field and translate in the template.
+//!
+//! ```
+//! use web_form::WebForm;
+//!
+//! #[derive(WebForm)]
+//! #[form(submit = t("signup.submit"))]
+//! struct Signup {
+//!     #[field(type = "email", label = t("signup.email"), help = "Never shared.")]
+//!     email: String,
+//! }
+//!
+//! let view = Signup::render_localized(|key| match key {
+//!     "signup.email" => Some("E-Mail-Adresse"),
+//!     "signup.submit" => Some("Konto erstellen"),
+//!     _ => None,
+//! });
+//!
+//! assert_eq!(view.field("email").unwrap().label.as_deref(), Some("E-Mail-Adresse"));
+//! assert_eq!(view.submit_label, "Konto erstellen");
+//! // A literal is a literal, whatever language the rest is in.
+//! assert_eq!(view.field("email").unwrap().help.as_deref(), Some("Never shared."));
+//! ```
+//!
+//! A key nothing recognises is left in place — the view shows the key itself,
+//! which is a visible bug rather than a silently blank label.
+//!
 //! # Reuse: flattening one form into another
 //!
 //! A form can be spliced into another with `#[field(flatten)]`. Give the
@@ -153,6 +185,9 @@
 //! [`FormView`] is the runtime one: flat, owned, serialisable, and carrying the
 //! things a spec cannot know — what the user typed, what was wrong with it, and
 //! options loaded from a database.
+//!
+//! [`Text`] is what every person-facing string in the spec is: literal text, or
+//! an i18n key. Both end up in the view, the key alongside the string.
 
 mod error;
 mod kind;
@@ -169,7 +204,7 @@ pub use runtime::ParseCtx;
 pub use spec::{
     Attr, Bounds, Choice, ChoiceStyle, ChooseControl, Control, Entry, FieldSpec, FileControl,
     Flattened, FormEncType, FormMethod, FormSpec, NumberControl, NumberFormat, ResolvedField,
-    TemporalControl, TemporalFormat, TextControl, TextFormat, TextareaControl,
+    TemporalControl, TemporalFormat, Text, TextControl, TextFormat, TextareaControl,
 };
 pub use value::FormValue;
 pub use values::Values;
@@ -288,6 +323,19 @@ pub trait WebForm: Sized {
     /// A blank form, with each field showing its declared default.
     fn render() -> FormView {
         FormView::build(Self::spec(), None, &FormErrors::new())
+    }
+
+    /// A blank form with every i18n key already resolved.
+    ///
+    /// The general form is [`FormView::localized`], which does the same to a
+    /// view from any of the other constructors:
+    /// `Signup::render_filled(&article).localized(&translate)`.
+    fn render_localized<S, F>(translate: F) -> FormView
+    where
+        F: Fn(&str) -> Option<S>,
+        S: Into<String>,
+    {
+        Self::render().localized(translate)
     }
 
     /// The form as it should be shown after a submission: the submitted values

@@ -3,8 +3,12 @@
 //!
 //! A [`FormSpec`] is built entirely from `const` data so `#[derive(WebForm)]`
 //! can emit it as a `static` item and hand out a `&'static` reference — no
-//! allocation, no lazy initialisation. Everything here is `Copy` for the same
-//! reason: it makes the merge the derive performs a plain `const fn`.
+//! allocation, no lazy initialisation. [`Control`] and everything inside it is
+//! `Copy`, which is what makes the merge the derive performs a plain `const fn`.
+//!
+//! Every string a person reads — a label, help text, a legend — is a [`Text`],
+//! which is either literal text or an i18n key. The crate never resolves a key
+//! itself; see [`FormView::localize`](crate::FormView::localize).
 //!
 //! # Where an attribute lives
 //!
@@ -50,20 +54,98 @@ impl Attr {
     }
 }
 
+/// A string a person reads: literal text, or a key for an i18n backend.
+///
+/// In an attribute the two are told apart by how they are written — `label =
+/// "Email address"` is text, `label = t("signup.email.label")` is a key. Which
+/// one it is survives all the way into the render format, where the key is
+/// exposed alongside the string so a template can resolve it, or
+/// [`FormView::localize`](crate::FormView::localize) can.
+///
+/// A key that no backend recognises stays put: the view shows the key itself,
+/// which is a visible bug rather than a silently blank label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Text {
+    /// The literal text, or the i18n key — [`Text::is_key`] says which.
+    pub content: Cow<'static, str>,
+    /// Whether [`Text::content`] is a key to look up rather than text to show.
+    pub is_key: bool,
+}
+
+impl Text {
+    /// Literal text, usable in `const` position.
+    pub const fn literal(text: &'static str) -> Self {
+        Self {
+            content: Cow::Borrowed(text),
+            is_key: false,
+        }
+    }
+
+    /// An i18n key, usable in `const` position.
+    pub const fn key(key: &'static str) -> Self {
+        Self {
+            content: Cow::Borrowed(key),
+            is_key: true,
+        }
+    }
+
+    /// Literal text built at runtime.
+    pub fn owned(text: impl Into<String>) -> Self {
+        Self {
+            content: Cow::Owned(text.into()),
+            is_key: false,
+        }
+    }
+
+    /// An i18n key built at runtime.
+    pub fn owned_key(key: impl Into<String>) -> Self {
+        Self {
+            content: Cow::Owned(key.into()),
+            is_key: true,
+        }
+    }
+
+    /// The content, whichever kind it is.
+    pub fn as_str(&self) -> &str {
+        &self.content
+    }
+
+    /// The i18n key, or `None` for literal text.
+    pub fn key_str(&self) -> Option<&str> {
+        self.is_key.then(|| self.content.as_ref())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+}
+
+impl From<&'static str> for Text {
+    fn from(text: &'static str) -> Self {
+        Text::literal(text)
+    }
+}
+
+impl From<String> for Text {
+    fn from(text: String) -> Self {
+        Text::owned(text)
+    }
+}
+
 /// One selectable value of a `<select>` or a radio group.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
     pub value: Cow<'static, str>,
-    pub label: Cow<'static, str>,
+    pub label: Text,
     pub disabled: bool,
     /// When set, the choice is rendered inside an `<optgroup>` with this label.
-    pub group: Option<Cow<'static, str>>,
+    pub group: Option<Text>,
 }
 
 impl Choice {
     pub const DEFAULT: Self = Self {
         value: Cow::Borrowed(""),
-        label: Cow::Borrowed(""),
+        label: Text::literal(""),
         disabled: false,
         group: None,
     };
@@ -72,7 +154,17 @@ impl Choice {
     pub const fn new(value: &'static str, label: &'static str) -> Self {
         Self {
             value: Cow::Borrowed(value),
-            label: Cow::Borrowed(label),
+            label: Text::literal(label),
+            disabled: false,
+            group: None,
+        }
+    }
+
+    /// A choice whose label is an i18n key, usable in `const` position.
+    pub const fn keyed(value: &'static str, label_key: &'static str) -> Self {
+        Self {
+            value: Cow::Borrowed(value),
+            label: Text::key(label_key),
             disabled: false,
             group: None,
         }
@@ -82,7 +174,17 @@ impl Choice {
     pub fn owned(value: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             value: Cow::Owned(value.into()),
-            label: Cow::Owned(label.into()),
+            label: Text::owned(label),
+            disabled: false,
+            group: None,
+        }
+    }
+
+    /// A choice built at runtime whose label is an i18n key.
+    pub fn owned_keyed(value: impl Into<String>, label_key: impl Into<String>) -> Self {
+        Self {
+            value: Cow::Owned(value.into()),
+            label: Text::owned_key(label_key),
             disabled: false,
             group: None,
         }
@@ -427,12 +529,12 @@ impl Control {
 // ─── Fields and forms ─────────────────────────────────────────────────────────
 
 /// Everything known statically about a single field.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldSpec {
     /// The submitted name, *relative* to any enclosing flatten prefix.
     pub name: &'static str,
-    /// Visible label text. `None` renders no `<label>`.
-    pub label: Option<&'static str>,
+    /// Visible label. `None` renders no `<label>`.
+    pub label: Option<Text>,
     /// The control, and the attributes only it accepts.
     pub control: Control,
     /// A value must be present and non-empty.
@@ -441,9 +543,9 @@ pub struct FieldSpec {
     /// absent from a submission (but *not* when it is submitted empty, so that
     /// clearing a field keeps working).
     pub default: Option<&'static str>,
-    pub placeholder: Option<&'static str>,
+    pub placeholder: Option<Text>,
     /// Help text rendered next to the control and wired up via `aria-describedby`.
-    pub help: Option<&'static str>,
+    pub help: Option<Text>,
     pub autocomplete: Option<&'static str>,
     /// Overrides the generated `id`.
     pub id: Option<&'static str>,
@@ -501,13 +603,13 @@ pub(crate) fn sanitize_id(name: &str) -> String {
 /// Produced by `#[field(flatten)]`. The sub-form's spec is referenced through a
 /// function pointer rather than a reference so that the two `static` items do
 /// not have to be initialised in any particular order.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Flattened {
     /// Prepended to every field name of the sub-form. Empty for a plain flatten;
     /// set it to embed the same sub-form more than once.
     pub prefix: &'static str,
     /// A legend rendered above the group by the built-in renderer.
-    pub legend: Option<&'static str>,
+    pub legend: Option<Text>,
     pub spec: fn() -> &'static FormSpec,
 }
 
@@ -515,7 +617,7 @@ pub struct Flattened {
 // The variants differ in size, but boxing the large one would put the spec out
 // of reach of `const` construction, which is the whole point.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Entry {
     Field(FieldSpec),
     Flatten(Flattened),
@@ -538,7 +640,7 @@ pub enum FormEncType {
 }
 
 /// The static description of a whole form.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FormSpec {
     pub id: Option<&'static str>,
     pub name: Option<&'static str>,
@@ -547,8 +649,8 @@ pub struct FormSpec {
     pub enctype: Option<FormEncType>,
     pub novalidate: bool,
     pub class: Option<&'static str>,
-    /// Label of the submit button emitted by the built-in renderer.
-    pub submit_label: Option<&'static str>,
+    /// Caption of the submit button emitted by the built-in renderer.
+    pub submit_label: Option<Text>,
     /// Attributes the crate has no opinion about, rendered onto the `<form>`
     /// verbatim. Declared with `#[form(attr(...))]`.
     pub attrs: &'static [Attr],
@@ -606,7 +708,7 @@ impl FormSpec {
     fn collect_fields(
         &self,
         prefix: &str,
-        group: Option<&'static str>,
+        group: Option<&'static Text>,
         depth: usize,
         out: &mut Vec<ResolvedField>,
     ) {
@@ -625,7 +727,7 @@ impl FormSpec {
                 Entry::Flatten(flat) => {
                     let sub = (flat.spec)();
                     let nested = format!("{prefix}{}", flat.prefix);
-                    let group = flat.legend.or(group);
+                    let group = flat.legend.as_ref().or(group);
                     sub.collect_fields(&nested, group, depth + 1, out);
                 }
             }
@@ -646,5 +748,5 @@ pub struct ResolvedField {
     pub name: String,
     pub spec: &'static FieldSpec,
     /// The legend of the innermost flattened group this field came from.
-    pub group: Option<&'static str>,
+    pub group: Option<&'static Text>,
 }

@@ -5,7 +5,77 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
-use syn::{Attribute, Error, Ident, Lit, LitStr, Path, Result, Token};
+use syn::{Attribute, Error, Ident, Lit, LitStr, Path, Result, Token, token};
+
+/// A string a person reads: written either as plain text or as `t("key")`,
+/// which names an entry in whatever i18n backend the application uses.
+///
+/// `t("…")` is spelled with parentheses rather than the prefix form `t"…"`
+/// because a prefixed string literal is a *lexer* error in Rust 2021 and later:
+/// the tokens never reach a proc macro at all.
+pub struct TextAttr {
+    pub content: String,
+    /// Whether `content` is an i18n key rather than the text itself.
+    pub is_key: bool,
+}
+
+impl TextAttr {
+    /// The `Text` const this becomes.
+    ///
+    /// Written as a struct literal rather than as `Text::literal(…)`: a choice
+    /// list is an `&[Choice]` rvalue that has to be promoted to a `'static`,
+    /// and a call — even to a `const fn` — is not something the compiler will
+    /// promote.
+    pub fn tokens(&self) -> TokenStream {
+        let content = &self.content;
+        let is_key = self.is_key;
+        quote!(::web_form::Text {
+            content: ::std::borrow::Cow::Borrowed(#content),
+            is_key: #is_key,
+        })
+    }
+
+    /// True for the empty *literal*, which is how "render nothing here" is
+    /// written. An empty key is rejected at parse time, so it never gets here.
+    pub fn is_blank(&self) -> bool {
+        !self.is_key && self.content.is_empty()
+    }
+}
+
+impl Parse for TextAttr {
+    fn parse(input: ParseStream) -> Result<Self> {
+        if !(input.peek(Ident) && input.peek2(token::Paren)) {
+            let lit: LitStr = input.parse().map_err(|e| {
+                Error::new(e.span(), "expected a string literal or `t(\"i18n-key\")`")
+            })?;
+            return Ok(TextAttr {
+                content: lit.value(),
+                is_key: false,
+            });
+        }
+
+        let marker: Ident = input.parse()?;
+        if marker != "t" {
+            return Err(Error::new(
+                marker.span(),
+                format!("expected a string literal or `t(\"i18n-key\")`, not `{marker}(...)`"),
+            ));
+        }
+        let inner;
+        syn::parenthesized!(inner in input);
+        let lit: LitStr = inner.parse()?;
+        if !inner.is_empty() {
+            return Err(inner.error("`t(...)` takes exactly one string literal: the i18n key"));
+        }
+        if lit.value().is_empty() {
+            return Err(Error::new(lit.span(), "an i18n key cannot be empty"));
+        }
+        Ok(TextAttr {
+            content: lit.value(),
+            is_key: true,
+        })
+    }
+}
 
 /// Anything usable as an attribute value, flattened to the string that ends up
 /// in the generated HTML. `min = 18` and `min = "18"` mean the same thing.
@@ -180,7 +250,7 @@ pub struct FormAttrs {
     pub method: Option<(String, proc_macro2::Span)>,
     pub enctype: Option<(String, proc_macro2::Span)>,
     pub class: Option<String>,
-    pub submit: Option<String>,
+    pub submit: Option<TextAttr>,
     pub novalidate: bool,
     pub validate: Option<Path>,
     /// `attr(...)` entries, in the order they were written.
@@ -202,9 +272,7 @@ impl FormAttrs {
                     "name" => out.name = Some(meta.value()?.parse::<LitStr>()?.value()),
                     "action" => out.action = Some(meta.value()?.parse::<LitStr>()?.value()),
                     "class" => out.class = Some(meta.value()?.parse::<LitStr>()?.value()),
-                    "submit" | "submit_label" => {
-                        out.submit = Some(meta.value()?.parse::<LitStr>()?.value())
-                    }
+                    "submit" | "submit_label" => out.submit = Some(meta.value()?.parse()?),
                     "method" => {
                         let lit: LitStr = meta.value()?.parse()?;
                         out.method = Some((lit.value(), lit.span()));
@@ -233,9 +301,9 @@ impl FormAttrs {
 /// A `#[option("value", "Label")]` entry on a field.
 pub struct OptionAttr {
     pub value: String,
-    pub label: Option<String>,
+    pub label: Option<TextAttr>,
     pub disabled: bool,
-    pub group: Option<String>,
+    pub group: Option<TextAttr>,
 }
 
 impl Parse for OptionAttr {
@@ -252,19 +320,20 @@ impl Parse for OptionAttr {
             if input.is_empty() {
                 break;
             }
-            if input.peek(LitStr) {
-                out.label = Some(input.parse::<LitStr>()?.value());
+            // The label may be given positionally, as `#[option("de", "Germany")]`.
+            if input.peek(LitStr) || (input.peek(Ident) && input.peek2(token::Paren)) {
+                out.label = Some(input.parse()?);
                 continue;
             }
             let key: Ident = input.parse()?;
             match key.to_string().as_str() {
                 "label" => {
                     input.parse::<Token![=]>()?;
-                    out.label = Some(input.parse::<LitStr>()?.value());
+                    out.label = Some(input.parse()?);
                 }
                 "group" => {
                     input.parse::<Token![=]>()?;
-                    out.group = Some(input.parse::<LitStr>()?.value());
+                    out.group = Some(input.parse()?);
                 }
                 "disabled" => out.disabled = true,
                 other => {
@@ -286,13 +355,13 @@ impl Parse for OptionAttr {
 #[derive(Default)]
 pub struct FieldAttrs {
     pub name: Option<String>,
-    pub label: Option<String>,
+    pub label: Option<TextAttr>,
     pub kind: Option<(String, proc_macro2::Span)>,
     pub required: Option<bool>,
     pub multiple: Option<bool>,
     pub default: Option<String>,
-    pub placeholder: Option<String>,
-    pub help: Option<String>,
+    pub placeholder: Option<TextAttr>,
+    pub help: Option<TextAttr>,
     pub autocomplete: Option<String>,
     pub id: Option<String>,
     pub class: Option<String>,
@@ -312,7 +381,7 @@ pub struct FieldAttrs {
     pub validate: Option<Path>,
     pub flatten: bool,
     pub prefix: Option<String>,
-    pub legend: Option<String>,
+    pub legend: Option<TextAttr>,
     pub skip: bool,
     pub options: Vec<OptionAttr>,
     /// `attr(...)` entries, in the order they were written.
@@ -348,7 +417,7 @@ impl FieldAttrs {
                     .unwrap_or_default();
                 match key.as_str() {
                     "name" => out.name = Some(meta.value()?.parse::<LitStr>()?.value()),
-                    "label" => out.label = Some(meta.value()?.parse::<LitStr>()?.value()),
+                    "label" => out.label = Some(meta.value()?.parse()?),
                     "type" | "kind" => {
                         let lit: LitStr = meta.value()?.parse()?;
                         out.kind = Some((lit.value(), lit.span()));
@@ -357,10 +426,8 @@ impl FieldAttrs {
                     "optional" => out.required = Some(!parse_flag(&meta)?),
                     "multiple" => out.multiple = Some(parse_flag(&meta)?),
                     "default" => out.default = Some(lit_to_string(&meta.value()?.parse()?)?),
-                    "placeholder" => {
-                        out.placeholder = Some(meta.value()?.parse::<LitStr>()?.value())
-                    }
-                    "help" => out.help = Some(meta.value()?.parse::<LitStr>()?.value()),
+                    "placeholder" => out.placeholder = Some(meta.value()?.parse()?),
+                    "help" => out.help = Some(meta.value()?.parse()?),
                     "autocomplete" => {
                         out.autocomplete = Some(meta.value()?.parse::<LitStr>()?.value())
                     }
@@ -390,7 +457,7 @@ impl FieldAttrs {
                     "validate" => out.validate = Some(meta.value()?.parse()?),
                     "flatten" => out.flatten = parse_flag(&meta)?,
                     "prefix" => out.prefix = Some(meta.value()?.parse::<LitStr>()?.value()),
-                    "legend" => out.legend = Some(meta.value()?.parse::<LitStr>()?.value()),
+                    "legend" => out.legend = Some(meta.value()?.parse()?),
                     "skip" => out.skip = parse_flag(&meta)?,
                     "attr" => parse_custom_attrs(&meta, "field", FIELD_RESERVED, &mut out.custom)?,
                     other => {
@@ -424,9 +491,9 @@ fn parse_flag(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<bool> {
 #[derive(Default)]
 pub struct ChoiceAttrs {
     pub value: Option<String>,
-    pub label: Option<String>,
+    pub label: Option<TextAttr>,
     pub disabled: bool,
-    pub group: Option<String>,
+    pub group: Option<TextAttr>,
 }
 
 impl ChoiceAttrs {
@@ -441,8 +508,8 @@ impl ChoiceAttrs {
                     .unwrap_or_default();
                 match key.as_str() {
                     "value" => out.value = Some(meta.value()?.parse::<LitStr>()?.value()),
-                    "label" => out.label = Some(meta.value()?.parse::<LitStr>()?.value()),
-                    "group" => out.group = Some(meta.value()?.parse::<LitStr>()?.value()),
+                    "label" => out.label = Some(meta.value()?.parse()?),
+                    "group" => out.group = Some(meta.value()?.parse()?),
                     "disabled" => out.disabled = parse_flag(&meta)?,
                     other => {
                         return Err(meta.error(format!(
@@ -468,11 +535,12 @@ pub fn opt_str(value: &Option<String>) -> TokenStream {
     }
 }
 
-/// `Option<Cow<'static, str>>`
-pub fn opt_cow(value: &Option<String>) -> TokenStream {
+/// `Option<Text>`
+pub fn opt_text(value: &Option<TextAttr>) -> TokenStream {
     match value {
-        Some(value) => {
-            quote!(::core::option::Option::Some(::std::borrow::Cow::Borrowed(#value)))
+        Some(text) => {
+            let text = text.tokens();
+            quote!(::core::option::Option::Some(#text))
         }
         None => quote!(::core::option::Option::None),
     }

@@ -29,6 +29,7 @@ mod form;
 /// |---|---|
 /// | `type = "email"` | The control to render; inferred from the Rust type otherwise |
 /// | `label = "Email"` | Label text; defaults to the humanised field name, `""` renders none |
+/// | `label = t("email.label")` | An i18n key instead of text. Also on `help`, `placeholder`, `legend`, and on `#[form(submit)]`, `#[option(...)]` and `#[choice(...)]` labels and groups |
 /// | `name = "e-mail"` | Submitted name; defaults to the field name |
 /// | `required` / `optional` | Overrides the default (required unless `Option`, `Vec` or `bool`) |
 /// | `default = "…"` | Value shown on a blank form |
