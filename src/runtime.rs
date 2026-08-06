@@ -1,16 +1,18 @@
 //! The parsing machinery shared by hand-written and derived [`WebForm`] impls.
 //!
-//! [`ParseCtx`] threads three things through a parse: the raw submission, the
-//! flatten prefix currently in scope, and the growing error list. Nothing in
-//! here ever short-circuits — a failed field records its error and returns
-//! `None`, and the parse carries on to the next field.
+//! [`ParseCtx`] threads four things through a parse: the raw submission, the
+//! context the caller handed in, the flatten prefix currently in scope, and the
+//! growing error list. Nothing in here ever short-circuits — a failed field
+//! records its error and returns `None`, and the parse carries on to the next
+//! field.
 
 use std::borrow::Cow;
 
 use crate::WebForm;
+use crate::context::Provides;
 use crate::error::{FieldError, FormErrors};
 use crate::spec::{FieldSpec, Flattened};
-use crate::validate::{self, FieldValidation, FormValidation};
+use crate::validate::{self, FieldValidator, FormValidator};
 use crate::value::FormValue;
 use crate::values::{Values, is_blank};
 
@@ -28,6 +30,11 @@ enum Raw<'a> {
 ///
 /// A name that *is* present but empty never falls back, so that clearing a
 /// field keeps working even when the field has a default.
+///
+/// Only the *literal* default is a fallback. A generated one — `default =
+/// some_fn` — belongs to rendering alone: standing it in here would let a form
+/// answer its own question, and a submission that left the CSRF token out would
+/// arrive carrying a freshly minted one.
 fn read<'r>(values: &'r Values, spec: &'r FieldSpec, full_name: &str) -> Raw<'r> {
     match values.get(full_name) {
         Some(value) if !is_blank(value) => Raw::Present(value),
@@ -42,16 +49,22 @@ fn read<'r>(values: &'r Values, spec: &'r FieldSpec, full_name: &str) -> Raw<'r>
 }
 
 /// State carried through one parse of one submission.
-pub struct ParseCtx<'a> {
+///
+/// `C` is the form's [`Context`](crate::WebForm::Context) — whatever its own
+/// functions were promised they would be handed. A form that declares none
+/// parses with `C = ()`, which is what the parameter defaults to.
+pub struct ParseCtx<'a, C = ()> {
     values: &'a Values,
+    context: &'a C,
     prefix: String,
     errors: FormErrors,
 }
 
-impl<'a> ParseCtx<'a> {
-    pub fn new(values: &'a Values) -> Self {
+impl<'a, C> ParseCtx<'a, C> {
+    pub fn new(values: &'a Values, context: &'a C) -> Self {
         Self {
             values,
+            context,
             prefix: String::new(),
             errors: FormErrors::new(),
         }
@@ -60,6 +73,11 @@ impl<'a> ParseCtx<'a> {
     /// The raw submission being parsed.
     pub fn values(&self) -> &'a Values {
         self.values
+    }
+
+    /// What the caller handed in for this parse.
+    pub fn context(&self) -> &'a C {
+        self.context
     }
 
     /// The flatten prefix currently in scope.
@@ -210,25 +228,47 @@ impl<'a> ParseCtx<'a> {
     }
 
     /// Parse a flattened sub-form, with its prefix pushed for the duration.
-    pub fn nested<T: WebForm>(&mut self, flattened: &Flattened) -> Option<T> {
+    ///
+    /// The sub-form is parsed with the context this one is carrying, or with
+    /// whatever that context [`Provides`] in its place — which is how a
+    /// context-free sub-form is flattened into a form that has one.
+    ///
+    /// The prefix and the errors are lent to the sub-parse and taken back, so
+    /// nesting costs no allocation of its own and the errors of both halves end
+    /// up in one list.
+    pub fn nested<T: WebForm>(&mut self, flattened: &Flattened) -> Option<T>
+    where
+        C: Provides<T::Context>,
+    {
         let restore = self.prefix.len();
         self.prefix.push_str(flattened.prefix);
-        let parsed = T::parse_in(self);
+
+        let mut nested = ParseCtx {
+            values: self.values,
+            context: Provides::provide(self.context),
+            prefix: std::mem::take(&mut self.prefix),
+            errors: std::mem::take(&mut self.errors),
+        };
+        let parsed = T::parse_in(&mut nested);
+
+        self.prefix = nested.prefix;
+        self.errors = nested.errors;
         self.prefix.truncate(restore);
         parsed
     }
 
     /// Run a `#[field(validate = ...)]` function against a parsed value.
     ///
-    /// The function may return a `bool` or any `Result` whose error becomes a
-    /// message — see [`FieldValidation`].
-    pub fn check_custom<T, V: FieldValidation>(
+    /// The function may take the value alone or the value and the context, and
+    /// may return a `bool` or any `Result` whose error becomes a message — see
+    /// [`FieldValidator`] and [`FieldValidation`](crate::FieldValidation).
+    pub fn check_custom<T, M>(
         &mut self,
         spec: &FieldSpec,
         value: &T,
-        validator: impl Fn(&T) -> V,
+        validator: impl FieldValidator<T, C, M>,
     ) {
-        if let Some(error) = validator(value).into_field_error() {
+        if let Some(error) = validator.check(value, self.context) {
             let full = self.full_name(spec.name);
             self.errors.push(full, error);
         }
@@ -238,9 +278,9 @@ impl<'a> ParseCtx<'a> {
     ///
     /// As well as a `bool`, the function may return anything convertible to
     /// [`FormErrors`]: a message, a `(field, message)` pair, or a full error
-    /// set — see [`FormValidation`].
-    pub fn check_form<T, V: FormValidation>(&mut self, value: &T, validator: impl Fn(&T) -> V) {
-        if let Some(errors) = validator(value).into_form_errors() {
+    /// set — see [`FormValidator`] and [`FormValidation`](crate::FormValidation).
+    pub fn check_form<T, M>(&mut self, value: &T, validator: impl FormValidator<T, C, M>) {
+        if let Some(errors) = validator.check(value, self.context) {
             self.merge_errors(errors);
         }
     }
@@ -279,10 +319,49 @@ impl<'a> ParseCtx<'a> {
 /// Helpers the derive macro calls into. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
+    use crate::WebForm;
+    use crate::context::{DefaultSource, Provides};
     use crate::spec::{
         Bounds, Choice, ChoiceStyle, ChooseControl, Control, FileControl, NumberControl,
-        TextControl, TextFormat, TextareaControl,
+        TextControl, TextFormat, TextareaControl, join,
     };
+    use crate::values::Values;
+
+    /// Record what a `#[field(default = path)]` function produced for one
+    /// render, under the field's fully-qualified name.
+    ///
+    /// The function may take the context or ignore it, and may return whichever
+    /// string type suits it — [`DefaultSource`] is what reconciles the two, so
+    /// that the derive, which cannot see a signature, emits the same call
+    /// either way.
+    pub fn generate_default<C, M>(
+        values: &mut Values,
+        prefix: &str,
+        name: &'static str,
+        source: impl DefaultSource<C, M>,
+        context: &C,
+    ) {
+        values.push(join(prefix, name), source.generate(context));
+    }
+
+    /// The defaults of a flattened sub-form, under the prefix the flatten adds
+    /// — the rendering half of [`ParseCtx::nested`](super::ParseCtx::nested),
+    /// and where the same rules live: the sub-form is handed whatever this
+    /// form's context [`Provides`] in place of its own.
+    ///
+    /// A sub-form that generates nothing is not walked, and its prefix is never
+    /// built: the const decides that per instantiation, so a form that has no
+    /// generated default anywhere in it compiles this down to nothing.
+    pub fn nested_defaults<T: WebForm, C: Provides<T::Context>>(
+        values: &mut Values,
+        prefix: &str,
+        nested: &'static str,
+        context: &C,
+    ) {
+        if T::GENERATES_DEFAULTS {
+            T::generate_defaults(values, &join(prefix, nested), Provides::provide(context));
+        }
+    }
 
     /// The `#[field(...)]` attributes that belong to a control rather than to
     /// the field as a whole.

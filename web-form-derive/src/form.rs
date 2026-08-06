@@ -33,14 +33,6 @@ impl<'a> Shape<'a> {
 }
 
 pub fn derive(input: DeriveInput) -> Result<TokenStream> {
-    if !input.generics.params.is_empty() {
-        return Err(Error::new_spanned(
-            input.generics,
-            "`WebForm` cannot be derived for a generic type: the form description is a `const`, \
-             which cannot refer to type or lifetime parameters",
-        ));
-    }
-
     let Data::Struct(data) = &input.data else {
         return Err(Error::new_spanned(
             &input.ident,
@@ -57,10 +49,37 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let form = FormAttrs::parse(&input.attrs)?;
     let ident = &input.ident;
 
+    // What this form's own functions are handed. Everything the form declares
+    // — `default = ...`, `validate = ...` — is called with it, and a flattened
+    // sub-form is parsed and rendered with it too.
+    let context: Type = form
+        .context
+        .clone()
+        .unwrap_or_else(|| syn::parse_quote!(()));
+
+    // A generic form is one whose `SPEC` names `<T as WebForm>::SPEC` — an
+    // associated constant of a parameter, which the compiler resolves at
+    // monomorphisation like any other. What a form *cannot* be generic over is
+    // anything the spec would have to borrow from, since it is `'static`.
+    let mut generics = input.generics.clone();
+    let params: Vec<Ident> = generics.type_params().map(|p| p.ident.clone()).collect();
+
     let mut entries = Vec::new();
     let mut parse_steps = Vec::new();
     let mut construct = Vec::new();
     let mut fill_steps = Vec::new();
+    // The `default = path` calls, and what says whether making them is worth a
+    // walk at all — `false` unless something here, or in something flattened
+    // here, produces a default at render time. A field of this form settles it
+    // outright; a flattened one is a const of the sub-form's own.
+    let mut default_steps = Vec::new();
+    let mut generates_here = false;
+    let mut generates: Vec<TokenStream> = Vec::new();
+    // Bounds inferred from how each field is used, so that `struct WithCsrf<T>`
+    // needs no bound written on it. Only types that mention a parameter get
+    // one: adding `where Address: WebForm` for a concrete field would move the
+    // error away from the field that caused it.
+    let mut bounds: Vec<syn::WherePredicate> = Vec::new();
 
     for field in &fields.named {
         let field_ident = field.ident.as_ref().expect("named field");
@@ -78,7 +97,24 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         let binding = format_ident!("__field_{}", index);
         let ty = &field.ty;
 
+        if let Some(generic) = shape.value_type().filter(|ty| mentions(ty, &params)) {
+            bounds.push(syn::parse_quote!(#generic: ::web_form::FormValue));
+        }
+
         if matches!(shape, Shape::Flatten) {
+            if mentions(ty, &params) {
+                bounds.push(syn::parse_quote!(#ty: ::web_form::WebForm));
+            }
+            // A sub-form is parsed and rendered with this form's context, or
+            // with whatever that context hands down in its place. The bound is
+            // only written when one side of it is a parameter: for two concrete
+            // types it holds or it does not, and saying so here would move the
+            // complaint away from the field that caused it.
+            if mentions(ty, &params) || mentions(&context, &params) {
+                bounds.push(syn::parse_quote!(
+                    #context: ::web_form::Provides<<#ty as ::web_form::WebForm>::Context>
+                ));
+            }
             if let Some(custom) = attrs.custom.first() {
                 return Err(Error::new(
                     field_ident.span(),
@@ -115,6 +151,19 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                     &::std::format!("{}{}", __prefix, #prefix),
                 );
             });
+
+            generates.push(quote!(<#ty as ::web_form::WebForm>::GENERATES_DEFAULTS));
+            // One call, as on the parse side: which sub-forms are worth
+            // walking, how the prefix is joined and what context the sub-form
+            // is handed are the runtime's to decide, not this macro's.
+            default_steps.push(quote! {
+                ::web_form::__private::nested_defaults::<#ty, #context>(
+                    __values,
+                    __prefix,
+                    #prefix,
+                    __context,
+                );
+            });
             continue;
         }
 
@@ -147,6 +196,23 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             .name
             .clone()
             .unwrap_or_else(|| field_ident.to_string());
+
+        if let Some(path) = &attrs.default_fn {
+            generates_here = true;
+            // Which of the two shapes the function has — with the context or
+            // without — is settled by `DefaultSource`, since a macro cannot
+            // see a signature.
+            default_steps.push(quote! {
+                ::web_form::__private::generate_default(
+                    __values,
+                    __prefix,
+                    #name,
+                    #path,
+                    __context,
+                );
+            });
+        }
+
         let push_value = |value: TokenStream| {
             quote! {
                 __values.push(
@@ -200,9 +266,39 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         None => quote!(),
     };
 
+    // A form with nothing to generate leaves the trait's own empty body in
+    // place, and says so in the const the renderer branches on.
+    let generates_defaults = if generates_here {
+        quote!(true)
+    } else {
+        quote!(false #(|| #generates)*)
+    };
+    let generate_defaults = if default_steps.is_empty() {
+        TokenStream::new()
+    } else {
+        quote! {
+            fn generate_defaults(
+                __values: &mut ::web_form::Values,
+                __prefix: &str,
+                __context: &<Self as ::web_form::WebForm>::Context,
+            ) {
+                #(#default_steps)*
+            }
+        }
+    };
+
+    if !bounds.is_empty() {
+        generics.make_where_clause().predicates.extend(bounds);
+    }
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     Ok(quote! {
         #[automatically_derived]
-        impl ::web_form::WebForm for #ident {
+        impl #impl_generics ::web_form::WebForm for #ident #ty_generics #where_clause {
+            type Context = #context;
+
+            const GENERATES_DEFAULTS: bool = #generates_defaults;
+
             // The whole description is one const-evaluated value: the reference
             // is to memory the compiler laid out, so nothing here runs, or
             // allocates, at render time.
@@ -219,7 +315,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 entries: &[#(#entries),*],
             };
 
-            fn parse_in(__ctx: &mut ::web_form::ParseCtx<'_>) -> ::core::option::Option<Self> {
+            fn parse_in(
+                __ctx: &mut ::web_form::ParseCtx<'_, #context>,
+            ) -> ::core::option::Option<Self> {
                 let __spec = <Self as ::web_form::WebForm>::SPEC;
                 // Every field is read before anything is returned, so one pass
                 // collects every error.
@@ -232,6 +330,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             fn fill_in(&self, __values: &mut ::web_form::Values, __prefix: &str) {
                 #(#fill_steps)*
             }
+
+            #generate_defaults
         }
     })
 }
@@ -595,6 +695,19 @@ fn generic_arg<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
         syn::GenericArgument::Type(ty) => Some(ty),
         _ => None,
     })
+}
+
+/// Whether a type mentions one of the struct's own type parameters, at any
+/// depth — `T`, `Option<T>` and `Vec<Wrapper<T>>` all do.
+fn mentions(ty: &Type, params: &[Ident]) -> bool {
+    fn walk(tokens: TokenStream, params: &[Ident]) -> bool {
+        tokens.into_iter().any(|tree| match tree {
+            proc_macro2::TokenTree::Ident(ident) => params.contains(&ident),
+            proc_macro2::TokenTree::Group(group) => walk(group.stream(), params),
+            _ => false,
+        })
+    }
+    !params.is_empty() && walk(quote!(#ty), params)
 }
 
 fn is_ident(ty: &Type, name: &str) -> bool {

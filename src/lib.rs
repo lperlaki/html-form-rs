@@ -219,6 +219,137 @@
 //! assert_eq!(order.shipping.postcode, "54321");
 //! ```
 //!
+//! A form may be generic, which is what makes a *wrapper* possible: [`SPEC`](WebForm::SPEC) is
+//! an associated constant, so `<T as WebForm>::SPEC` is resolved once per
+//! instantiation, and the bounds each field implies are added by the derive.
+//! What a flatten splices in is the sub-form's fields — its `action`, `method`
+//! and submit label describe its own `<form>` element, so a wrapper declares the
+//! ones it wants.
+//!
+//! ```
+//! use web_form::WebForm;
+//!
+//! #[derive(WebForm)]
+//! #[form(method = "post")]
+//! struct WithCsrf<T> {
+//!     #[field(type = "hidden", default = fresh_token)]
+//!     csrf_token: String,
+//!
+//!     #[field(flatten)]
+//!     inner: T,
+//! }
+//!
+//! #[derive(WebForm)]
+//! struct Signup {
+//!     #[field(type = "email")]
+//!     email: String,
+//! }
+//!
+//! fn fresh_token() -> String {
+//!     // A real one comes from a CSPRNG, and is remembered in the session.
+//!     "3f9c…".to_owned()
+//! }
+//!
+//! let view = WithCsrf::<Signup>::render();
+//! let names: Vec<&str> = view.fields.iter().map(|f| f.name.as_ref()).collect();
+//! assert_eq!(names, ["csrf_token", "email"]);
+//! assert_eq!(view.field("csrf_token").unwrap().value.as_deref(), Some("3f9c…"));
+//! ```
+//!
+//! # Defaults the form produces itself
+//!
+//! `default = "…"` is a value written into the spec. `default = some_fn` is a
+//! function called once per render, for the defaults a constant cannot hold: a
+//! CSRF token, a nonce, today's date. It may return any string type.
+//!
+//! A generated default belongs to *rendering* alone. It is never a fallback
+//! while parsing — if it were, a submission that left the CSRF token out would
+//! arrive carrying a freshly minted, valid one. And on a re-render it stands in
+//! wherever the submission holds nothing of the user's: always for a hidden
+//! field, which nobody typed and where echoing a rejected token back would leave
+//! the retry failing exactly as the first attempt did; and for any other control
+//! when the name did not come back at all.
+//!
+//! # What the form's own functions are handed
+//!
+//! A token that has to match the session, a list of options only the database
+//! knows, a check that depends on who is logged in: none of that fits in a
+//! `const`. `#[form(context = …)]` declares a type the caller passes in at the
+//! moment it renders or parses, and every function the form names is handed it.
+//!
+//! Declaring a context changes the *names* of the calls, not their meaning:
+//! [`render`](WebForm::render) becomes
+//! [`render_with_context`](WebForm::render_with_context),
+//! [`from_values`](WebForm::from_values) becomes
+//! [`from_values_with_context`](WebForm::from_values_with_context), and so on
+//! through the pairs. Both halves are on [`WebForm`] itself; the short one asks
+//! for `Context: EmptyContext`, which `()` — what a form that declares no
+//! context gets — is.
+//!
+//! ```
+//! use web_form::{Text, WebForm};
+//!
+//! /// Whatever a handler already has: the session, a connection, the clock.
+//! struct Session {
+//!     csrf: String,
+//! }
+//!
+//! #[derive(WebForm, Debug)]
+//! #[form(method = "post", context = Session)]
+//! struct Comment {
+//!     #[field(type = "hidden", default = issued_token, validate = is_our_token)]
+//!     csrf_token: String,
+//!
+//!     #[field(type = "textarea", label = "Comment", maxlength = 2000)]
+//!     body: String,
+//! }
+//!
+//! /// A default may take the context, and is called once per render.
+//! fn issued_token(session: &Session) -> String {
+//!     session.csrf.clone()
+//! }
+//!
+//! /// So may a validator, after the value it is checking.
+//! fn is_our_token(submitted: &String, session: &Session) -> Result<(), Text> {
+//!     match *submitted == session.csrf {
+//!         true => Ok(()),
+//!         false => Err(Text::key("form.csrf.rejected")),
+//!     }
+//! }
+//!
+//! let session = Session { csrf: "3f9c…".to_owned() };
+//!
+//! // The hidden field is filled in from the session that will check it.
+//! let view = Comment::render_with_context(&session);
+//! assert_eq!(view.field("csrf_token").unwrap().value.as_deref(), Some("3f9c…"));
+//!
+//! let comment = Comment::from_urlencoded_with_context(
+//!     "csrf_token=3f9c…&body=Nice+post",
+//!     &session,
+//! )
+//! .unwrap();
+//! assert_eq!(comment.body, "Nice post");
+//!
+//! // Somebody else's token is rejected by the check the markup could not make.
+//! let errors =
+//!     Comment::from_urlencoded_with_context("csrf_token=forged&body=x", &session).unwrap_err();
+//! assert_eq!(
+//!     errors.field("csrf_token").next().unwrap().code(),
+//!     Some("form.csrf.rejected")
+//! );
+//! ```
+//!
+//! Either arity will do wherever a function is named: `fn() -> String` and
+//! `fn(&Session) -> String`, `fn(&T) -> bool` and `fn(&T, &Session) -> bool`.
+//! Which one was written is read off the function itself, so a form that gains
+//! a context does not have to rewrite the checks that never needed one. See
+//! [`DefaultSource`], [`FieldValidator`] and [`FormValidator`].
+//!
+//! A flattened sub-form is parsed and rendered with the enclosing form's
+//! context. [`Provides`] is what lets the two differ — most usefully, what lets
+//! a form written without a context be reused inside one that has a context.
+//! `examples/csrf.rs` puts the lot together.
+//!
 //! # Attributes the crate has no opinion about
 //!
 //! `attr(...)` carries anything else the markup needs — `data-*`, `hx-*` — onto
@@ -294,9 +425,16 @@
 //! The same holds while parsing: a field's name reaches [`FormErrors`] borrowed
 //! from the spec, and only a `#[field(flatten, prefix = "…")]` makes a name that
 //! has to be built.
+//!
+//! A context costs a reference passed down the walk, and nothing else. The
+//! defaults a form generates are the one thing that has to be produced before
+//! the view is built, and [`WebForm::GENERATES_DEFAULTS`] — const-evaluated
+//! through the whole flatten tree — is what keeps a form that declares none from
+//! paying for the mechanism at all.
 
 #[cfg(feature = "axum")]
 mod axum;
+mod context;
 mod error;
 #[cfg(feature = "html")]
 mod html;
@@ -310,6 +448,7 @@ mod view;
 
 #[cfg(feature = "axum")]
 pub use axum::FormRejection;
+pub use context::{DefaultSource, EmptyContext, Provides, WithContext, WithoutContext};
 pub use error::{ErrorKind, FieldError, FormErrors, ValueError};
 #[cfg(feature = "html")]
 pub use html::escape;
@@ -320,7 +459,7 @@ pub use spec::{
     Flattened, FormEncType, FormMethod, FormSpec, NumberControl, NumberFormat, ResolvedField,
     TemporalControl, TemporalFormat, Text, TextControl, TextFormat, TextareaControl,
 };
-pub use validate::{FieldValidation, FormValidation};
+pub use validate::{FieldValidation, FieldValidator, FormValidation, FormValidator};
 pub use value::FormValue;
 pub use values::Values;
 pub use view::{AttrView, ChoiceView, FieldView, FormView};
@@ -385,9 +524,26 @@ impl<T> Outcome<T> {
 
 /// A struct that describes an HTML form.
 ///
-/// Implemented by `#[derive(WebForm)]`. The three required members are what the
+/// Implemented by `#[derive(WebForm)]`. The members without a body are what the
 /// derive generates; everything else is provided.
+///
+/// Every method that renders or parses takes the form's [`Context`](Self::Context)
+/// and says so in its name. Each one has a twin without the argument or the
+/// suffix — `Signup::render()` rather than `Signup::render_with_context(&())` —
+/// available where the context is an [`EmptyContext`], which is every form that
+/// has not declared one.
 pub trait WebForm: Sized {
+    /// What this form's own functions are handed besides the value they are
+    /// looking at: the session, a database handle, the request's locale —
+    /// whatever `#[field(default = ...)]` and `validate = ...` need to know and
+    /// a `const` spec cannot hold.
+    ///
+    /// `()` for a form that needs nothing, which is what the derive assumes
+    /// until `#[form(context = ...)]` says otherwise. [`DefaultSource`],
+    /// [`FieldValidator`] and [`FormValidator`] are how a function reaches it;
+    /// [`Provides`] is what lets a form with a context flatten one without.
+    type Context;
+
     /// The static description of this form.
     ///
     /// A constant rather than a function: the derive builds it entirely at
@@ -396,25 +552,57 @@ pub trait WebForm: Sized {
     /// and `SPEC` can be read from any `const` context.
     const SPEC: &'static FormSpec;
 
+    /// Whether this form, or anything it flattens, has a default it produces at
+    /// render time rather than one written into the spec.
+    ///
+    /// Const-evaluated through the whole flatten tree, so a form that has none
+    /// — nearly every form — pays nothing for the mechanism: the walk in
+    /// [`generate_defaults`](Self::generate_defaults) is never made.
+    const GENERATES_DEFAULTS: bool = false;
+
     /// Parse the form out of `ctx`, honouring the flatten prefix in scope.
     ///
     /// Returns `None` when a value could not be produced. Errors are pushed
     /// into the context rather than returned, so parsing always visits every
     /// field.
-    fn parse_in(ctx: &mut ParseCtx<'_>) -> Option<Self>;
+    fn parse_in(ctx: &mut ParseCtx<'_, Self::Context>) -> Option<Self>;
 
     /// Write this value back out as raw submitted values, so an existing record
     /// can be rendered into the form it came from.
     fn fill_in(&self, values: &mut Values, prefix: &str);
+
+    /// Produce the defaults this form makes afresh for one render — every
+    /// `#[field(default = path)]` — under fully-qualified field names.
+    ///
+    /// Rendering is the whole of it. A generated default never stands in while
+    /// *parsing*: if it did, a submission that left the CSRF token out would
+    /// arrive carrying a freshly minted, valid one.
+    fn generate_defaults(values: &mut Values, prefix: &str, context: &Self::Context) {
+        let _ = (values, prefix, context);
+    }
 
     /// [`WebForm::SPEC`], for call sites that would rather not name the type.
     fn spec() -> &'static FormSpec {
         Self::SPEC
     }
 
+    /// What this form generates for one render, ready to be handed to
+    /// [`FormView::build`] — `None`, and unvisited, for the forms that declare
+    /// no generated default at all.
+    fn defaults_with_context(context: &Self::Context) -> Option<Values> {
+        Self::GENERATES_DEFAULTS.then(|| {
+            let mut values = Values::new();
+            Self::generate_defaults(&mut values, "", context);
+            values
+        })
+    }
+
     /// Parse and validate a submission.
-    fn from_values(values: &Values) -> Result<Self, FormErrors> {
-        let mut ctx = ParseCtx::new(values);
+    fn from_values_with_context(
+        values: &Values,
+        context: &Self::Context,
+    ) -> Result<Self, FormErrors> {
+        let mut ctx = ParseCtx::new(values, context);
         let parsed = Self::parse_in(&mut ctx);
         let errors = ctx.into_errors();
         match parsed {
@@ -423,55 +611,151 @@ pub trait WebForm: Sized {
         }
     }
 
+    /// [`from_values_with_context`](WebForm::from_values_with_context), for a
+    /// form with nothing to be told.
+    fn from_values(values: &Values) -> Result<Self, FormErrors>
+    where
+        Self::Context: EmptyContext,
+    {
+        Self::from_values_with_context(values, empty::<Self>())
+    }
+
     /// Parse and validate an `application/x-www-form-urlencoded` body or query
     /// string.
-    fn from_urlencoded(body: &str) -> Result<Self, FormErrors> {
-        Self::from_values(&Values::parse(body))
+    fn from_urlencoded_with_context(
+        body: &str,
+        context: &Self::Context,
+    ) -> Result<Self, FormErrors> {
+        Self::from_values_with_context(&Values::parse(body), context)
+    }
+
+    /// [`from_urlencoded_with_context`](WebForm::from_urlencoded_with_context),
+    /// for a form with nothing to be told.
+    fn from_urlencoded(body: &str) -> Result<Self, FormErrors>
+    where
+        Self::Context: EmptyContext,
+    {
+        Self::from_urlencoded_with_context(body, empty::<Self>())
     }
 
     /// Parse a submission, and on failure build the form to show again.
-    fn submit(values: &Values) -> Outcome<Self> {
-        match Self::from_values(values) {
+    fn submit_with_context(values: &Values, context: &Self::Context) -> Outcome<Self> {
+        match Self::from_values_with_context(values, context) {
             Ok(value) => Outcome::Valid(value),
             Err(errors) => {
-                let view = Box::new(Self::render_with(values, &errors));
+                let view = Box::new(Self::render_submitted_with_context(
+                    values, &errors, context,
+                ));
                 Outcome::Invalid { errors, view }
             }
         }
     }
 
+    /// [`submit_with_context`](WebForm::submit_with_context), for a form with
+    /// nothing to be told.
+    fn submit(values: &Values) -> Outcome<Self>
+    where
+        Self::Context: EmptyContext,
+    {
+        Self::submit_with_context(values, empty::<Self>())
+    }
+
+    /// [`WebForm::submit_with_context`] straight from a request body.
+    fn submit_urlencoded_with_context(body: &str, context: &Self::Context) -> Outcome<Self> {
+        Self::submit_with_context(&Values::parse(body), context)
+    }
+
     /// [`WebForm::submit`] straight from a request body.
-    fn submit_urlencoded(body: &str) -> Outcome<Self> {
-        Self::submit(&Values::parse(body))
+    fn submit_urlencoded(body: &str) -> Outcome<Self>
+    where
+        Self::Context: EmptyContext,
+    {
+        Self::submit_urlencoded_with_context(body, empty::<Self>())
     }
 
     /// A blank form, with each field showing its declared default.
-    fn render() -> FormView {
-        FormView::build(Self::SPEC, None, &FormErrors::new())
+    fn render_with_context(context: &Self::Context) -> FormView {
+        FormView::build(
+            Self::SPEC,
+            None,
+            Self::defaults_with_context(context).as_ref(),
+            &FormErrors::new(),
+        )
+    }
+
+    /// A blank form, for a form with nothing to be told.
+    fn render() -> FormView
+    where
+        Self::Context: EmptyContext,
+    {
+        Self::render_with_context(empty::<Self>())
     }
 
     /// A blank form with every i18n key already resolved.
     ///
     /// The general form is [`FormView::localized`], which does the same to a
     /// view from any of the other constructors:
-    /// `Signup::render_filled(&article).localized(&translate)`.
-    fn render_localized<S, F>(translate: F) -> FormView
+    /// `article.render_filled().localized(&translate)`.
+    fn render_localized_with_context<S, F>(translate: F, context: &Self::Context) -> FormView
     where
         F: Fn(&str) -> Option<S>,
         S: Into<std::borrow::Cow<'static, str>>,
     {
-        Self::render().localized(translate)
+        Self::render_with_context(context).localized(translate)
+    }
+
+    /// [`render_localized_with_context`](WebForm::render_localized_with_context),
+    /// for a form with nothing to be told.
+    fn render_localized<S, F>(translate: F) -> FormView
+    where
+        F: Fn(&str) -> Option<S>,
+        S: Into<std::borrow::Cow<'static, str>>,
+        Self::Context: EmptyContext,
+    {
+        Self::render_localized_with_context(translate, empty::<Self>())
     }
 
     /// The form as it should be shown after a submission: the submitted values
     /// with the errors attached to their fields.
-    fn render_with(values: &Values, errors: &FormErrors) -> FormView {
-        FormView::build(Self::SPEC, Some(values), errors)
+    fn render_submitted_with_context(
+        values: &Values,
+        errors: &FormErrors,
+        context: &Self::Context,
+    ) -> FormView {
+        FormView::build(
+            Self::SPEC,
+            Some(values),
+            Self::defaults_with_context(context).as_ref(),
+            errors,
+        )
+    }
+
+    /// [`render_submitted_with_context`](WebForm::render_submitted_with_context),
+    /// for a form with nothing to be told.
+    fn render_submitted(values: &Values, errors: &FormErrors) -> FormView
+    where
+        Self::Context: EmptyContext,
+    {
+        Self::render_submitted_with_context(values, errors, empty::<Self>())
     }
 
     /// The form filled in from an existing value — an edit form.
-    fn render_filled(&self) -> FormView {
-        FormView::build(Self::SPEC, Some(&self.to_values()), &FormErrors::new())
+    fn render_filled_with_context(&self, context: &Self::Context) -> FormView {
+        FormView::build(
+            Self::SPEC,
+            Some(&self.to_values()),
+            Self::defaults_with_context(context).as_ref(),
+            &FormErrors::new(),
+        )
+    }
+
+    /// [`render_filled_with_context`](WebForm::render_filled_with_context), for
+    /// a form with nothing to be told.
+    fn render_filled(&self) -> FormView
+    where
+        Self::Context: EmptyContext,
+    {
+        self.render_filled_with_context(empty::<Self>())
     }
 
     /// This value as raw submitted values.
@@ -480,4 +764,13 @@ pub trait WebForm: Sized {
         self.fill_in(&mut values, "");
         values
     }
+}
+
+/// The context of a form that has nothing to be told, named once so that each
+/// short method above is its `…_with_context` counterpart and nothing else.
+fn empty<T: WebForm>() -> &'static T::Context
+where
+    T::Context: EmptyContext,
+{
+    <T::Context as EmptyContext>::EMPTY
 }

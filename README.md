@@ -50,6 +50,7 @@ match Signup::submit_urlencoded(body) {
 | **Re-render** | `Outcome::Invalid` gives back a `FormView` with the submitted values and per-field messages |
 | **Reuse** | `#[field(flatten)]` splices one form into another, optionally under a name prefix |
 | **Localise** | Any label, help text, placeholder, legend or option label can be an i18n key instead of text |
+| **Context** | `#[form(context = Session)]` hands the session — or a connection, or the clock — to the form's own `default` and `validate` functions |
 
 ## Collecting every error
 
@@ -285,7 +286,8 @@ built.
 | `enctype = "multipart/form-data"` | For file uploads |
 | `novalidate` | Turn off the browser's own validation (the server still validates) |
 | `submit = "Create account"` | Caption of the built-in submit button; `submit = t("key")` for an i18n key |
-| `validate = path::to::fn` | Cross-field check: `fn(&Self) -> Result<(), E>` |
+| `validate = path::to::fn` | Cross-field check: `fn(&Self) -> Result<(), E>`, or `fn(&Self, &Context) -> Result<(), E>` |
+| `context = Session` | What the form's own functions are handed, and what every `…_with_context` call takes. Defaults to `()` |
 | `attr("hx-post" = "/signup")` | Anything the crate has no opinion about, rendered verbatim |
 
 ### `#[field(...)]` — on a field
@@ -298,10 +300,11 @@ built.
 | `name = "e-mail"` | Submitted name; defaults to the field name |
 | `required` / `optional` | Overrides the inferred default |
 | `default = "…"` | Value shown on a blank form |
+| `default = path::to::fn` | A value produced afresh per render — a token, a nonce, today's date: `fn() -> impl Into<Cow<'static, str>>`, or `fn(&Context) -> …`. Never a fallback while parsing |
 | `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept` | Validation |
 | `disabled`, `readonly`, `autofocus`, `multiple` | Flags |
 | `choices = SOME_CONST` | A `&'static [Choice]` |
-| `validate = path::to::fn` | Per-field check: `fn(&FieldType) -> Result<(), E>` |
+| `validate = path::to::fn` | Per-field check: `fn(&FieldType) -> Result<(), E>`, or `fn(&FieldType, &Context) -> Result<(), E>` |
 | `attr("data-role" = "input")` | Anything the crate has no opinion about, rendered verbatim |
 | `flatten` (+ `prefix`, `legend`) | Splice another form in |
 | `skip` | Not part of the form; filled with `Default::default()` |
@@ -476,6 +479,80 @@ server, because a submission can come from anywhere:
 - `<select>`, radio and checkbox-group values must be one of the declared
   choices — every submitted value, for the multi-valued ones
 
+## What the form's own functions are handed
+
+A token that has to match the session, a check that depends on who is logged in,
+a default only the request knows: none of that fits in a `const`.
+`#[form(context = …)]` declares a type the caller passes in at the moment it
+renders or parses, and every function the form names is handed it.
+
+```rust
+use web_form::{Text, WebForm};
+
+struct Session { csrf: String }
+
+#[derive(WebForm)]
+#[form(method = "post", context = Session)]
+struct Comment {
+    #[field(type = "hidden", default = issued_token, validate = is_our_token)]
+    csrf_token: String,
+
+    #[field(type = "textarea", label = "Comment", maxlength = 2000)]
+    body: String,
+}
+
+fn issued_token(session: &Session) -> String {
+    session.csrf.clone()
+}
+
+fn is_our_token(submitted: &String, session: &Session) -> Result<(), Text> {
+    match *submitted == session.csrf {
+        true => Ok(()),
+        false => Err(Text::key("form.csrf.rejected")),
+    }
+}
+
+let view = Comment::render_with_context(&session);
+let outcome = Comment::submit_urlencoded_with_context(body, &session);
+```
+
+Declaring a context changes the **names** of the calls, not their meaning: every
+method that renders or parses has a `…_with_context` form taking `&Context`, and
+a form that declares none keeps the short one — `render()`, `from_values()`,
+`submit()`. Both halves are on `WebForm` itself; the short one is bounded by
+`Context: EmptyContext`, which `()` is, so a form that asks for nothing needs no
+extra import and reads exactly as it always did.
+
+| Without a context | With one |
+|---|---|
+| `Signup::render()` | `Signup::render_with_context(&ctx)` |
+| `Signup::render_localized(t)` | `Signup::render_localized_with_context(t, &ctx)` |
+| `Signup::render_submitted(&values, &errors)` | `Signup::render_submitted_with_context(&values, &errors, &ctx)` |
+| `signup.render_filled()` | `signup.render_filled_with_context(&ctx)` |
+| `Signup::from_values(&values)` | `Signup::from_values_with_context(&values, &ctx)` |
+| `Signup::from_urlencoded(body)` | `Signup::from_urlencoded_with_context(body, &ctx)` |
+| `Signup::submit(&values)` | `Signup::submit_with_context(&values, &ctx)` |
+| `Signup::submit_urlencoded(body)` | `Signup::submit_urlencoded_with_context(body, &ctx)` |
+
+Either arity will do wherever a function is named — `fn() -> String` and
+`fn(&Session) -> String`, `fn(&T) -> bool` and `fn(&T, &Session) -> bool`. Which
+one was written is read off the function itself, so a form that gains a context
+does not have to rewrite the checks that never needed one.
+
+A flattened sub-form is parsed and rendered with the enclosing form's context.
+Say what a context hands down to one that asks for something else — most often a
+sub-form written without a context at all:
+
+```rust
+impl web_form::Provides<()> for Session {
+    fn provide(&self) -> &() { &() }
+}
+```
+
+`examples/csrf.rs` is a generic `WithCsrf<T>` wrapper putting the lot together:
+one hidden field, a token from the session, and a check the markup could not
+have made.
+
 ## Editing an existing record
 
 `fill_in` runs the conversion the other way, so a form can be shown filled in:
@@ -536,6 +613,10 @@ where there is no submission to validate: a body that is not
 that is not UTF-8 (400). As with axum's own `Form`, `GET` and `HEAD` are read
 from the query string.
 
+An extractor has nothing but the request, so `Outcome<T>` extracts only a form
+whose `Context` is `()`. A form that asks for one is submitted in the handler,
+where the context is: take the body, then call `T::submit_with_context`.
+
 The feature pulls in `axum-core`, not `axum`. See
 `examples/axum_signup.rs`, run with
 `cargo run --example axum_signup --features axum`.
@@ -550,6 +631,7 @@ and feed the text fields in through `Values::from_pairs`.
 | `src/spec.rs` | `FormSpec`/`FieldSpec`/`Control`/`Text` — the `const` description the derive emits |
 | `src/view.rs` | `FormView`/`FieldView` — the render format, plus the built-in HTML |
 | `src/runtime.rs` | `ParseCtx` — the error-collecting parse, and the `const` control assembly |
+| `src/context.rs` | `Provides`, and how a `default`/`validate` function of either arity reaches the context |
 | `src/validate.rs` | Server-side re-checking of every HTML constraint |
 | `src/value.rs` | `FormValue` — Rust types ↔ submitted strings |
 | `web-form-derive/` | The derive macros |

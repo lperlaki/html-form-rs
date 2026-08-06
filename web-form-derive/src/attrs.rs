@@ -253,6 +253,9 @@ pub struct FormAttrs {
     pub submit: Option<TextAttr>,
     pub novalidate: bool,
     pub validate: Option<Path>,
+    /// `context = Type`: what this form's own functions are handed. `None`
+    /// means `()`.
+    pub context: Option<syn::Type>,
     /// `attr(...)` entries, in the order they were written.
     pub custom: Vec<CustomAttr>,
 }
@@ -283,11 +286,21 @@ impl FormAttrs {
                     }
                     "novalidate" => out.novalidate = parse_flag(&meta)?,
                     "validate" => out.validate = Some(meta.value()?.parse()?),
+                    "context" => {
+                        out.context = Some(meta.value()?.parse().map_err(|e| {
+                            Error::new(
+                                e.span(),
+                                "expected the type this form's own functions are handed, e.g. \
+                                 `context = Session`",
+                            )
+                        })?);
+                    }
                     "attr" => parse_custom_attrs(&meta, "form", FORM_RESERVED, &mut out.custom)?,
                     other => {
                         return Err(meta.error(format!(
                             "unknown `form` attribute `{other}`; expected one of: id, name, \
-                             action, method, enctype, class, submit, novalidate, validate, attr"
+                             action, method, enctype, class, submit, novalidate, validate, \
+                             context, attr"
                         )));
                     }
                 }
@@ -360,6 +373,9 @@ pub struct FieldAttrs {
     pub required: Option<bool>,
     pub multiple: Option<bool>,
     pub default: Option<String>,
+    /// `default = path`: a function called once per render, rather than a value
+    /// written into the spec.
+    pub default_fn: Option<Path>,
     pub placeholder: Option<TextAttr>,
     pub help: Option<TextAttr>,
     pub autocomplete: Option<String>,
@@ -425,7 +441,28 @@ impl FieldAttrs {
                     "required" => out.required = Some(parse_flag(&meta)?),
                     "optional" => out.required = Some(!parse_flag(&meta)?),
                     "multiple" => out.multiple = Some(parse_flag(&meta)?),
-                    "default" => out.default = Some(lit_to_string(&meta.value()?.parse()?)?),
+                    // A literal is the value itself; anything else names a
+                    // function that produces one at render time.
+                    "default" => {
+                        let value = meta.value()?;
+                        if value.peek(Lit) {
+                            out.default = Some(lit_to_string(&value.parse()?)?);
+                        } else {
+                            out.default_fn = Some(value.parse().map_err(|e| {
+                                Error::new(
+                                    e.span(),
+                                    "expected a literal default or the path of a function \
+                                     returning one",
+                                )
+                            })?);
+                        }
+                        if out.default.is_some() && out.default_fn.is_some() {
+                            return Err(meta.error(
+                                "`default` is either a literal or a function that produces one, \
+                                 not both",
+                            ));
+                        }
+                    }
                     "placeholder" => out.placeholder = Some(meta.value()?.parse()?),
                     "help" => out.help = Some(meta.value()?.parse()?),
                     "autocomplete" => {

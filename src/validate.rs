@@ -6,6 +6,7 @@
 //! for is a `validate = ...` function, whose return value reaches the parse
 //! through [`FieldValidation`] or [`FormValidation`].
 
+use crate::context::{WithContext, WithoutContext};
 use crate::error::{ErrorKind, FieldError, FormErrors};
 use crate::spec::{Bounds, Control, FieldSpec, TemporalFormat, TextFormat};
 
@@ -542,5 +543,109 @@ impl FormValidation for bool {
 impl<E: Into<FormErrors>> FormValidation for Result<(), E> {
     fn into_form_errors(self) -> Option<FormErrors> {
         self.err().map(Into::into)
+    }
+}
+
+// ─── What a `validate = ...` function may take ────────────────────────────────
+
+/// What `#[field(validate = ...)]` may name.
+///
+/// [`FieldValidation`] says what a validator may *return*; this says what it may
+/// *take*. Either arity will do, and which one was written is read off the
+/// function itself:
+///
+/// | Signature | Called with |
+/// |---|---|
+/// | `fn(&T) -> impl FieldValidation` | the field's value |
+/// | `fn(&T, &Context) -> impl FieldValidation` | the value and the context |
+///
+/// `T` is the field's own Rust type, `Option<T>` and `Vec<T>` included, so a
+/// validator can check emptiness or cardinality as well as the value.
+///
+/// ```
+/// use web_form::{Text, WebForm};
+///
+/// struct Db(Vec<&'static str>);
+///
+/// #[derive(WebForm, Debug)]
+/// #[form(context = Db)]
+/// struct Signup {
+///     // Takes the context: only the database knows what is left.
+///     #[field(validate = is_available)]
+///     username: String,
+///     // Takes only the value, as it always could.
+///     #[field(validate = is_even)]
+///     seats: u32,
+/// }
+///
+/// fn is_available(name: &String, db: &Db) -> Result<(), Text> {
+///     match db.0.contains(&name.as_str()) {
+///         true => Err(Text::key("signup.username.taken")),
+///         false => Ok(()),
+///     }
+/// }
+///
+/// fn is_even(seats: &u32) -> bool {
+///     seats % 2 == 0
+/// }
+///
+/// let db = Db(vec!["ada"]);
+/// let errors = Signup::from_urlencoded_with_context("username=ada&seats=3", &db).unwrap_err();
+/// assert!(errors.has_field("username") && errors.has_field("seats"));
+/// ```
+pub trait FieldValidator<T, C, M> {
+    /// The error to attach to the field, or `None` when the value passed.
+    fn check(&self, value: &T, context: &C) -> Option<FieldError>;
+}
+
+impl<F, T, C, V> FieldValidator<T, C, WithoutContext> for F
+where
+    F: Fn(&T) -> V,
+    V: FieldValidation,
+{
+    fn check(&self, value: &T, _context: &C) -> Option<FieldError> {
+        self(value).into_field_error()
+    }
+}
+
+impl<F, T, C, V> FieldValidator<T, C, WithContext> for F
+where
+    F: Fn(&T, &C) -> V,
+    V: FieldValidation,
+{
+    fn check(&self, value: &T, context: &C) -> Option<FieldError> {
+        self(value, context).into_field_error()
+    }
+}
+
+/// What `#[form(validate = ...)]` may name: [`FieldValidator`] for the whole
+/// assembled struct, returning anything [`FormValidation`] accepts.
+///
+/// | Signature | Called with |
+/// |---|---|
+/// | `fn(&Self) -> impl FormValidation` | the parsed form |
+/// | `fn(&Self, &Context) -> impl FormValidation` | the form and the context |
+pub trait FormValidator<T, C, M> {
+    /// The errors to fold into the parse, or `None` when the form passed.
+    fn check(&self, value: &T, context: &C) -> Option<FormErrors>;
+}
+
+impl<F, T, C, V> FormValidator<T, C, WithoutContext> for F
+where
+    F: Fn(&T) -> V,
+    V: FormValidation,
+{
+    fn check(&self, value: &T, _context: &C) -> Option<FormErrors> {
+        self(value).into_form_errors()
+    }
+}
+
+impl<F, T, C, V> FormValidator<T, C, WithContext> for F
+where
+    F: Fn(&T, &C) -> V,
+    V: FormValidation,
+{
+    fn check(&self, value: &T, context: &C) -> Option<FormErrors> {
+        self(value, context).into_form_errors()
     }
 }

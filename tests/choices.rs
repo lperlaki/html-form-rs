@@ -282,7 +282,7 @@ fn options_that_only_exist_at_runtime_can_be_filled_in_before_rendering() {
 #[test]
 fn a_selection_survives_choices_being_replaced() {
     let submitted = Values::parse("room=birch");
-    let mut view = Booking::render_with(&submitted, &FormErrors::new());
+    let mut view = Booking::render_submitted(&submitted, &FormErrors::new());
     view.field_mut("room")
         .unwrap()
         .set_choices([Choice::new("oak", "Oak"), Choice::new("birch", "Birch")]);

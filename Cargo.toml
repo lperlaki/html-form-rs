@@ -33,6 +33,10 @@ pattern = ["dep:regex-lite"]
 axum = ["dep:axum-core", "dep:bytes", "dep:http"]
 
 [dev-dependencies]
+# The crate's own tests and examples render markup, so they need the built-in
+# renderer whether or not it is in the default set: `cargo test
+# --no-default-features` would otherwise fail to compile them.
+web-form = { path = ".", features = ["html"] }
 minijinja = "2.22.0"
 serde_json = "1.0"
 axum = "0.8.9"

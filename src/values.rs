@@ -1,6 +1,13 @@
-//! The raw, untyped submission: an ordered multi-map of `name` → `value`.
+//! A form's fields untyped: an ordered multi-map of `name` → `value`.
 
-/// Raw submitted data, exactly as it came off the wire.
+/// A form's fields as name/value pairs, in the shape a submission arrives in.
+///
+/// A submission is where these come from most often — [`Values::parse`] builds
+/// one exactly as it came off the wire — but it is the crate's one carrier for
+/// "fully-qualified field name → value", so it is also what an existing record
+/// is written back out as ([`WebForm::to_values`](crate::WebForm::to_values))
+/// and what a form generates for a render
+/// ([`WebForm::generate_defaults`](crate::WebForm::generate_defaults)).
 ///
 /// Order is preserved and a name may repeat, which is how checkbox groups and
 /// `<select multiple>` submit their values.
@@ -41,9 +48,7 @@ impl Values {
     pub fn parse_bytes(encoded: &[u8]) -> Self {
         let encoded = encoded.strip_prefix(b"?").unwrap_or(encoded);
         Self {
-            pairs: form_urlencoded::parse(encoded)
-                .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                .collect(),
+            pairs: form_urlencoded::parse(encoded).into_owned().collect(),
         }
     }
 

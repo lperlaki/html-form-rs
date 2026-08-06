@@ -278,7 +278,19 @@ impl FormView {
     /// Pass `values` to re-render a submission (typically together with the
     /// errors it produced); pass `None` for a blank form, where each field
     /// falls back to its declared default.
-    pub fn build(spec: &FormSpec, values: Option<&Values>, errors: &FormErrors) -> FormView {
+    ///
+    /// `generated` is what the form produced for *this* render —
+    /// [`WebForm::defaults_with_context`](crate::WebForm::defaults_with_context),
+    /// keyed by fully-qualified field name, and `None` for a form that declares
+    /// no generated default. It is separate from `values` because the two are
+    /// not interchangeable: a value the form minted itself is minted again on a
+    /// re-render, where one the user typed is echoed back.
+    pub fn build(
+        spec: &FormSpec,
+        values: Option<&Values>,
+        generated: Option<&Values>,
+        errors: &FormErrors,
+    ) -> FormView {
         // The flattened field list is walked straight into the view rather than
         // collected first: nothing but the `FieldView`s themselves is built.
         let mut fields = Vec::new();
@@ -288,6 +300,7 @@ impl FormView {
                 resolved.spec,
                 resolved.group,
                 values,
+                generated,
                 errors,
             ));
         });
@@ -417,23 +430,21 @@ impl FieldView {
         spec: &'static crate::spec::FieldSpec,
         group: Option<&Text>,
         values: Option<&Values>,
+        generated: Option<&Values>,
         errors: &FormErrors,
     ) -> FieldView {
         let control = &spec.control;
         let kind = control.kind();
         let full_name = &name;
 
-        // On a blank form the default is the value; on a re-render the
-        // submission is, so that an unchecked box or a cleared field stays that
-        // way. A default comes from the spec and is borrowed; only what the user
-        // typed has to be copied out of the submission.
-        let current: Vec<Cow<'static, str>> = match values {
-            Some(values) => values
-                .all(full_name)
-                .map(|value| Cow::Owned(value.to_owned()))
-                .collect(),
-            None => spec.default.iter().copied().map(Cow::Borrowed).collect(),
-        };
+        // What the form generated for this render, if anything, stands ahead of
+        // the literal in the spec. It was produced once, before the walk: a
+        // generator consulted twice would hand out two different tokens.
+        let generated = generated
+            .and_then(|generated| generated.get(full_name))
+            .map(|value| Cow::Owned(value.to_owned()));
+        let is_generated = generated.is_some();
+        let default = generated.or_else(|| spec.default.map(Cow::Borrowed));
 
         let checked = if control.is_checkable() {
             match values {
@@ -442,7 +453,7 @@ impl FieldView {
                 // instead.
                 Some(values) => match (kind, values.get(full_name)) {
                     (FieldKind::Radio | FieldKind::CheckboxGroup, Some(submitted)) => {
-                        spec.default.is_none_or(|own| own == submitted)
+                        default.as_deref().is_none_or(|own| own == submitted)
                     }
                     (FieldKind::Radio | FieldKind::CheckboxGroup, None) => false,
                     (_, Some(raw)) => {
@@ -450,17 +461,44 @@ impl FieldView {
                     }
                     (_, None) => false,
                 },
-                None => matches!(spec.default, Some("true" | "on" | "1" | "yes")),
+                None => matches!(default.as_deref(), Some("true" | "on" | "1" | "yes")),
             }
         } else {
             false
         };
 
-        // A checkbox default says whether the box starts checked, not what to
-        // put in a `value` attribute — a box with no value submits "on".
-        let current = match (kind, values) {
-            (FieldKind::Checkbox, None) => Vec::new(),
-            _ => current,
+        // On a blank form the default is the value; on a re-render the
+        // submission is, so that an unchecked box or a cleared field stays that
+        // way. A literal default comes from the spec and is borrowed; only what
+        // the user typed has to be copied out of the submission.
+        let current: Vec<Cow<'static, str>> = match values {
+            Some(values) => {
+                // A *generated* default is what the form itself supplies, so it
+                // is minted again wherever the submission has nothing the user
+                // would recognise as their own. For a hidden field that is
+                // always: nobody typed it, and echoing a rejected token back
+                // would leave the retry failing exactly as the first attempt
+                // did. A literal default stays out of this — it has been on
+                // screen once already, and restoring it would undo a deliberate
+                // clearing.
+                let regenerate = is_generated
+                    && (kind == FieldKind::Hidden
+                        || (!values.contains(full_name) && !control.is_checkable()));
+                if regenerate {
+                    default.into_iter().collect()
+                } else {
+                    // Decided before anything is copied, so the submission a
+                    // regenerated field is about to discard is never collected.
+                    values
+                        .all(full_name)
+                        .map(|value| Cow::Owned(value.to_owned()))
+                        .collect()
+                }
+            }
+            // A checkbox default says whether the box starts checked, not what
+            // to put in a `value` attribute — a box with no value submits "on".
+            None if kind == FieldKind::Checkbox => Vec::new(),
+            None => default.into_iter().collect(),
         };
 
         let choices = control

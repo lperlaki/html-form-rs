@@ -155,6 +155,72 @@ fn defaults_fill_a_blank_form() {
 }
 
 #[test]
+fn a_generated_default_is_produced_afresh_for_every_render() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static ISSUED: AtomicUsize = AtomicUsize::new(0);
+
+    fn ticket() -> String {
+        format!("t{}", ISSUED.fetch_add(1, Ordering::Relaxed))
+    }
+
+    #[derive(WebForm)]
+    struct Booking {
+        #[field(type = "hidden", default = ticket)]
+        ticket: String,
+        seat: Option<u32>,
+    }
+
+    let value = |view: web_form::FormView| view.field("ticket").unwrap().value.clone().unwrap();
+    assert_eq!(value(Booking::render()), "t0");
+    assert_eq!(value(Booking::render()), "t1");
+    // Once per render, not once per field, and only for the field that asked.
+    assert_eq!(ISSUED.load(Ordering::Relaxed), 2);
+    assert_eq!(Booking::render().field("seat").unwrap().value, None);
+}
+
+#[test]
+fn a_generated_default_stands_in_for_what_a_submission_did_not_carry() {
+    // A generator may hand back anything a `Cow<'static, str>` is made from,
+    // so a value that was already around costs nothing to return.
+    fn fresh() -> &'static str {
+        "fresh"
+    }
+
+    #[derive(WebForm)]
+    struct Renewal {
+        #[field(type = "hidden", default = fresh)]
+        token: String,
+        #[field(default = fresh)]
+        reference: String,
+    }
+
+    let render = |body: &str| {
+        Renewal::render_submitted(&web_form::Values::parse(body), &web_form::FormErrors::new())
+    };
+
+    let view = render("token=stale&reference=mine");
+    // Nobody typed the hidden field, so there is nothing of the user's to
+    // preserve: it is the form's own value, minted again rather than echoed.
+    assert_eq!(view.field("token").unwrap().value.as_deref(), Some("fresh"));
+    // A field the user can see keeps what they put in it.
+    assert_eq!(
+        view.field("reference").unwrap().value.as_deref(),
+        Some("mine")
+    );
+
+    // Absent means the form has to supply it; submitted-but-empty means the
+    // user cleared it, and that has to stick.
+    let view = render("");
+    assert_eq!(
+        view.field("reference").unwrap().value.as_deref(),
+        Some("fresh")
+    );
+    let view = render("reference=");
+    assert_eq!(view.field("reference").unwrap().value.as_deref(), Some(""));
+}
+
+#[test]
 fn choices_become_options() {
     let view = Signup::render();
     let plan = view.field("plan").unwrap();
@@ -304,7 +370,7 @@ fn a_view_borrows_what_the_spec_already_holds() {
 
     // What the user typed is the exception: it has to be copied out of the
     // submission, which does not outlive the view.
-    let submitted = Signup::render_with(
+    let submitted = Signup::render_submitted(
         &web_form::Values::parse("email=a@b.com"),
         &web_form::FormErrors::new(),
     );

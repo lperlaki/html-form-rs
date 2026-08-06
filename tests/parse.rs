@@ -187,6 +187,29 @@ fn a_default_applies_when_absent_but_not_when_cleared() {
 }
 
 #[test]
+fn a_generated_default_never_stands_in_while_parsing() {
+    fn issued() -> String {
+        "issued".to_owned()
+    }
+
+    #[derive(WebForm, Debug)]
+    struct Ticket {
+        #[field(type = "hidden", default = issued)]
+        token: String,
+    }
+
+    // Where a literal default is a fallback for an absent field, a generated
+    // one must not be: the form would be answering its own question, and a
+    // submission carrying no token at all would arrive holding a valid one.
+    let errors = Ticket::from_urlencoded("").unwrap_err();
+    assert!(matches!(
+        errors.field("token").next().unwrap().kind,
+        ErrorKind::Required
+    ));
+    assert_eq!(Ticket::from_urlencoded("token=abc").unwrap().token, "abc");
+}
+
+#[test]
 fn an_unchecked_box_is_false_rather_than_missing() {
     #[derive(WebForm)]
     struct Prefs {

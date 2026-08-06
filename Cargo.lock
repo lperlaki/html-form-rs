@@ -514,6 +514,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "web-form",
  "web-form-derive",
 ]
 

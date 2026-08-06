@@ -33,6 +33,7 @@ mod form;
 /// | `name = "e-mail"` | Submitted name; defaults to the field name |
 /// | `required` / `optional` | Overrides the default (required unless `Option`, `Vec` or `bool`) |
 /// | `default = "…"` | Value shown on a blank form |
+/// | `default = path::to::fn` | A default produced once per render — a CSRF token, a nonce — instead of a fixed one |
 /// | `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept` | Validation, enforced in the browser *and* on the server |
 /// | `placeholder`, `help`, `autocomplete`, `id`, `class`, `rows`, `cols` | Presentation |
 /// | `disabled`, `readonly`, `autofocus`, `multiple` | Flags |
@@ -43,6 +44,29 @@ mod form;
 ///
 /// Options can also be listed inline with repeated `#[option("value", "Label")]`
 /// attributes, which additionally accept `group = "…"` and `disabled`.
+///
+/// # Generic forms
+///
+/// A struct with type parameters derives like any other: `SPEC` is an
+/// associated constant, so `<T as WebForm>::SPEC` is resolved per
+/// instantiation. The bounds a field implies — `WebForm` for one that is
+/// flattened, `FormValue` for one that is a value — are added for you, so a
+/// wrapper form needs none written on it:
+///
+/// ```ignore
+/// #[derive(WebForm)]
+/// #[form(method = "post")]
+/// struct WithCsrf<T> {
+///     #[field(type = "hidden", default = session_token, validate = belongs_to_session)]
+///     csrf_token: String,
+///     #[field(flatten)]
+///     inner: T,
+/// }
+/// ```
+///
+/// A flatten splices in the sub-form's *fields*; its `action`, `method` and
+/// submit label belong to its own `<form>` element, so a wrapper declares its
+/// own. See `examples/csrf.rs`.
 ///
 /// # What a `validate` function may return
 ///

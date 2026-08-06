@@ -576,6 +576,12 @@ pub struct FieldSpec {
     /// Pre-filled value for a blank form. Also used when the field is entirely
     /// absent from a submission (but *not* when it is submitted empty, so that
     /// clearing a field keeps working).
+    ///
+    /// This is the *literal* default, the one a spec can hold. The other kind —
+    /// `#[field(default = path)]`, a value the form produces afresh for every
+    /// render — cannot live in a `const`, and is generated instead by
+    /// [`WebForm::generate_defaults`](crate::WebForm::generate_defaults), which
+    /// is also the only thing that may take the render's context.
     pub default: Option<&'static str>,
     pub placeholder: Option<Text>,
     /// Help text rendered next to the control and wired up via `aria-describedby`.
@@ -804,7 +810,7 @@ impl FormSpec {
 
 /// `prefix` and `name` joined, borrowing `name` outright when there is no
 /// prefix to prepend — which is every field of a form that flattens nothing.
-fn join(prefix: &str, name: &'static str) -> Cow<'static, str> {
+pub(crate) fn join(prefix: &str, name: &'static str) -> Cow<'static, str> {
     if prefix.is_empty() {
         return Cow::Borrowed(name);
     }

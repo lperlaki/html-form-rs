@@ -41,6 +41,14 @@
 //! parse it with a multipart crate and go through
 //! [`Values::from_pairs`](crate::Values::from_pairs) and
 //! [`WebForm::submit`](crate::WebForm::submit).
+//!
+//! # Forms that ask for a context
+//!
+//! An extractor has nothing but the request, so [`Outcome<T>`] extracts only a
+//! form whose [`Context`](crate::WebForm::Context) needs no supplying. A form
+//! that wants one is submitted in the handler, where the context is: take the
+//! body with axum's own `Form<Values>` or `Bytes`, then call
+//! [`WebForm::submit_with_context`](crate::WebForm::submit_with_context).
 
 use std::fmt;
 
@@ -49,7 +57,7 @@ use axum_core::response::{IntoResponse, Response};
 use bytes::Bytes;
 use http::{Method, StatusCode, header};
 
-use crate::{Outcome, Values, WebForm};
+use crate::{EmptyContext, Outcome, Values, WebForm};
 
 /// Why there was no submission to validate.
 ///
@@ -104,7 +112,10 @@ impl IntoResponse for FormRejection {
 
 impl<T, S> FromRequest<S> for Outcome<T>
 where
-    T: WebForm + Send,
+    // An extractor has nothing but the request, so it can only submit a form
+    // that asks for no context of its own. One that does is submitted in the
+    // handler, where the context is — see `submit_with_context`.
+    T: WebForm<Context: EmptyContext> + Send,
     S: Send + Sync,
 {
     type Rejection = FormRejection;
