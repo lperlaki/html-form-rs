@@ -21,7 +21,7 @@ mod form;
 /// | `enctype = "multipart/form-data"` | Encoding, e.g. for file uploads |
 /// | `novalidate` | Suppress the browser's own validation |
 /// | `submit = "Create account"` | Caption of the built-in submit button |
-/// | `validate = path::to::fn` | Cross-field check, `fn(&Self) -> Result<(), E>` |
+/// | `validate = path::to::fn` | Cross-field check, `fn(&Self) -> bool` or `-> Result<(), E>` |
 ///
 /// # Field attributes — `#[field(...)]`
 ///
@@ -37,12 +37,21 @@ mod form;
 /// | `placeholder`, `help`, `autocomplete`, `id`, `class`, `rows`, `cols` | Presentation |
 /// | `disabled`, `readonly`, `autofocus`, `multiple` | Flags |
 /// | `choices = SOME_CONST` | A `&'static [Choice]` of options |
-/// | `validate = path::to::fn` | Per-field check, `fn(&FieldType) -> Result<(), E>` |
+/// | `validate = path::to::fn` | Per-field check, `fn(&FieldType) -> bool` or `-> Result<(), E>` |
 /// | `flatten` (+ `prefix`, `legend`) | Splice another form in |
 /// | `skip` | Leave the field out of the form; filled with `Default::default()` |
 ///
 /// Options can also be listed inline with repeated `#[option("value", "Label")]`
 /// attributes, which additionally accept `group = "…"` and `disabled`.
+///
+/// # What a `validate` function may return
+///
+/// A `bool`, or a `Result` whose error is anything that becomes a message: a
+/// `&'static str`, a `String`, a `Text` (so an i18n key), or a `FieldError`.
+/// A `#[form(validate = ...)]` function may additionally return a
+/// `(field, message)` pair or a whole `FormErrors`, so a cross-field check can
+/// blame the field the user has to change. See `web_form::FieldValidation` and
+/// `web_form::FormValidation`.
 ///
 /// # Attributes that do not apply
 ///

@@ -63,12 +63,52 @@
 //! assert!(signup.newsletter);
 //! ```
 //!
+//! # Checks the markup cannot express
+//!
+//! `validate = ...` names a function run after everything the spec could check
+//! — per field with `#[field(...)]`, or once over the assembled struct with
+//! `#[form(...)]`. A predicate is enough when the built-in message will do;
+//! return a `Result` to say more. See [`FieldValidation`] and
+//! [`FormValidation`] for every shape either one may return.
+//!
+//! ```
+//! use web_form::{FormErrors, WebForm};
+//!
+//! #[derive(WebForm, Debug)]
+//! #[form(validate = passwords_match)]
+//! struct Signup {
+//!     #[field(validate = is_available)]
+//!     username: String,
+//!     #[field(type = "password")]
+//!     password: String,
+//!     #[field(type = "password")]
+//!     confirm: String,
+//! }
+//!
+//! fn is_available(name: &String) -> bool {
+//!     name != "admin"
+//! }
+//!
+//! fn passwords_match(form: &Signup) -> Result<(), FormErrors> {
+//!     if form.password == form.confirm {
+//!         Ok(())
+//!     } else {
+//!         // Attached to the field that can be corrected, not to the form.
+//!         Err(("confirm", "The two passwords do not match.").into())
+//!     }
+//! }
+//!
+//! let errors =
+//!     Signup::from_urlencoded("username=admin&password=a&confirm=b").unwrap_err();
+//! assert!(errors.has_field("username") && errors.has_field("confirm"));
+//! ```
+//!
 //! # Localisation
 //!
 //! Any string a person reads — a label, help text, a placeholder, a legend, an
-//! option's label — can be written as `t("key")` instead of as text. The crate
-//! resolves nothing itself; hand [`FormView::localize`] a lookup, or read the
-//! `…_key` companion field and translate in the template.
+//! option's label, an error message — can be written as `t("key")` instead of
+//! as text. The crate resolves nothing itself; hand [`FormView::localize`] a
+//! lookup, or read the `…_key` companion field and translate in the template.
 //!
 //! ```
 //! use web_form::WebForm;
@@ -94,6 +134,41 @@
 //!
 //! A key nothing recognises is left in place — the view shows the key itself,
 //! which is a visible bug rather than a silently blank label.
+//!
+//! A `validate = ...` function localises the same way: return a [`Text::key`]
+//! and the message is resolved with everything else. The key doubles as the
+//! error's [code](ErrorKind::Custom), so a caller that would rather build its
+//! own message can match on that instead.
+//!
+//! ```
+//! use web_form::{Outcome, Text, WebForm};
+//!
+//! #[derive(WebForm)]
+//! struct Signup {
+//!     #[field(label = "Username", validate = is_available)]
+//!     username: String,
+//! }
+//!
+//! fn is_available(name: &String) -> Result<(), Text> {
+//!     match name.as_str() {
+//!         "admin" => Err(Text::key("signup.username.taken")),
+//!         _ => Ok(()),
+//!     }
+//! }
+//!
+//! let Outcome::Invalid { errors, view } = Signup::submit_urlencoded("username=admin") else {
+//!     panic!("expected the reserved name to be rejected");
+//! };
+//! assert_eq!(errors.field("username").next().unwrap().code(), Some("signup.username.taken"));
+//!
+//! let view = view.localized(|key| (key == "signup.username.taken").then_some("Schon vergeben."));
+//! assert_eq!(view.field("username").unwrap().errors[0], "Schon vergeben.");
+//! ```
+//!
+//! The messages of the *built-in* checks are English, and deliberately not
+//! keyed: every [`ErrorKind`] carries the constraint it was violating, so a
+//! caller that needs them translated matches on the kind and writes its own —
+//! there is no key to guess at, and no message table to keep in step.
 //!
 //! # Reuse: flattening one form into another
 //!
@@ -236,6 +311,7 @@ pub use spec::{
     Flattened, FormEncType, FormMethod, FormSpec, NumberControl, NumberFormat, ResolvedField,
     TemporalControl, TemporalFormat, Text, TextControl, TextFormat, TextareaControl,
 };
+pub use validate::{FieldValidation, FormValidation};
 pub use value::FormValue;
 pub use values::Values;
 pub use view::{AttrView, ChoiceView, FieldView, FormView, escape};

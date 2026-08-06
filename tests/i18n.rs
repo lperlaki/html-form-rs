@@ -212,6 +212,100 @@ fn the_keys_serialise_for_a_template_that_would_rather_translate_itself() {
 }
 
 #[test]
+fn a_validators_message_can_be_a_key_like_any_other_string() {
+    #[derive(WebForm, Debug)]
+    #[form(validate = one_of_each)]
+    struct Order {
+        #[field(label = "Quantity", validate = in_stock)]
+        quantity: u32,
+    }
+
+    fn in_stock(quantity: &u32) -> Result<(), Text> {
+        (*quantity <= 3)
+            .then_some(())
+            .ok_or_else(|| Text::key("order.quantity.stock"))
+    }
+
+    fn one_of_each(order: &Order) -> Result<(), Text> {
+        (order.quantity > 0)
+            .then_some(())
+            .ok_or_else(|| Text::key("order.empty"))
+    }
+
+    let translate = |key: &str| match key {
+        "order.quantity.stock" => Some("So viele haben wir nicht."),
+        "order.empty" => Some("Die Bestellung ist leer."),
+        _ => None,
+    };
+
+    let Outcome::Invalid { view, errors } = Order::submit_urlencoded("quantity=9") else {
+        panic!("expected the quantity to be rejected");
+    };
+
+    // Unresolved, the key is what the message reads as — and it travels
+    // alongside, the way a label's does.
+    let quantity = view.field("quantity").unwrap();
+    assert_eq!(quantity.errors[0], "order.quantity.stock");
+    assert_eq!(
+        quantity.error_keys[0].as_deref(),
+        Some("order.quantity.stock")
+    );
+    // The typed error carries it too, as the code a caller can match on.
+    assert_eq!(
+        errors.field("quantity").next().unwrap().code(),
+        Some("order.quantity.stock")
+    );
+
+    let view = view.localized(translate);
+    let quantity = view.field("quantity").unwrap();
+    assert_eq!(quantity.errors[0], "So viele haben wir nicht.");
+    assert_eq!(quantity.error_keys[0], None);
+    assert!(
+        view.to_html()
+            .contains("<li>So viele haben wir nicht.</li>")
+    );
+
+    // Form-level messages are localised the same way.
+    let Outcome::Invalid { view, .. } = Order::submit_urlencoded("quantity=0") else {
+        panic!("expected the empty order to be rejected");
+    };
+    let view = view.localized(translate);
+    assert_eq!(view.errors[0], "Die Bestellung ist leer.");
+    assert_eq!(view.error_keys[0], None);
+}
+
+#[test]
+fn a_built_in_message_is_text_and_stays_that_way() {
+    let Outcome::Invalid { view, .. } = Signup::submit_urlencoded("email=nope") else {
+        panic!("expected the bad address to be rejected");
+    };
+    let email = view.field("email").unwrap();
+
+    // Nothing to resolve: the built-in messages are English text, and a caller
+    // who needs them translated matches on the `ErrorKind` instead.
+    assert_eq!(email.errors.len(), 1);
+    assert_eq!(email.error_keys, [None]);
+}
+
+#[test]
+fn an_error_added_to_a_view_after_the_fact_can_be_keyed_too() {
+    let mut view = Signup::render();
+    view.add_field_error("email", Text::key("signup.email.taken"));
+    view.add_error("signup.busy"); // a plain string is text, not a key
+
+    view.localize(|key| match key {
+        "signup.email.taken" => Some("Diese Adresse ist vergeben."),
+        "signup.busy" => Some("nicht übersetzt"),
+        _ => None,
+    });
+
+    let email = view.field("email").unwrap();
+    assert_eq!(email.errors[0], "Diese Adresse ist vergeben.");
+    assert!(email.has_errors && view.has_errors);
+    assert_eq!(view.errors[0], "signup.busy");
+}
+
+#[test]
 fn localizing_a_re_render_keeps_both_the_values_and_the_translations() {
     let outcome = Signup::submit_urlencoded("email=nope&country=de");
     let Outcome::Invalid { view, .. } = outcome else {

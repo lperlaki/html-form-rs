@@ -1,9 +1,12 @@
-//! Server-side re-checking of the HTML validation attributes.
+//! Server-side re-checking of the HTML validation attributes, and the shapes a
+//! `validate = ...` function is allowed to return.
 //!
 //! Everything the markup asks the browser to enforce is enforced again here,
-//! because a submission can come from anywhere.
+//! because a submission can come from anywhere. What the markup *cannot* ask
+//! for is a `validate = ...` function, whose return value reaches the parse
+//! through [`FieldValidation`] or [`FormValidation`].
 
-use crate::error::{ErrorKind, FieldError};
+use crate::error::{ErrorKind, FieldError, FormErrors};
 use crate::spec::{Bounds, Control, FieldSpec, TemporalFormat, TextFormat};
 
 /// Check one non-blank submitted value against a field's constraints.
@@ -433,4 +436,111 @@ mod format {
 /// The error produced for a required field that arrived missing or blank.
 pub fn required_error(_spec: &FieldSpec) -> FieldError {
     FieldError::new(ErrorKind::Required)
+}
+
+// ─── What a `validate = ...` function may return ──────────────────────────────
+
+/// What a `#[field(validate = ...)]` function may return.
+///
+/// Whichever shape the function has, the check runs against the field's own
+/// Rust type — `Option<T>` and `Vec<T>` included — and only after the value
+/// has survived the constraints in the spec.
+///
+/// | Return type | Rejects when | Message |
+/// |---|---|---|
+/// | `bool` | `false` | the built-in one for [`ErrorKind::Custom`] |
+/// | `Result<(), &'static str \| String \| Cow>` | `Err` | the text returned |
+/// | `Result<(), Text>` | `Err` | the text — or the i18n key — returned |
+/// | `Result<(), FieldError>` | `Err` | whatever the error carries |
+///
+/// ```
+/// use web_form::{Text, WebForm};
+///
+/// #[derive(WebForm, Debug)]
+/// struct Signup {
+///     // The shortest form: a predicate, and the built-in message.
+///     #[field(validate = is_even)]
+///     seats: u32,
+///     // A key, which the error carries as its message *and* as its code.
+///     #[field(validate = not_reserved)]
+///     username: String,
+/// }
+///
+/// fn is_even(seats: &u32) -> bool {
+///     seats % 2 == 0
+/// }
+///
+/// fn not_reserved(name: &String) -> Result<(), Text> {
+///     match name.as_str() {
+///         "admin" => Err(Text::key("signup.username.reserved")),
+///         _ => Ok(()),
+///     }
+/// }
+///
+/// let errors = Signup::from_urlencoded("seats=3&username=admin").unwrap_err();
+/// assert_eq!(errors.field("seats").next().unwrap().message.as_str(), "This value is not valid.");
+/// assert_eq!(errors.field("username").next().unwrap().code(), Some("signup.username.reserved"));
+/// ```
+pub trait FieldValidation {
+    /// The error to attach to the field, or `None` when the value passed.
+    fn into_field_error(self) -> Option<FieldError>;
+}
+
+impl FieldValidation for bool {
+    /// A predicate says only whether the value is acceptable, so a rejection
+    /// carries the built-in message and no code.
+    fn into_field_error(self) -> Option<FieldError> {
+        (!self).then(|| FieldError::new(ErrorKind::Custom { code: None }))
+    }
+}
+
+impl<E: Into<FieldError>> FieldValidation for Result<(), E> {
+    fn into_field_error(self) -> Option<FieldError> {
+        self.err().map(Into::into)
+    }
+}
+
+/// What a `#[form(validate = ...)]` function may return.
+///
+/// The same shapes as [`FieldValidation`], plus the ones that name a field:
+/// a `(field, message)` pair, or a whole [`FormErrors`] built by the function
+/// itself. A message that names no field belongs to the form as a whole.
+///
+/// ```
+/// use web_form::{FormErrors, WebForm};
+///
+/// #[derive(WebForm, Debug)]
+/// #[form(validate = passwords_match)]
+/// struct Signup {
+///     password: String,
+///     confirm: String,
+/// }
+///
+/// fn passwords_match(form: &Signup) -> Result<(), FormErrors> {
+///     if form.password == form.confirm {
+///         Ok(())
+///     } else {
+///         // Attached to the field that can be corrected, not to the form.
+///         Err(("confirm", "The two passwords do not match.").into())
+///     }
+/// }
+///
+/// let errors = Signup::from_urlencoded("password=a&confirm=b").unwrap_err();
+/// assert!(errors.has_field("confirm"));
+/// ```
+pub trait FormValidation {
+    /// The errors to fold into the parse, or `None` when the form passed.
+    fn into_form_errors(self) -> Option<FormErrors>;
+}
+
+impl FormValidation for bool {
+    fn into_form_errors(self) -> Option<FormErrors> {
+        (!self).then(|| FieldError::new(ErrorKind::Custom { code: None }).into())
+    }
+}
+
+impl<E: Into<FormErrors>> FormValidation for Result<(), E> {
+    fn into_form_errors(self) -> Option<FormErrors> {
+        self.err().map(Into::into)
+    }
 }

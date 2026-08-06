@@ -10,6 +10,8 @@ use std::fmt;
 
 use serde::{Serialize, Serializer};
 
+use crate::spec::Text;
+
 /// Why a value was rejected.
 ///
 /// The variants carry the constraint that was violated so callers can render
@@ -37,7 +39,17 @@ pub enum ErrorKind {
     NotAChoice,
     /// Produced by a `#[field(validate = ...)]` or `#[form(validate = ...)]`
     /// function.
-    Custom,
+    ///
+    /// Unlike the other kinds there is no constraint to carry, so `code` is
+    /// what a caller matches on to tell one custom rejection from another —
+    /// and to render a message of its own for it. It is set from the i18n key
+    /// when the validator returned one (the key doubles as the code), or named
+    /// outright with [`FieldError::coded`]; a validator that returned nothing
+    /// but a message or a `false` leaves it `None`.
+    Custom {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<Cow<'static, str>>,
+    },
 }
 
 impl ErrorKind {
@@ -73,7 +85,7 @@ impl ErrorKind {
             ErrorKind::TooLarge { max } => format!("Must be {max} or earlier.").into(),
             ErrorKind::Step { step } => format!("Must be a multiple of {step}.").into(),
             ErrorKind::NotAChoice => "Select one of the available options.".into(),
-            ErrorKind::Custom => "This value is not valid.".into(),
+            ErrorKind::Custom { .. } => "This value is not valid.".into(),
         }
     }
 }
@@ -90,18 +102,22 @@ fn plural(n: usize) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FieldError {
     pub kind: ErrorKind,
-    pub message: Cow<'static, str>,
+    /// What to show the person who submitted the form: literal text, or an
+    /// i18n key like every other person-facing string in the crate. A key is
+    /// resolved by [`FormView::localize`](crate::FormView::localize) along with
+    /// the labels, or left in place to be translated from the view.
+    pub message: Text,
 }
 
 impl FieldError {
     /// An error carrying the built-in message for its kind.
     pub fn new(kind: ErrorKind) -> Self {
-        let message = kind.default_message();
+        let message = kind.default_message().into();
         Self { kind, message }
     }
 
     /// An error with a caller-supplied message.
-    pub fn with_message(kind: ErrorKind, message: impl Into<Cow<'static, str>>) -> Self {
+    pub fn with_message(kind: ErrorKind, message: impl Into<Text>) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -109,20 +125,82 @@ impl FieldError {
     }
 
     /// The error a `validate = ...` function produces.
-    pub fn custom(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::with_message(ErrorKind::Custom, message)
+    ///
+    /// A message written as an i18n key doubles as the error's
+    /// [code](ErrorKind::Custom): a validator that returns
+    /// `Err(Text::key("signup.username.reserved"))` produces an error a caller
+    /// can both translate and match on.
+    pub fn custom(message: impl Into<Text>) -> Self {
+        let message = message.into();
+        let code = message.is_key.then(|| message.content.clone());
+        Self {
+            kind: ErrorKind::Custom { code },
+            message,
+        }
+    }
+
+    /// A custom error whose code is not its message — for a validator that
+    /// wants a stable name for what went wrong *and* a message that reads
+    /// well on its own.
+    pub fn coded(code: impl Into<Cow<'static, str>>, message: impl Into<Text>) -> Self {
+        Self::with_message(
+            ErrorKind::Custom {
+                code: Some(code.into()),
+            },
+            message,
+        )
     }
 
     /// Replace the message, keeping the kind.
-    pub fn message(mut self, message: impl Into<Cow<'static, str>>) -> Self {
+    pub fn message(mut self, message: impl Into<Text>) -> Self {
         self.message = message.into();
         self
+    }
+
+    /// The code of a custom error, or `None` for every other kind — those are
+    /// told apart by the [`ErrorKind`] itself.
+    pub fn code(&self) -> Option<&str> {
+        match &self.kind {
+            ErrorKind::Custom { code } => code.as_deref(),
+            _ => None,
+        }
     }
 }
 
 impl fmt::Display for FieldError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
+        f.write_str(self.message.as_str())
+    }
+}
+
+impl From<ErrorKind> for FieldError {
+    fn from(kind: ErrorKind) -> Self {
+        FieldError::new(kind)
+    }
+}
+
+impl From<Text> for FieldError {
+    /// A custom error, keyed or not — see [`FieldError::custom`].
+    fn from(message: Text) -> Self {
+        FieldError::custom(message)
+    }
+}
+
+impl From<&'static str> for FieldError {
+    fn from(message: &'static str) -> Self {
+        FieldError::custom(message)
+    }
+}
+
+impl From<String> for FieldError {
+    fn from(message: String) -> Self {
+        FieldError::custom(message)
+    }
+}
+
+impl From<Cow<'static, str>> for FieldError {
+    fn from(message: Cow<'static, str>) -> Self {
+        FieldError::custom(message)
     }
 }
 
@@ -172,16 +250,12 @@ impl FormErrors {
     }
 
     /// Convenience for the common cross-field case.
-    pub fn reject(&mut self, message: impl Into<Cow<'static, str>>) {
+    pub fn reject(&mut self, message: impl Into<Text>) {
         self.push_form(FieldError::custom(message));
     }
 
     /// Convenience for rejecting one field with a custom message.
-    pub fn reject_field(
-        &mut self,
-        field: impl Into<Cow<'static, str>>,
-        message: impl Into<Cow<'static, str>>,
-    ) {
+    pub fn reject_field(&mut self, field: impl Into<Cow<'static, str>>, message: impl Into<Text>) {
         self.push(field, FieldError::custom(message));
     }
 
@@ -234,14 +308,17 @@ impl FormErrors {
     }
 
     /// All errors as `(field name, message)`, form-level ones under `None`.
+    ///
+    /// A message that is still an i18n key is handed back as the key, which is
+    /// also what it renders as until something resolves it.
     pub fn messages(&self) -> Vec<(Option<&str>, &str)> {
         self.form
             .iter()
-            .map(|e| (None, e.message.as_ref()))
+            .map(|e| (None, e.message.as_str()))
             .chain(
                 self.fields
                     .iter()
-                    .map(|(k, e)| (Some(k.as_ref()), e.message.as_ref())),
+                    .map(|(k, e)| (Some(k.as_ref()), e.message.as_str())),
             )
             .collect()
     }
@@ -269,7 +346,20 @@ impl From<&'static str> for FormErrors {
     }
 }
 
-impl<F: Into<Cow<'static, str>>, M: Into<Cow<'static, str>>> From<(F, M)> for FormErrors {
+impl From<Cow<'static, str>> for FormErrors {
+    fn from(message: Cow<'static, str>) -> Self {
+        FieldError::custom(message).into()
+    }
+}
+
+impl From<Text> for FormErrors {
+    /// A form-level message that may be an i18n key: `Err(t("signup.mismatch"))`.
+    fn from(message: Text) -> Self {
+        FieldError::custom(message).into()
+    }
+}
+
+impl<F: Into<Cow<'static, str>>, M: Into<Text>> From<(F, M)> for FormErrors {
     /// Shorthand for rejecting one named field: `Err(("password", "…"))`.
     fn from((field, message): (F, M)) -> Self {
         let mut errors = FormErrors::new();
@@ -315,10 +405,10 @@ impl Serialize for FormErrors {
             fields
                 .entry(name.as_ref())
                 .or_default()
-                .push(error.message.as_ref());
+                .push(error.message.as_str());
         }
         Repr {
-            form: self.form.iter().map(|e| e.message.as_ref()).collect(),
+            form: self.form.iter().map(|e| e.message.as_str()).collect(),
             fields,
         }
         .serialize(serializer)

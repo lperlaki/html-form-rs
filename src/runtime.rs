@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use crate::WebForm;
 use crate::error::{FieldError, FormErrors};
 use crate::spec::{FieldSpec, Flattened};
-use crate::validate;
+use crate::validate::{self, FieldValidation, FormValidation};
 use crate::value::FormValue;
 use crate::values::{Values, is_blank};
 
@@ -219,30 +219,29 @@ impl<'a> ParseCtx<'a> {
     }
 
     /// Run a `#[field(validate = ...)]` function against a parsed value.
-    pub fn check_custom<T, E>(
+    ///
+    /// The function may return a `bool` or any `Result` whose error becomes a
+    /// message — see [`FieldValidation`].
+    pub fn check_custom<T, V: FieldValidation>(
         &mut self,
         spec: &FieldSpec,
         value: &T,
-        validator: impl Fn(&T) -> Result<(), E>,
-    ) where
-        E: Into<Cow<'static, str>>,
-    {
-        if let Err(message) = validator(value) {
+        validator: impl Fn(&T) -> V,
+    ) {
+        if let Some(error) = validator(value).into_field_error() {
             let full = self.full_name(spec.name);
-            self.errors.push(full, FieldError::custom(message));
+            self.errors.push(full, error);
         }
     }
 
     /// Run a `#[form(validate = ...)]` function against the assembled struct.
     ///
-    /// The function may return anything convertible to [`FormErrors`]: a
-    /// message, a `(field, message)` pair, or a full error set.
-    pub fn check_form<T, E>(&mut self, value: &T, validator: impl Fn(&T) -> Result<(), E>)
-    where
-        E: Into<FormErrors>,
-    {
-        if let Err(errors) = validator(value) {
-            self.merge_errors(errors.into());
+    /// As well as a `bool`, the function may return anything convertible to
+    /// [`FormErrors`]: a message, a `(field, message)` pair, or a full error
+    /// set — see [`FormValidation`].
+    pub fn check_form<T, V: FormValidation>(&mut self, value: &T, validator: impl Fn(&T) -> V) {
+        if let Some(errors) = validator(value).into_form_errors() {
+            self.merge_errors(errors);
         }
     }
 

@@ -15,6 +15,11 @@
 //! something either way. Resolve them with [`FormView::localize`], or let the
 //! template do it from the key.
 //!
+//! Error messages are a *list* of strings, so their keys are a list too:
+//! `error_keys[i]` belongs to `errors[i]`, and the two are always the same
+//! length. A template that just prints the messages needs to know nothing
+//! about it.
+//!
 //! # Why every string here is a `Cow`
 //!
 //! Nearly everything in a view was copied out of a [`FormSpec`], where it is
@@ -33,7 +38,7 @@ use std::fmt::{self, Write as _};
 
 use serde::Serialize;
 
-use crate::error::FormErrors;
+use crate::error::{FieldError, FormErrors};
 use crate::kind::FieldKind;
 use crate::spec::{Attr, Choice, FormEncType, FormMethod, FormSpec, Text, sanitize_id};
 use crate::values::Values;
@@ -51,6 +56,20 @@ fn split(text: Option<&Text>) -> (Option<Cow<'static, str>>, Option<Cow<'static,
     }
 }
 
+/// A [`Text`] taken apart the same way, by value.
+fn parts(text: Text) -> (Cow<'static, str>, Option<Cow<'static, str>>) {
+    let key = text.is_key.then(|| text.content.clone());
+    (text.content, key)
+}
+
+/// The messages of a set of errors, split into what to show now and the keys
+/// still waiting to be resolved — the two index-aligned lists a view carries.
+fn split_messages<'a>(
+    errors: impl Iterator<Item = &'a FieldError>,
+) -> (Vec<Cow<'static, str>>, Vec<Option<Cow<'static, str>>>) {
+    errors.map(|error| parts(error.message.clone())).unzip()
+}
+
 /// Look one key up, and drop it once it has been resolved so that nothing
 /// downstream translates it twice. An unrecognised key is left in place, key and
 /// all: showing `signup.email.label` is a bug a reader can report.
@@ -64,6 +83,30 @@ fn resolve(
     };
     *text = Some(found);
     *key = None;
+}
+
+/// [`resolve`], for a string that is always there to be replaced.
+fn resolve_str(
+    text: &mut Cow<'static, str>,
+    key: &mut Option<Cow<'static, str>>,
+    translate: &Translate<'_>,
+) {
+    let Some(found) = key.as_deref().and_then(translate) else {
+        return;
+    };
+    *text = found;
+    *key = None;
+}
+
+/// Resolve a list of messages against its list of keys, in step.
+fn resolve_messages(
+    messages: &mut [Cow<'static, str>],
+    keys: &mut [Option<Cow<'static, str>>],
+    translate: &Translate<'_>,
+) {
+    for (message, key) in messages.iter_mut().zip(keys) {
+        resolve_str(message, key, translate);
+    }
 }
 
 /// The erased form of the translation function, so the recursive walk down to
@@ -89,6 +132,9 @@ pub struct FormView {
     pub attrs: Vec<AttrView>,
     /// Errors that belong to the form as a whole rather than to one field.
     pub errors: Vec<Cow<'static, str>>,
+    /// One entry per [`FormView::errors`] message — same length, same order —
+    /// set while that message is still an unresolved i18n key.
+    pub error_keys: Vec<Option<Cow<'static, str>>>,
     /// True when the form or any of its fields has an error.
     pub has_errors: bool,
     pub fields: Vec<FieldView>,
@@ -145,6 +191,9 @@ pub struct FieldView {
     pub choices: Vec<ChoiceView>,
     /// Messages to show under the control.
     pub errors: Vec<Cow<'static, str>>,
+    /// One entry per [`FieldView::errors`] message — same length, same order —
+    /// set while that message is still an unresolved i18n key.
+    pub error_keys: Vec<Option<Cow<'static, str>>>,
     pub has_errors: bool,
     /// Legend of the flattened group this field belongs to, if any.
     pub group: Option<Cow<'static, str>>,
@@ -203,9 +252,7 @@ impl ChoiceView {
     }
 
     fn localize_in(&mut self, translate: &Translate<'_>) {
-        let mut label = Some(std::mem::take(&mut self.label));
-        resolve(&mut label, &mut self.label_key, translate);
-        self.label = label.unwrap_or_default();
+        resolve_str(&mut self.label, &mut self.label_key, translate);
         resolve(&mut self.group, &mut self.group_key, translate);
     }
 }
@@ -246,11 +293,7 @@ impl FormView {
             ));
         });
 
-        let form_errors: Vec<Cow<'static, str>> = errors
-            .form_errors()
-            .iter()
-            .map(|e| e.message.clone())
-            .collect();
+        let (form_errors, form_error_keys) = split_messages(errors.form_errors().iter());
 
         let (submit_label, submit_label_key) = split(spec.submit_label.as_ref());
 
@@ -267,6 +310,7 @@ impl FormView {
             attrs: AttrView::build(spec.attrs),
             has_errors: !form_errors.is_empty() || fields.iter().any(|f| f.has_errors),
             errors: form_errors,
+            error_keys: form_error_keys,
             fields,
         }
     }
@@ -312,9 +356,12 @@ impl FormView {
     }
 
     fn localize_in(&mut self, translate: &Translate<'_>) {
-        let mut label = Some(std::mem::take(&mut self.submit_label));
-        resolve(&mut label, &mut self.submit_label_key, translate);
-        self.submit_label = label.unwrap_or_default();
+        resolve_str(
+            &mut self.submit_label,
+            &mut self.submit_label_key,
+            translate,
+        );
+        resolve_messages(&mut self.errors, &mut self.error_keys, translate);
         for field in &mut self.fields {
             field.localize_in(translate);
         }
@@ -334,8 +381,11 @@ impl FormView {
     /// Attach an error to a field after the fact, e.g. a uniqueness violation
     /// only the database could detect.
     ///
+    /// The message may be a [`Text::key`](crate::Text::key), which a later
+    /// [`localize`](FormView::localize) resolves like any other.
+    ///
     /// Returns `false` if no such field exists.
-    pub fn add_field_error(&mut self, name: &str, message: impl Into<Cow<'static, str>>) -> bool {
+    pub fn add_field_error(&mut self, name: &str, message: impl Into<Text>) -> bool {
         match self.field_mut(name) {
             Some(field) => {
                 field.add_error(message);
@@ -353,9 +403,11 @@ impl FormView {
         set_attr(&mut self.attrs, name.into(), value);
     }
 
-    /// Attach a form-level error.
-    pub fn add_error(&mut self, message: impl Into<Cow<'static, str>>) {
-        self.errors.push(message.into());
+    /// Attach a form-level error, as text or as an i18n key.
+    pub fn add_error(&mut self, message: impl Into<Text>) {
+        let (message, key) = parts(message.into());
+        self.errors.push(message);
+        self.error_keys.push(key);
         self.has_errors = true;
     }
 
@@ -504,8 +556,7 @@ impl FieldView {
             })
             .collect();
 
-        let messages: Vec<Cow<'static, str>> =
-            errors.field(full_name).map(|e| e.message.clone()).collect();
+        let (messages, message_keys) = split_messages(errors.field(full_name));
 
         let base = sanitize_id(full_name);
         let id = spec.id_for(full_name);
@@ -553,6 +604,7 @@ impl FieldView {
             choices,
             has_errors: !messages.is_empty(),
             errors: messages,
+            error_keys: message_keys,
             group,
             group_key,
         }
@@ -573,6 +625,7 @@ impl FieldView {
         resolve(&mut self.help, &mut self.help_key, translate);
         resolve(&mut self.placeholder, &mut self.placeholder_key, translate);
         resolve(&mut self.group, &mut self.group_key, translate);
+        resolve_messages(&mut self.errors, &mut self.error_keys, translate);
         for choice in &mut self.choices {
             choice.localize_in(translate);
         }
@@ -621,9 +674,11 @@ impl FieldView {
         set_attr(&mut self.attrs, name.into(), value);
     }
 
-    /// Attach another error message to this field.
-    pub fn add_error(&mut self, message: impl Into<Cow<'static, str>>) {
-        self.errors.push(message.into());
+    /// Attach another error message to this field, as text or as an i18n key.
+    pub fn add_error(&mut self, message: impl Into<Text>) {
+        let (message, key) = parts(message.into());
+        self.errors.push(message);
+        self.error_keys.push(key);
         self.has_errors = true;
     }
 

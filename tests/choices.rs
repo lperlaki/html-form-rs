@@ -238,7 +238,7 @@ fn a_custom_form_value_plugs_straight_in() {
 
     let errors = Article::from_urlencoded("slug=Hello_World").unwrap_err();
     assert_eq!(
-        errors.field("slug").next().unwrap().message,
+        errors.field("slug").next().unwrap().message.as_str(),
         "Enter lowercase letters and dashes."
     );
 }

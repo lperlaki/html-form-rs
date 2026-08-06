@@ -31,6 +31,8 @@
 
 use std::borrow::Cow;
 
+use serde::{Serialize, Serializer};
+
 use crate::FieldKind;
 
 /// A custom attribute, rendered onto the `<form>` or the control as written.
@@ -135,6 +137,25 @@ impl From<&'static str> for Text {
 impl From<String> for Text {
     fn from(text: String) -> Self {
         Text::owned(text)
+    }
+}
+
+impl From<Cow<'static, str>> for Text {
+    fn from(text: Cow<'static, str>) -> Self {
+        Self {
+            content: text,
+            is_key: false,
+        }
+    }
+}
+
+impl Serialize for Text {
+    /// Serialised as the string it holds, so a template renders something
+    /// whether or not the key has been resolved — the same bargain
+    /// [`FormView`](crate::FormView) strikes, where the key travels in a
+    /// companion field rather than in place of the text.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.content)
     }
 }
 

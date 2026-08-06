@@ -5,7 +5,7 @@
 
 use std::borrow::Cow;
 
-use web_form::{ErrorKind, FormErrors, Outcome, Values, WebForm};
+use web_form::{ErrorKind, FieldError, FormErrors, Outcome, Text, Values, WebForm};
 
 #[derive(WebForm, Debug)]
 #[form(validate = passwords_match)]
@@ -94,7 +94,7 @@ fn every_error_is_collected_in_one_pass() {
     assert!(matches!(kinds[0], ("email", ErrorKind::Invalid { .. })));
     assert!(matches!(kinds[1], ("password", ErrorKind::TooShort { .. })));
     assert!(matches!(kinds[2], ("age", ErrorKind::TooSmall { .. })));
-    assert!(matches!(kinds[3], ("username", ErrorKind::Custom)));
+    assert!(matches!(kinds[3], ("username", ErrorKind::Custom { .. })));
     assert!(matches!(kinds[4], ("accept_terms", ErrorKind::Required)));
     assert!(matches!(kinds[5], ("languages", ErrorKind::NotAChoice)));
 
@@ -126,7 +126,7 @@ fn the_form_level_validator_runs_once_the_struct_is_assembled() {
 
     assert_eq!(errors.len(), 1);
     assert_eq!(
-        errors.field("confirm").next().unwrap().message,
+        errors.field("confirm").next().unwrap().message.as_str(),
         "The two passwords do not match."
     );
 }
@@ -138,7 +138,7 @@ fn a_type_error_reports_what_was_expected() {
 
     let error = errors.field("age").next().unwrap();
     assert!(matches!(&error.kind, ErrorKind::Invalid { expected } if expected == "a whole number"));
-    assert_eq!(error.message, "Enter a whole number.");
+    assert_eq!(error.message.as_str(), "Enter a whole number.");
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn an_out_of_range_integer_says_so_instead_of_just_not_a_number() {
 
     let errors = Small::from_urlencoded("count=300").unwrap_err();
     assert_eq!(
-        errors.field("count").next().unwrap().message,
+        errors.field("count").next().unwrap().message.as_str(),
         "Enter a whole number between 0 and 255."
     );
 }
@@ -244,6 +244,95 @@ fn dates_compare_chronologically() {
     assert!(matches!(
         errors.field("day").next().unwrap().kind,
         ErrorKind::TooSmall { .. }
+    ));
+}
+
+// ─── What a `validate = ...` function may return ──────────────────────────────
+
+#[derive(WebForm, Debug)]
+#[form(validate = seats_fit_the_table)]
+struct Booking {
+    #[field(validate = is_even)]
+    seats: u32,
+
+    #[field(validate = not_reserved_room)]
+    room: String,
+
+    #[field(validate = is_upstairs, optional)]
+    floor: String,
+}
+
+/// The shortest form: a predicate, with the built-in message.
+fn is_even(seats: &u32) -> bool {
+    seats.is_multiple_of(2)
+}
+
+/// A key, which becomes both the message and the code.
+fn not_reserved_room(room: &String) -> Result<(), Text> {
+    if room == "boardroom" {
+        Err(Text::key("booking.room.reserved"))
+    } else {
+        Ok(())
+    }
+}
+
+/// A code that is not the message, for a caller that wants both.
+fn is_upstairs(floor: &String) -> Result<(), FieldError> {
+    if floor == "basement" {
+        Err(FieldError::coded("no_lift", "That floor has no lift."))
+    } else {
+        Ok(())
+    }
+}
+
+/// A cross-field predicate: no message to give, only a verdict.
+fn seats_fit_the_table(booking: &Booking) -> bool {
+    booking.seats <= 12
+}
+
+#[test]
+fn a_predicate_is_enough_when_the_built_in_message_will_do() {
+    let errors = Booking::from_urlencoded("seats=3&room=kitchen").unwrap_err();
+
+    let error = errors.field("seats").next().unwrap();
+    assert!(matches!(error.kind, ErrorKind::Custom { code: None }));
+    assert_eq!(error.message.as_str(), "This value is not valid.");
+
+    assert!(Booking::from_urlencoded("seats=4&room=kitchen").is_ok());
+}
+
+#[test]
+fn a_keyed_message_doubles_as_the_errors_code() {
+    let errors = Booking::from_urlencoded("seats=4&room=boardroom").unwrap_err();
+    let error = errors.field("room").next().unwrap();
+
+    // Nothing has resolved the key yet, so it is what the message reads as —
+    // the same bargain every other person-facing string strikes.
+    assert_eq!(error.message.as_str(), "booking.room.reserved");
+    assert_eq!(error.message.key_str(), Some("booking.room.reserved"));
+    assert_eq!(error.code(), Some("booking.room.reserved"));
+}
+
+#[test]
+fn a_code_can_be_named_apart_from_the_message() {
+    let errors = Booking::from_urlencoded("seats=4&room=kitchen&floor=basement").unwrap_err();
+    let error = errors.field("floor").next().unwrap();
+
+    assert_eq!(error.code(), Some("no_lift"));
+    assert_eq!(error.message.as_str(), "That floor has no lift.");
+    // A message that is not a key is not one to translate.
+    assert_eq!(error.message.key_str(), None);
+}
+
+#[test]
+fn a_form_level_predicate_rejects_the_form_rather_than_a_field() {
+    let errors = Booking::from_urlencoded("seats=14&room=kitchen").unwrap_err();
+
+    assert_eq!(errors.len(), 1);
+    assert!(errors.iter().next().is_none()); // nothing attached to a field
+    assert!(matches!(
+        errors.form_errors()[0].kind,
+        ErrorKind::Custom { code: None }
     ));
 }
 
