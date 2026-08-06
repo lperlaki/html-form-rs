@@ -1,0 +1,118 @@
+//! The raw, untyped submission: an ordered multi-map of `name` → `value`.
+
+/// Raw submitted data, exactly as it came off the wire.
+///
+/// Order is preserved and a name may repeat, which is how checkbox groups and
+/// `<select multiple>` submit their values.
+///
+/// ```
+/// use web_form::Values;
+///
+/// let v = Values::parse("email=a%40b.com&tag=x&tag=y");
+/// assert_eq!(v.get("email"), Some("a@b.com"));
+/// assert_eq!(v.all("tag").collect::<Vec<_>>(), ["x", "y"]);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Values {
+    pairs: Vec<(String, String)>,
+}
+
+impl Values {
+    pub const fn new() -> Self {
+        Self { pairs: Vec::new() }
+    }
+
+    /// Parse an `application/x-www-form-urlencoded` body or query string.
+    pub fn parse(encoded: &str) -> Self {
+        let encoded = encoded.strip_prefix('?').unwrap_or(encoded);
+        Self {
+            pairs: form_urlencoded::parse(encoded.as_bytes())
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect(),
+        }
+    }
+
+    /// Collect from any iterator of key/value pairs, e.g. the output of a
+    /// framework's own body parser.
+    pub fn from_pairs<I, K, V>(pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            pairs: pairs
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        }
+    }
+
+    /// Append a value, keeping any value already stored under the same name.
+    pub fn push(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.pairs.push((name.into(), value.into()));
+    }
+
+    /// Replace every value stored under `name`.
+    pub fn set(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        let name = name.into();
+        self.pairs.retain(|(k, _)| *k != name);
+        self.pairs.push((name, value.into()));
+    }
+
+    /// The first value submitted under `name`.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.pairs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Every value submitted under `name`, in submission order.
+    pub fn all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.pairs
+            .iter()
+            .filter(move |(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Whether the name appears at all — distinct from being submitted empty.
+    pub fn contains(&self, name: &str) -> bool {
+        self.pairs.iter().any(|(k, _)| k == name)
+    }
+
+    pub fn len(&self) -> usize {
+        self.pairs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// Re-encode as `application/x-www-form-urlencoded`.
+    pub fn to_urlencoded(&self) -> String {
+        let mut ser = form_urlencoded::Serializer::new(String::new());
+        for (k, v) in &self.pairs {
+            ser.append_pair(k, v);
+        }
+        ser.finish()
+    }
+}
+
+impl<K: Into<String>, V: Into<String>> FromIterator<(K, V)> for Values {
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        Self::from_pairs(iter)
+    }
+}
+
+/// Whether a submitted value counts as "not filled in".
+///
+/// The browser only checks for the empty string, but a whitespace-only answer
+/// to a required question is never what the caller wanted.
+pub(crate) fn is_blank(value: &str) -> bool {
+    value.trim().is_empty()
+}

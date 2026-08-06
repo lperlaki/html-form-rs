@@ -1,0 +1,427 @@
+#![allow(dead_code)]
+
+//! Parsing and validating a submission. The defining property under test:
+//! *every* problem is reported, not just the first one.
+
+use std::borrow::Cow;
+
+use web_form::{ErrorKind, FormErrors, Outcome, Values, WebForm};
+
+#[derive(WebForm, Debug)]
+#[form(validate = passwords_match)]
+struct Signup {
+    #[field(type = "email", pattern = r"[^@]+@[^@]+\.[a-z]{2,}")]
+    email: String,
+
+    #[field(type = "password", minlength = 8, maxlength = 64)]
+    password: String,
+
+    #[field(type = "password")]
+    confirm: String,
+
+    #[field(min = 18, max = 120)]
+    age: Option<u32>,
+
+    #[field(validate = not_reserved)]
+    username: String,
+
+    #[field(required)]
+    accept_terms: bool,
+
+    #[field(type = "select", multiple)]
+    #[option("rust", "Rust")]
+    #[option("go", "Go")]
+    #[option("ts", "TypeScript")]
+    languages: Vec<String>,
+
+    #[field(default = "web", optional)]
+    source: String,
+}
+
+fn passwords_match(form: &Signup) -> Result<(), FormErrors> {
+    if form.password == form.confirm {
+        Ok(())
+    } else {
+        Err(("confirm", "The two passwords do not match.").into())
+    }
+}
+
+fn not_reserved(name: &String) -> Result<(), Cow<'static, str>> {
+    if name == "admin" {
+        Err("That name is reserved.".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn good_body() -> String {
+    [
+        "email=ada%40example.com",
+        "password=correcthorse",
+        "confirm=correcthorse",
+        "age=36",
+        "username=ada",
+        "accept_terms=on",
+        "languages=rust",
+        "languages=go",
+    ]
+    .join("&")
+}
+
+#[test]
+fn a_valid_submission_round_trips_into_the_struct() {
+    let form = Signup::from_urlencoded(&good_body()).unwrap();
+
+    assert_eq!(form.email, "ada@example.com");
+    assert_eq!(form.age, Some(36));
+    assert!(form.accept_terms);
+    assert_eq!(form.languages, ["rust", "go"]);
+    // Absent, so the declared default applies.
+    assert_eq!(form.source, "web");
+}
+
+#[test]
+fn every_error_is_collected_in_one_pass() {
+    // Every field here is wrong in a different way, and every one of them has
+    // to be reported by the single pass.
+    let body = "email=nope&password=short&confirm=other&age=7&username=admin&languages=cobol";
+    let errors = Signup::from_urlencoded(body).unwrap_err();
+
+    let kinds: Vec<(&str, &ErrorKind)> = errors.iter().map(|(n, e)| (n, &e.kind)).collect();
+
+    // `nope` is not an address at all, so `type = "email"` rejects it before
+    // the narrower `pattern` gets a say.
+    assert!(matches!(kinds[0], ("email", ErrorKind::Invalid { .. })));
+    assert!(matches!(kinds[1], ("password", ErrorKind::TooShort { .. })));
+    assert!(matches!(kinds[2], ("age", ErrorKind::TooSmall { .. })));
+    assert!(matches!(kinds[3], ("username", ErrorKind::Custom)));
+    assert!(matches!(kinds[4], ("accept_terms", ErrorKind::Required)));
+    assert!(matches!(kinds[5], ("languages", ErrorKind::NotAChoice)));
+
+    // The cross-field check needs a complete struct, and `accept_terms` never
+    // produced a value, so `passwords_match` did not run — its "the two
+    // passwords do not match" is the one message missing here.
+    assert_eq!(errors.len(), 6);
+}
+
+#[test]
+fn one_field_can_carry_several_errors() {
+    #[derive(WebForm, Debug)]
+    struct Code {
+        #[field(pattern = "[a-z]+", minlength = 4)]
+        value: String,
+    }
+
+    let errors = Code::from_urlencoded("value=A1").unwrap_err();
+    let kinds: Vec<&ErrorKind> = errors.field("value").map(|e| &e.kind).collect();
+    assert_eq!(kinds.len(), 2);
+    assert!(matches!(kinds[0], ErrorKind::Pattern { .. }));
+    assert!(matches!(kinds[1], ErrorKind::TooShort { .. }));
+}
+
+#[test]
+fn the_form_level_validator_runs_once_the_struct_is_assembled() {
+    let body = good_body().replace("confirm=correcthorse", "confirm=different");
+    let errors = Signup::from_urlencoded(&body).unwrap_err();
+
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors.field("confirm").next().unwrap().message,
+        "The two passwords do not match."
+    );
+}
+
+#[test]
+fn a_type_error_reports_what_was_expected() {
+    let body = good_body().replace("age=36", "age=middle-aged");
+    let errors = Signup::from_urlencoded(&body).unwrap_err();
+
+    let error = errors.field("age").next().unwrap();
+    assert!(matches!(&error.kind, ErrorKind::Invalid { expected } if expected == "a whole number"));
+    assert_eq!(error.message, "Enter a whole number.");
+}
+
+#[test]
+fn an_out_of_range_integer_says_so_instead_of_just_not_a_number() {
+    #[derive(WebForm, Debug)]
+    struct Small {
+        count: u8,
+    }
+
+    let errors = Small::from_urlencoded("count=300").unwrap_err();
+    assert_eq!(
+        errors.field("count").next().unwrap().message,
+        "Enter a whole number between 0 and 255."
+    );
+}
+
+#[test]
+fn a_range_violation_wins_over_the_conversion_failure() {
+    // -5 is both out of range for the field and unrepresentable as u32; the
+    // range message is the one worth showing.
+    let body = good_body().replace("age=36", "age=-5");
+    let errors = Signup::from_urlencoded(&body).unwrap_err();
+
+    let kinds: Vec<&ErrorKind> = errors.field("age").map(|e| &e.kind).collect();
+    assert_eq!(kinds.len(), 1);
+    assert!(matches!(kinds[0], ErrorKind::TooSmall { .. }));
+}
+
+#[test]
+fn blank_and_absent_optionals_are_both_none() {
+    let blank = good_body().replace("age=36", "age=");
+    assert_eq!(Signup::from_urlencoded(&blank).unwrap().age, None);
+
+    let absent = good_body().replace("age=36&", "");
+    assert_eq!(Signup::from_urlencoded(&absent).unwrap().age, None);
+}
+
+#[test]
+fn a_default_applies_when_absent_but_not_when_cleared() {
+    let with_default = Signup::from_urlencoded(&good_body()).unwrap();
+    assert_eq!(with_default.source, "web");
+
+    // Submitting the field empty must be able to clear it, default or not.
+    let cleared = Signup::from_urlencoded(&format!("{}&source=", good_body())).unwrap();
+    assert_eq!(cleared.source, "");
+}
+
+#[test]
+fn an_unchecked_box_is_false_rather_than_missing() {
+    #[derive(WebForm)]
+    struct Prefs {
+        #[field(default = true)]
+        newsletter: bool,
+    }
+
+    // The default only pre-fills the blank form; an unchecked box submits
+    // nothing, and that has to mean `false`.
+    assert!(!Prefs::from_urlencoded("").unwrap().newsletter);
+    assert!(Prefs::from_urlencoded("newsletter=on").unwrap().newsletter);
+    assert!(
+        !Prefs::from_urlencoded("newsletter=false")
+            .unwrap()
+            .newsletter
+    );
+}
+
+#[test]
+fn whitespace_does_not_satisfy_a_required_field() {
+    let body = good_body().replace("username=ada", "username=+++");
+    let errors = Signup::from_urlencoded(&body).unwrap_err();
+    assert!(matches!(
+        errors.field("username").next().unwrap().kind,
+        ErrorKind::Required
+    ));
+}
+
+#[test]
+fn step_is_enforced() {
+    #[derive(WebForm, Debug)]
+    struct Order {
+        #[field(min = 0, max = 100, step = 5)]
+        quantity: u32,
+    }
+
+    assert!(Order::from_urlencoded("quantity=25").is_ok());
+    let errors = Order::from_urlencoded("quantity=23").unwrap_err();
+    assert!(matches!(
+        errors.field("quantity").next().unwrap().kind,
+        ErrorKind::Step { .. }
+    ));
+}
+
+#[test]
+fn dates_compare_chronologically() {
+    #[derive(WebForm, Debug)]
+    struct Booking {
+        #[field(type = "date", min = "2026-01-01", max = "2026-12-31")]
+        day: String,
+    }
+
+    assert!(Booking::from_urlencoded("day=2026-06-15").is_ok());
+    let errors = Booking::from_urlencoded("day=2025-12-31").unwrap_err();
+    assert!(matches!(
+        errors.field("day").next().unwrap().kind,
+        ErrorKind::TooSmall { .. }
+    ));
+}
+
+#[test]
+fn values_can_come_from_a_frameworks_own_body_parser() {
+    let values = Values::from_pairs([
+        ("email", "ada@example.com"),
+        ("password", "correcthorse"),
+        ("confirm", "correcthorse"),
+        ("username", "ada"),
+        ("accept_terms", "true"),
+    ]);
+
+    let form = Signup::from_values(&values).unwrap();
+    assert_eq!(form.username, "ada");
+}
+
+#[test]
+fn an_invalid_submission_comes_back_as_a_renderable_form() {
+    let body = "email=nope&password=short&confirm=short&username=ada&accept_terms=on&languages=go";
+
+    let Outcome::Invalid { errors, view } = Signup::submit_urlencoded(body) else {
+        panic!("expected the submission to be rejected");
+    };
+
+    assert_eq!(errors.len(), 2); // bad email, short password
+
+    // What the user typed survives…
+    assert_eq!(view.field("email").unwrap().value.as_deref(), Some("nope"));
+    assert_eq!(view.field("languages").unwrap().values, ["go"]);
+    assert!(view.field("accept_terms").unwrap().checked);
+
+    // …the messages are attached to their fields…
+    assert!(view.field("email").unwrap().has_errors);
+    assert_eq!(view.field("password").unwrap().errors.len(), 1);
+    assert!(!view.field("username").unwrap().has_errors);
+    assert!(view.has_errors);
+
+    // …the selected option stays selected…
+    let go = view
+        .field("languages")
+        .unwrap()
+        .choices
+        .iter()
+        .find(|c| c.value == "go")
+        .unwrap();
+    assert!(go.selected);
+
+    // …and the markup says so, for both sighted users and screen readers.
+    let html = view.to_html();
+    assert!(html.contains(r#"value="nope""#));
+    assert!(html.contains(r#"aria-invalid="true""#));
+    assert!(html.contains(r#"aria-describedby="email-error""#));
+    assert!(html.contains("web-form__field--invalid"));
+}
+
+#[test]
+fn errors_serialise_for_json_apis() {
+    let errors = Signup::from_urlencoded("email=nope").unwrap_err();
+    let json = serde_json::to_value(&errors).unwrap();
+
+    assert_eq!(json["fields"]["email"][0], "Enter a valid email address.");
+    assert_eq!(json["fields"]["password"][0], "This field is required.");
+    assert!(json["form"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_form_can_be_filled_from_an_existing_value() {
+    let form = Signup::from_urlencoded(&good_body()).unwrap();
+    let view = form.render_filled();
+
+    assert_eq!(
+        view.field("email").unwrap().value.as_deref(),
+        Some("ada@example.com")
+    );
+    assert_eq!(view.field("age").unwrap().value.as_deref(), Some("36"));
+    assert_eq!(view.field("languages").unwrap().values, ["rust", "go"]);
+    assert!(view.field("accept_terms").unwrap().checked);
+    assert!(!view.has_errors);
+
+    // And the filled form parses back into an equal value.
+    let again = Signup::from_values(&form.to_values()).unwrap();
+    assert_eq!(again.email, form.email);
+    assert_eq!(again.languages, form.languages);
+    assert_eq!(again.age, form.age);
+}
+
+// ─── Formats implied by the control's type ────────────────────────────────────
+
+#[derive(WebForm, Debug)]
+struct Formats {
+    #[field(type = "email")]
+    email: Option<String>,
+    #[field(type = "email", multiple)]
+    recipients: Option<String>,
+    #[field(type = "url")]
+    website: Option<String>,
+    #[field(type = "date")]
+    day: Option<String>,
+    #[field(type = "time")]
+    at: Option<String>,
+    #[field(type = "datetime-local")]
+    starts: Option<String>,
+    #[field(type = "month")]
+    month: Option<String>,
+    #[field(type = "week")]
+    week: Option<String>,
+    #[field(type = "color")]
+    colour: Option<String>,
+}
+
+#[track_caller]
+fn accepts(pair: &str) {
+    if let Err(errors) = Formats::from_urlencoded(pair) {
+        panic!("`{pair}` should have been accepted, got: {errors}");
+    }
+}
+
+#[track_caller]
+fn rejects(pair: &str) {
+    let field = pair.split('=').next().unwrap();
+    match Formats::from_urlencoded(pair) {
+        Ok(_) => panic!("`{pair}` should have been rejected"),
+        Err(errors) => assert!(
+            matches!(
+                errors.field(field).next().map(|e| &e.kind),
+                Some(ErrorKind::Invalid { .. })
+            ),
+            "`{pair}` was rejected, but not as a malformed value: {errors}"
+        ),
+    }
+}
+
+#[test]
+fn the_control_type_is_re_checked_on_the_server() {
+    // A browser would never submit these, so a submission that does is not
+    // coming from the form we rendered.
+    accepts("email=ada@example.com");
+    accepts("email=a.b%2Bc@sub.example.co.uk"); // %2B is a literal `+`
+    rejects("email=nope");
+    rejects("email=a@@b.com");
+    rejects("email=@example.com");
+    rejects("email=ada@-example.com");
+
+    accepts("recipients=a@example.com,+b@example.com");
+    rejects("recipients=a@example.com,nope");
+
+    accepts("website=https://example.com/x?y=1");
+    accepts("website=mailto:ada@example.com");
+    rejects("website=example.com");
+    rejects("website=https://exa mple.com");
+
+    accepts("colour=%23ff8800");
+    rejects("colour=ff8800");
+    rejects("colour=%23ff88");
+}
+
+#[test]
+fn date_and_time_formats_are_checked_as_calendars_not_just_digits() {
+    accepts("day=2026-02-28");
+    accepts("day=2024-02-29"); // a leap year
+    rejects("day=2026-02-29"); // not one
+    rejects("day=2026-13-01");
+    rejects("day=2026-2-01");
+
+    accepts("at=09:30");
+    accepts("at=09:30:15.500");
+    rejects("at=24:00");
+    rejects("at=09:60");
+
+    accepts("starts=2026-06-15T09:30");
+    rejects("starts=2026-06-15");
+
+    accepts("month=2026-06");
+    rejects("month=2026-00");
+
+    accepts("week=2026-W01");
+    accepts("week=2026-W53"); // 2026 is a 53-week year
+    rejects("week=2025-W53"); // 2025 is not
+    rejects("week=2026-W54");
+}
