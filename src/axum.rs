@@ -64,8 +64,6 @@ pub enum FormRejection {
     /// The body could not be read — disconnected, or over the body limit
     /// (whatever status the underlying rejection carries).
     Body(axum_core::extract::rejection::BytesRejection),
-    /// The body was not valid UTF-8 (`400`).
-    InvalidEncoding,
 }
 
 impl FormRejection {
@@ -74,7 +72,6 @@ impl FormRejection {
         match self {
             FormRejection::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             FormRejection::Body(rejection) => rejection.status(),
-            FormRejection::InvalidEncoding => StatusCode::BAD_REQUEST,
         }
     }
 }
@@ -86,7 +83,6 @@ impl fmt::Display for FormRejection {
                 "Expected a request with `Content-Type: application/x-www-form-urlencoded`",
             ),
             FormRejection::Body(rejection) => rejection.fmt(f),
-            FormRejection::InvalidEncoding => f.write_str("Request body was not valid UTF-8"),
         }
     }
 }
@@ -95,7 +91,7 @@ impl std::error::Error for FormRejection {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             FormRejection::Body(rejection) => Some(rejection),
-            _ => None,
+            FormRejection::UnsupportedMediaType => None,
         }
     }
 }
@@ -128,9 +124,10 @@ where
         let bytes = Bytes::from_request(req, state)
             .await
             .map_err(FormRejection::Body)?;
-        let body = std::str::from_utf8(&bytes).map_err(|_| FormRejection::InvalidEncoding)?;
 
-        Ok(T::submit(&Values::parse(body)))
+        // The body is decoded where it is percent-decoded, so it never has to
+        // be a `str` on the way there — see `Values::parse_bytes`.
+        Ok(T::submit(&Values::parse_bytes(&bytes)))
     }
 }
 

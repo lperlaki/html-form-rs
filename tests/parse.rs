@@ -351,6 +351,23 @@ fn values_can_come_from_a_frameworks_own_body_parser() {
 }
 
 #[test]
+fn a_body_can_be_parsed_before_anything_has_called_it_a_string() {
+    let body: &[u8] = b"username=ada&accept_terms=on";
+    assert_eq!(
+        Values::parse_bytes(body),
+        Values::parse("username=ada&accept_terms=on")
+    );
+
+    // Percent-decoding produces bytes whatever the body was, so the decode is
+    // lossy rather than fatal: one mangled value, not one lost submission.
+    let mut mangled = b"username=ada&source=".to_vec();
+    mangled.push(0xff);
+    let values = Values::parse_bytes(&mangled);
+    assert_eq!(values.get("username"), Some("ada"));
+    assert_eq!(values.get("source"), Some("\u{fffd}"));
+}
+
+#[test]
 fn an_invalid_submission_comes_back_as_a_renderable_form() {
     let body = "email=nope&password=short&confirm=short&username=ada&accept_terms=on&languages=go";
 

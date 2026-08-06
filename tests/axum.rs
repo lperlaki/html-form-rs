@@ -128,15 +128,25 @@ async fn a_body_without_a_content_type_is_rejected() {
 }
 
 #[tokio::test]
-async fn a_non_utf8_body_is_rejected() {
+async fn a_non_utf8_body_costs_one_field_its_value_rather_than_the_whole_form() {
+    // A stray byte in one field is not a reason to throw a submission away:
+    // the body is decoded lossily, and the address next to it survives intact.
+    let mut body = b"email=a%40example.com&age=".to_vec();
+    body.push(0xff);
     let req = Request::builder()
         .method("POST")
         .uri("/signup")
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .body(Body::from(vec![b'e', b'=', 0xff]))
+        .body(Body::from(body))
         .unwrap();
 
-    let rejection = extract(req).await.unwrap_err();
-    assert!(matches!(rejection, FormRejection::InvalidEncoding));
-    assert_eq!(rejection.into_response().status(), StatusCode::BAD_REQUEST);
+    let Outcome::Invalid { view, errors } = extract(req).await.unwrap() else {
+        panic!("expected the mangled age to be rejected");
+    };
+    assert_eq!(errors.len(), 1);
+    assert!(errors.has_field("age"));
+    assert_eq!(
+        view.field("email").unwrap().value.as_deref(),
+        Some("a@example.com")
+    );
 }

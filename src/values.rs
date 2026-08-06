@@ -11,6 +11,9 @@
 /// let v = Values::parse("email=a%40b.com&tag=x&tag=y");
 /// assert_eq!(v.get("email"), Some("a@b.com"));
 /// assert_eq!(v.all("tag").collect::<Vec<_>>(), ["x", "y"]);
+///
+/// // The same, straight off the wire.
+/// assert_eq!(Values::parse_bytes(b"email=a%40b.com"), Values::parse("email=a%40b.com"));
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Values {
@@ -24,9 +27,21 @@ impl Values {
 
     /// Parse an `application/x-www-form-urlencoded` body or query string.
     pub fn parse(encoded: &str) -> Self {
-        let encoded = encoded.strip_prefix('?').unwrap_or(encoded);
+        Self::parse_bytes(encoded.as_bytes())
+    }
+
+    /// Parse a body that has not been checked for UTF-8 yet — a request body
+    /// as it arrived, before anything has decided whether it is a string.
+    ///
+    /// Percent-decoding produces bytes whatever the body was, so the decode is
+    /// where the encoding matters, and it is lossy: an invalid sequence becomes
+    /// `U+FFFD` rather than rejecting the whole submission. That is what
+    /// `form_urlencoded` does, and it means a single mangled byte costs one
+    /// field its value rather than costing the user their form.
+    pub fn parse_bytes(encoded: &[u8]) -> Self {
+        let encoded = encoded.strip_prefix(b"?").unwrap_or(encoded);
         Self {
-            pairs: form_urlencoded::parse(encoded.as_bytes())
+            pairs: form_urlencoded::parse(encoded)
                 .map(|(k, v)| (k.into_owned(), v.into_owned()))
                 .collect(),
         }
