@@ -41,6 +41,9 @@ minijinja = "2.22.0"
 serde_json = "1.0"
 axum = "0.8.9"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+# A request body that fails part way through, which is the one thing the axum
+# tests cannot build out of bytes. Already in the tree, under axum.
+futures-util = { version = "0.3.33", default-features = false }
 
 [[example]]
 name = "axum_signup"

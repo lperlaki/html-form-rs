@@ -116,6 +116,7 @@ dependencies = [
  "axum-core",
  "bytes",
  "form_urlencoded",
+ "futures-util",
  "html-form",
  "html-form-derive",
  "http",

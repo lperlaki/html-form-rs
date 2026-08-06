@@ -839,3 +839,443 @@ pub struct ResolvedField {
     /// The legend of the innermost flattened group that holds this field.
     pub group: Option<&'static Text>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── Text ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn text_is_either_something_to_show_or_something_to_look_up() {
+        let literal = Text::literal("Email address");
+        assert!(!literal.is_key);
+        assert_eq!(literal.as_str(), "Email address");
+        assert_eq!(literal.key_str(), None);
+
+        let key = Text::key("signup.email.label");
+        assert!(key.is_key);
+        assert_eq!(key.as_str(), "signup.email.label");
+        assert_eq!(key.key_str(), Some("signup.email.label"));
+    }
+
+    #[test]
+    fn either_kind_can_also_be_built_at_runtime() {
+        assert_eq!(Text::owned(String::from("Row 3")), Text::literal("Row 3"));
+        assert_eq!(Text::owned_key("a.b"), Text::key("a.b"));
+        assert_eq!(Text::owned_key("a.b").key_str(), Some("a.b"));
+    }
+
+    #[test]
+    fn text_is_empty_when_it_holds_nothing() {
+        assert!(Text::literal("").is_empty());
+        assert!(!Text::literal(" ").is_empty());
+        assert!(!Text::key("a.b").is_empty());
+    }
+
+    /// However a string arrives, it is text to show until something says it is
+    /// a key. Only `t("…")` and the two constructors say so.
+    #[test]
+    fn a_plain_string_of_any_type_becomes_literal_text() {
+        for text in [
+            Text::from("Email"),
+            Text::from("Email".to_owned()),
+            Text::from(Cow::Borrowed("Email")),
+            Text::from(Cow::Owned("Email".to_owned())),
+        ] {
+            assert!(!text.is_key);
+            assert_eq!(text.as_str(), "Email");
+        }
+    }
+
+    /// A template renders the text whether or not something has resolved the
+    /// key, so the key travels in a companion field and never in place of it.
+    #[test]
+    fn text_serialises_as_the_string_it_holds() {
+        assert_eq!(
+            serde_json::to_value(Text::literal("Email")).unwrap(),
+            serde_json::json!("Email")
+        );
+        assert_eq!(
+            serde_json::to_value(Text::key("signup.email")).unwrap(),
+            serde_json::json!("signup.email")
+        );
+    }
+
+    // ─── Attributes and choices ───────────────────────────────────────────────
+
+    #[test]
+    fn an_attribute_is_a_pair_or_a_bare_flag() {
+        assert_eq!(
+            Attr::new("data-role", "primary"),
+            Attr {
+                name: "data-role",
+                value: Some("primary")
+            }
+        );
+        assert_eq!(Attr::flag("inert").value, None);
+    }
+
+    #[test]
+    fn a_choice_can_be_written_in_a_const_or_built_at_runtime() {
+        let compile_time = Choice::new("de", "Germany");
+        assert_eq!(compile_time.value, "de");
+        assert_eq!(compile_time.label, Text::literal("Germany"));
+        assert!(!compile_time.disabled);
+        assert_eq!(compile_time.group, None);
+
+        assert_eq!(Choice::owned("de", "Germany"), compile_time);
+        assert_eq!(
+            Choice::keyed("de", "country.de"),
+            Choice::owned_keyed("de", "country.de")
+        );
+        assert!(Choice::keyed("de", "country.de").label.is_key);
+
+        assert_eq!(Choice::DEFAULT.value, "");
+        assert!(Choice::DEFAULT.label.is_empty());
+    }
+
+    // ─── What each control accepts ────────────────────────────────────────────
+
+    #[test]
+    fn each_control_reports_the_flat_kind_it_renders_as() {
+        let cases: &[(Control, FieldKind)] = &[
+            (Control::TEXT, FieldKind::Text),
+            (text(TextFormat::Password), FieldKind::Password),
+            (text(TextFormat::Tel), FieldKind::Tel),
+            (text(TextFormat::Search), FieldKind::Search),
+            (text(TextFormat::Url), FieldKind::Url),
+            (
+                text(TextFormat::Email { multiple: false }),
+                FieldKind::Email,
+            ),
+            (text(TextFormat::Email { multiple: true }), FieldKind::Email),
+            (
+                Control::Textarea(TextareaControl::DEFAULT),
+                FieldKind::Textarea,
+            ),
+            (Control::NUMBER, FieldKind::Number),
+            (number(NumberFormat::Range), FieldKind::Range),
+            (temporal(TemporalFormat::Date), FieldKind::Date),
+            (temporal(TemporalFormat::Time), FieldKind::Time),
+            (
+                temporal(TemporalFormat::DatetimeLocal),
+                FieldKind::DatetimeLocal,
+            ),
+            (temporal(TemporalFormat::Month), FieldKind::Month),
+            (temporal(TemporalFormat::Week), FieldKind::Week),
+            (Control::SELECT, FieldKind::Select),
+            (choose(ChoiceStyle::Radio), FieldKind::Radio),
+            (choose(ChoiceStyle::Checkbox), FieldKind::CheckboxGroup),
+            (Control::Checkbox, FieldKind::Checkbox),
+            (Control::Color, FieldKind::Color),
+            (Control::File(FileControl::DEFAULT), FieldKind::File),
+            (Control::Hidden, FieldKind::Hidden),
+        ];
+        for (control, kind) in cases {
+            assert_eq!(control.kind(), *kind, "{control:?}");
+        }
+    }
+
+    fn text(format: TextFormat) -> Control {
+        Control::Text(TextControl {
+            format,
+            ..TextControl::DEFAULT
+        })
+    }
+
+    fn number(format: NumberFormat) -> Control {
+        Control::Number(NumberControl {
+            format,
+            ..NumberControl::DEFAULT
+        })
+    }
+
+    fn temporal(format: TemporalFormat) -> Control {
+        Control::Temporal(TemporalControl {
+            format,
+            ..TemporalControl::DEFAULT
+        })
+    }
+
+    fn choose(style: ChoiceStyle) -> Control {
+        Control::Choose(ChooseControl {
+            style,
+            ..ChooseControl::DEFAULT
+        })
+    }
+
+    /// An accessor answers for the controls that have the attribute, and
+    /// `None` for every other one. That is what lets the renderer ask without
+    /// matching on the control first.
+    #[test]
+    fn an_attribute_only_answers_from_the_control_that_accepts_it() {
+        let text = Control::Text(TextControl {
+            pattern: Some("[a-z]+"),
+            minlength: Some(2),
+            maxlength: Some(8),
+            ..TextControl::DEFAULT
+        });
+        assert_eq!(text.pattern(), Some("[a-z]+"));
+        assert_eq!(text.minlength(), Some(2));
+        assert_eq!(text.maxlength(), Some(8));
+        assert_eq!(text.bounds(), None);
+        assert_eq!(text.rows(), None);
+        assert_eq!(text.accept(), None);
+
+        let area = Control::Textarea(TextareaControl {
+            minlength: Some(2),
+            maxlength: Some(8),
+            rows: Some(5),
+            cols: Some(40),
+        });
+        assert_eq!(area.pattern(), None, "a textarea has no pattern");
+        assert_eq!(area.minlength(), Some(2));
+        assert_eq!(area.maxlength(), Some(8));
+        assert_eq!(area.rows(), Some(5));
+        assert_eq!(area.cols(), Some(40));
+
+        let bounds = Bounds {
+            min: Some("0"),
+            max: Some("10"),
+            step: Some("1"),
+        };
+        assert_eq!(
+            Control::Number(NumberControl {
+                bounds,
+                ..NumberControl::DEFAULT
+            })
+            .bounds(),
+            Some(&bounds)
+        );
+        assert_eq!(
+            Control::Temporal(TemporalControl {
+                bounds,
+                ..TemporalControl::DEFAULT
+            })
+            .bounds(),
+            Some(&bounds)
+        );
+
+        let file = Control::File(FileControl {
+            accept: Some("image/*"),
+            multiple: true,
+        });
+        assert_eq!(file.accept(), Some("image/*"));
+        assert_eq!(Control::Checkbox.accept(), None);
+        assert_eq!(Control::Checkbox.minlength(), None);
+        assert_eq!(Control::Checkbox.maxlength(), None);
+        assert_eq!(Control::Checkbox.rows(), None);
+        assert_eq!(Control::Checkbox.cols(), None);
+        assert_eq!(Control::Checkbox.bounds(), None);
+    }
+
+    /// Three unrelated controls submit more than one value, so one question
+    /// covers all three.
+    #[test]
+    fn a_control_says_whether_it_submits_more_than_one_value() {
+        assert!(text(TextFormat::Email { multiple: true }).multiple());
+        assert!(!text(TextFormat::Email { multiple: false }).multiple());
+        assert!(!text(TextFormat::Text).multiple());
+        assert!(
+            Control::Choose(ChooseControl {
+                multiple: true,
+                ..ChooseControl::DEFAULT
+            })
+            .multiple()
+        );
+        assert!(
+            Control::File(FileControl {
+                multiple: true,
+                accept: None
+            })
+            .multiple()
+        );
+        assert!(!Control::Checkbox.multiple());
+    }
+
+    #[test]
+    fn only_a_chooser_declares_options_and_so_only_it_restricts_them() {
+        const CHOICES: &[Choice] = &[Choice::new("de", "Germany")];
+        let declared = Control::Choose(ChooseControl {
+            choices: CHOICES,
+            ..ChooseControl::DEFAULT
+        });
+        assert_eq!(declared.choices().len(), 1);
+        assert!(declared.restricts_choices());
+
+        // Options that arrive at render time are not in the spec, so there is
+        // nothing here to restrict the value to.
+        assert!(Control::SELECT.choices().is_empty());
+        assert!(!Control::SELECT.restricts_choices());
+        assert!(Control::TEXT.choices().is_empty());
+        assert!(!Control::TEXT.restricts_choices());
+    }
+
+    /// A control that submits nothing when the user leaves it alone is the one
+    /// case where an absent value means "unchecked" and not "missing".
+    #[test]
+    fn the_checkable_controls_are_the_box_and_the_two_groups() {
+        assert!(Control::Checkbox.is_checkable());
+        assert!(choose(ChoiceStyle::Radio).is_checkable());
+        assert!(choose(ChoiceStyle::Checkbox).is_checkable());
+
+        assert!(!choose(ChoiceStyle::Select).is_checkable());
+        assert!(!Control::TEXT.is_checkable());
+        assert!(!Control::Hidden.is_checkable());
+    }
+
+    // ─── Ids ──────────────────────────────────────────────────────────────────
+
+    /// Every name written as a Rust identifier is already a usable id, so it
+    /// comes back untouched rather than rebuilt.
+    #[test]
+    fn a_name_that_is_already_a_usable_id_is_borrowed_not_built() {
+        for name in ["email", "billing_street", "a-b", "x1", ""] {
+            let name = Cow::Borrowed(name);
+            assert!(
+                matches!(sanitize_id(&name), Cow::Borrowed(_)),
+                "{name:?} needed no rebuilding"
+            );
+            assert_eq!(sanitize_id(&name), name);
+        }
+    }
+
+    #[test]
+    fn every_other_character_of_a_field_path_becomes_a_hyphen() {
+        assert_eq!(
+            sanitize_id(&Cow::Borrowed("billing.street")),
+            "billing-street"
+        );
+        assert_eq!(sanitize_id(&Cow::Borrowed("a[0].b")), "a-0--b");
+        assert_eq!(sanitize_id(&Cow::Borrowed("\u{e9}")), "-");
+    }
+
+    #[test]
+    fn a_field_may_name_its_own_id_instead() {
+        let named = FieldSpec {
+            id: Some("custom-id"),
+            ..FieldSpec::DEFAULT
+        };
+        assert_eq!(named.id_for(&Cow::Borrowed("billing.street")), "custom-id");
+        assert_eq!(
+            FieldSpec::DEFAULT.id_for(&Cow::Borrowed("billing.street")),
+            "billing-street"
+        );
+    }
+
+    // ─── Walking a spec ───────────────────────────────────────────────────────
+
+    const STREET: FieldSpec = FieldSpec {
+        name: "street",
+        ..FieldSpec::DEFAULT
+    };
+    const CITY: FieldSpec = FieldSpec {
+        name: "city",
+        ..FieldSpec::DEFAULT
+    };
+    static ADDRESS: FormSpec = FormSpec {
+        entries: &[Entry::Field(STREET), Entry::Field(CITY)],
+        ..FormSpec::DEFAULT
+    };
+    static ORDER: FormSpec = FormSpec {
+        entries: &[
+            Entry::Field(FieldSpec {
+                name: "email",
+                ..FieldSpec::DEFAULT
+            }),
+            Entry::Flatten(Flattened {
+                prefix: "billing_",
+                legend: Some(Text::literal("Billing")),
+                spec: &ADDRESS,
+            }),
+            Entry::Flatten(Flattened {
+                prefix: "",
+                legend: None,
+                spec: &ADDRESS,
+            }),
+        ],
+        ..FormSpec::DEFAULT
+    };
+
+    #[test]
+    fn a_prefix_is_only_built_where_there_is_one_to_add() {
+        assert_eq!(join("", "street"), "street");
+        assert!(matches!(join("", "street"), Cow::Borrowed(_)));
+        assert_eq!(join("billing_", "street"), "billing_street");
+        assert!(matches!(join("billing_", "street"), Cow::Owned(_)));
+    }
+
+    #[test]
+    fn walking_visits_every_field_of_every_sub_form_in_render_order() {
+        let fields = ORDER.fields();
+        assert_eq!(
+            fields.iter().map(|f| f.name.as_ref()).collect::<Vec<_>>(),
+            ["email", "billing_street", "billing_city", "street", "city"]
+        );
+        // A field takes the legend of the innermost group that holds it, and
+        // a field outside every group takes none.
+        assert_eq!(fields[0].group, None);
+        assert_eq!(fields[1].group.map(Text::as_str), Some("Billing"));
+        assert_eq!(fields[3].group, None);
+        // The spec each one resolves to is the one in the sub-form.
+        assert_eq!(fields[1].spec.name, "street");
+    }
+
+    #[test]
+    fn a_field_can_be_found_by_the_name_it_is_submitted_under() {
+        assert_eq!(ORDER.field("billing_city").unwrap().spec.name, "city");
+        assert_eq!(ORDER.field("email").unwrap().name, "email");
+        assert!(ORDER.field("city").is_some(), "the unprefixed copy");
+        assert!(ORDER.field("nothing_here").is_none());
+    }
+
+    #[test]
+    fn an_entry_can_be_read_by_index_once_its_kind_is_known() {
+        assert_eq!(ORDER.field_at(0).name, "email");
+        assert_eq!(ORDER.flatten_at(1).prefix, "billing_");
+        assert_eq!(ORDER.flatten_at(1).spec.entries.len(), 2);
+    }
+
+    /// Generated code never asks for the wrong kind, so this is a bug in the
+    /// caller rather than a case to report.
+    #[test]
+    #[should_panic(expected = "is not a field")]
+    fn asking_for_a_field_where_a_sub_form_stands_panics() {
+        ORDER.field_at(1);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a flattened sub-form")]
+    fn asking_for_a_sub_form_where_a_field_stands_panics() {
+        ORDER.flatten_at(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a field")]
+    fn asking_past_the_end_panics_too() {
+        ORDER.field_at(99);
+    }
+
+    /// A `const` spec can name itself through a `static`, which a walk would
+    /// otherwise follow forever.
+    #[test]
+    #[should_panic(expected = "flattening itself")]
+    fn a_form_that_flattens_itself_is_caught_rather_than_looping() {
+        static LOOP: FormSpec = FormSpec {
+            entries: &[Entry::Flatten(Flattened {
+                prefix: "x_",
+                legend: None,
+                spec: &LOOP,
+            })],
+            ..FormSpec::DEFAULT
+        };
+        LOOP.walk(|_| {});
+    }
+
+    #[test]
+    fn a_form_with_no_entries_walks_nothing() {
+        assert!(FormSpec::DEFAULT.fields().is_empty());
+        assert!(FormSpec::DEFAULT.field("anything").is_none());
+    }
+}

@@ -698,4 +698,953 @@ pub mod __private {
             None => implied,
         }
     }
+
+    /// The merge runs in `const` position, where nothing observes it. These
+    /// call it at run time instead, so each rule can be stated on its own.
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::spec::{NumberFormat, TemporalControl};
+
+        const CHOICES: &[Choice] = &[Choice::new("de", "Germany"), Choice::new("ch", "Swiss")];
+
+        fn merged(implied: Control, explicit: Option<Control>, o: Overrides) -> Control {
+            control(implied, explicit, None, o)
+        }
+
+        fn plain(implied: Control) -> Control {
+            merged(implied, None, Overrides::NONE)
+        }
+
+        fn choose(style: ChoiceStyle, multiple: bool) -> Control {
+            Control::Choose(ChooseControl {
+                style,
+                multiple,
+                choices: CHOICES,
+            })
+        }
+
+        fn text(control: TextControl) -> Control {
+            Control::Text(control)
+        }
+
+        // ─── Which control this is ────────────────────────────────────────────
+
+        /// A field that names no control takes the one its Rust type implies.
+        #[test]
+        fn the_rust_type_settles_the_control_where_the_field_says_nothing() {
+            assert_eq!(plain(Control::TEXT), Control::TEXT);
+            assert_eq!(plain(Control::NUMBER), Control::NUMBER);
+            assert_eq!(plain(Control::Checkbox), Control::Checkbox);
+        }
+
+        /// And where it names one, that one wins outright — the two have
+        /// nothing in common to carry over.
+        #[test]
+        fn a_named_control_replaces_the_implied_one() {
+            assert_eq!(
+                merged(Control::TEXT, Some(Control::Hidden), Overrides::NONE),
+                Control::Hidden
+            );
+            assert_eq!(
+                merged(Control::NUMBER, Some(Control::Color), Overrides::NONE),
+                Control::Color
+            );
+        }
+
+        /// Declared options alone mean "this is a chooser", whatever the Rust
+        /// type would otherwise say.
+        #[test]
+        fn declared_options_make_a_chooser_out_of_any_type() {
+            let built = control(Control::TEXT, None, Some(CHOICES), Overrides::NONE);
+            assert_eq!(built, choose(ChoiceStyle::Select, false));
+        }
+
+        #[test]
+        fn options_take_the_style_the_field_named() {
+            let radio = control(
+                Control::TEXT,
+                Some(Control::Choose(ChooseControl {
+                    style: ChoiceStyle::Radio,
+                    ..ChooseControl::DEFAULT
+                })),
+                Some(CHOICES),
+                Overrides::NONE,
+            );
+            assert_eq!(radio, choose(ChoiceStyle::Radio, false));
+        }
+
+        /// `type = "checkbox"` next to options means one box per option, not
+        /// the single boolean control.
+        #[test]
+        fn a_checkbox_next_to_options_is_a_group_of_boxes() {
+            let group = control(
+                Control::TEXT,
+                Some(Control::Checkbox),
+                Some(CHOICES),
+                Overrides::NONE,
+            );
+            // A checkbox group carries many values whatever the field type is.
+            assert_eq!(group, choose(ChoiceStyle::Checkbox, true));
+        }
+
+        /// Restyling a chooser must keep the variants it chooses between, which
+        /// the enum carries and the attribute cannot name.
+        #[test]
+        fn restyling_a_chooser_keeps_the_options_the_type_carries() {
+            let implied = choose(ChoiceStyle::Select, true);
+            let restyled = merged(
+                implied,
+                Some(Control::Choose(ChooseControl {
+                    style: ChoiceStyle::Radio,
+                    ..ChooseControl::DEFAULT
+                })),
+                Overrides::NONE,
+            );
+            let Control::Choose(choose) = restyled else {
+                panic!("still a chooser");
+            };
+            assert_eq!(choose.style, ChoiceStyle::Radio);
+            assert_eq!(choose.choices.len(), 2);
+            // A radio group carries one value however many the type holds.
+            assert!(!choose.multiple);
+        }
+
+        /// `type = "checkbox"` on something that already chooses between
+        /// variants is a checkbox *group*, not a single boolean box.
+        #[test]
+        fn a_checkbox_on_a_chooser_is_a_group_and_not_a_boolean_box() {
+            let group = merged(
+                choose(ChoiceStyle::Select, false),
+                Some(Control::Checkbox),
+                Overrides::NONE,
+            );
+            assert_eq!(group, choose(ChoiceStyle::Checkbox, true));
+        }
+
+        /// In the same way, `type = "range"` on a `u32` keeps the bounds the
+        /// integer type implies.
+        #[test]
+        fn restyling_a_number_keeps_the_bounds_the_integer_type_implies() {
+            let implied = Control::Number(NumberControl {
+                format: NumberFormat::Number,
+                bounds: Bounds {
+                    min: Some("0"),
+                    max: None,
+                    step: Some("1"),
+                },
+            });
+            let range = merged(
+                implied,
+                Some(Control::Number(NumberControl {
+                    format: NumberFormat::Range,
+                    bounds: Bounds::DEFAULT,
+                })),
+                Overrides::NONE,
+            );
+            assert_eq!(
+                range,
+                Control::Number(NumberControl {
+                    format: NumberFormat::Range,
+                    bounds: Bounds {
+                        min: Some("0"),
+                        max: None,
+                        step: Some("1"),
+                    },
+                })
+            );
+        }
+
+        // ─── What each attribute narrows ──────────────────────────────────────
+
+        /// An attribute written on the field wins over what the type implied,
+        /// and where the field says nothing the type's own value stands.
+        #[test]
+        fn an_attribute_on_the_field_narrows_what_the_type_implied() {
+            let implied = text(TextControl {
+                pattern: Some("[a-z]+"),
+                minlength: Some(2),
+                maxlength: Some(254),
+                ..TextControl::DEFAULT
+            });
+            let narrowed = merged(
+                implied,
+                None,
+                Overrides {
+                    maxlength: Some(40),
+                    ..Overrides::NONE
+                },
+            );
+            assert_eq!(
+                narrowed,
+                text(TextControl {
+                    pattern: Some("[a-z]+"),
+                    minlength: Some(2),
+                    maxlength: Some(40),
+                    ..TextControl::DEFAULT
+                })
+            );
+        }
+
+        #[test]
+        fn a_text_input_takes_a_pattern_and_a_length() {
+            let built = merged(
+                Control::TEXT,
+                None,
+                Overrides {
+                    pattern: Some("[0-9]{4}"),
+                    minlength: Some(4),
+                    maxlength: Some(4),
+                    ..Overrides::NONE
+                },
+            );
+            assert_eq!(built.pattern(), Some("[0-9]{4}"));
+            assert_eq!(built.minlength(), Some(4));
+            assert_eq!(built.maxlength(), Some(4));
+        }
+
+        /// `multiple` on an email input means a comma-separated list, and it is
+        /// the one thing `multiple` means on any text control.
+        #[test]
+        fn multiple_on_an_email_input_accepts_a_list() {
+            let built = merged(
+                text(TextControl {
+                    format: TextFormat::Email { multiple: false },
+                    ..TextControl::DEFAULT
+                }),
+                None,
+                Overrides {
+                    multiple: true,
+                    ..Overrides::NONE
+                },
+            );
+            assert!(built.multiple());
+
+            // On any other text format it changes nothing.
+            let plain = merged(
+                Control::TEXT,
+                None,
+                Overrides {
+                    multiple: true,
+                    ..Overrides::NONE
+                },
+            );
+            assert!(!plain.multiple());
+        }
+
+        #[test]
+        fn a_textarea_takes_a_length_and_a_size() {
+            let built = merged(
+                Control::Textarea(TextareaControl::DEFAULT),
+                None,
+                Overrides {
+                    minlength: Some(10),
+                    maxlength: Some(500),
+                    rows: Some(8),
+                    cols: Some(60),
+                    ..Overrides::NONE
+                },
+            );
+            assert_eq!(
+                built,
+                Control::Textarea(TextareaControl {
+                    minlength: Some(10),
+                    maxlength: Some(500),
+                    rows: Some(8),
+                    cols: Some(60),
+                })
+            );
+        }
+
+        #[test]
+        fn a_number_takes_the_three_bounds() {
+            let built = merged(
+                Control::NUMBER,
+                None,
+                Overrides {
+                    min: Some("1"),
+                    max: Some("10"),
+                    step: Some("0.5"),
+                    ..Overrides::NONE
+                },
+            );
+            assert_eq!(
+                built.bounds(),
+                Some(&Bounds {
+                    min: Some("1"),
+                    max: Some("10"),
+                    step: Some("0.5"),
+                })
+            );
+        }
+
+        #[test]
+        fn a_date_takes_the_same_bounds_written_as_dates() {
+            let built = merged(
+                Control::Temporal(TemporalControl::DEFAULT),
+                None,
+                Overrides {
+                    min: Some("2026-01-01"),
+                    max: Some("2026-12-31"),
+                    ..Overrides::NONE
+                },
+            );
+            assert_eq!(
+                built.bounds(),
+                Some(&Bounds {
+                    min: Some("2026-01-01"),
+                    max: Some("2026-12-31"),
+                    step: None,
+                })
+            );
+        }
+
+        #[test]
+        fn a_file_input_takes_what_it_accepts_and_how_many() {
+            let built = merged(
+                Control::File(FileControl::DEFAULT),
+                None,
+                Overrides {
+                    accept: Some("image/*"),
+                    multiple: true,
+                    ..Overrides::NONE
+                },
+            );
+            assert_eq!(built.accept(), Some("image/*"));
+            assert!(built.multiple());
+        }
+
+        /// A `<select>` takes as many values as the field type holds. The two
+        /// groups decide for themselves: a radio group carries one value, and
+        /// a checkbox group carries many.
+        #[test]
+        fn only_a_select_reads_multiple_off_the_field() {
+            fn many() -> Overrides {
+                Overrides {
+                    multiple: true,
+                    ..Overrides::NONE
+                }
+            }
+            assert!(merged(choose(ChoiceStyle::Select, false), None, many()).multiple());
+            assert!(!merged(choose(ChoiceStyle::Radio, true), None, many()).multiple());
+            assert!(merged(choose(ChoiceStyle::Checkbox, false), None, many()).multiple());
+            assert!(!merged(choose(ChoiceStyle::Select, false), None, Overrides::NONE).multiple());
+        }
+
+        #[test]
+        fn the_controls_with_nothing_to_narrow_pass_straight_through() {
+            for control in [Control::Checkbox, Control::Color, Control::Hidden] {
+                assert_eq!(plain(control), control, "{control:?}");
+            }
+        }
+
+        // ─── What each control refuses ────────────────────────────────────────
+
+        /// An attribute with nowhere to go is a mistake in the declaration, and
+        /// the merge runs in `const` position, so each of these is a compile
+        /// error where the form is written.
+        #[test]
+        fn an_attribute_the_control_cannot_hold_is_refused() {
+            // Each case builds its own `Overrides`, which is not `Copy`, so
+            // the list holds the calls rather than the arguments.
+            type Refusal = (&'static str, fn() -> Control);
+            let cases: &[Refusal] = &[
+                ("`pattern` applies only to a text input", || {
+                    merged(
+                        Control::NUMBER,
+                        None,
+                        Overrides {
+                            pattern: Some("[0-9]+"),
+                            ..Overrides::NONE
+                        },
+                    )
+                }),
+                (
+                    "`minlength`/`maxlength` apply only to a text input or a textarea",
+                    || {
+                        merged(
+                            Control::NUMBER,
+                            None,
+                            Overrides {
+                                maxlength: Some(4),
+                                ..Overrides::NONE
+                            },
+                        )
+                    },
+                ),
+                ("`min`/`max`/`step` apply only to a number", || {
+                    merged(
+                        Control::TEXT,
+                        None,
+                        Overrides {
+                            min: Some("1"),
+                            ..Overrides::NONE
+                        },
+                    )
+                }),
+                ("`accept` applies only to a file input", || {
+                    merged(
+                        Control::SELECT,
+                        None,
+                        Overrides {
+                            accept: Some("image/*"),
+                            ..Overrides::NONE
+                        },
+                    )
+                }),
+                ("`rows`/`cols` apply only to a textarea", || {
+                    merged(
+                        Control::TEXT,
+                        None,
+                        Overrides {
+                            rows: Some(4),
+                            ..Overrides::NONE
+                        },
+                    )
+                }),
+            ];
+
+            // The refusals are the point, so the report of each one is noise.
+            let hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let refusals: Vec<_> = cases
+                .iter()
+                .map(|(expected, build)| (expected, std::panic::catch_unwind(build)))
+                .collect();
+            std::panic::set_hook(hook);
+
+            for (expected, refused) in refusals {
+                let panic = refused.expect_err(expected);
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or_default();
+                assert!(message.contains(expected), "got {message:?}");
+            }
+        }
+
+        /// Every control refuses what it cannot hold, including the three that
+        /// hold nothing but themselves.
+        #[test]
+        #[should_panic(expected = "`pattern` applies only to a text input")]
+        fn a_checkbox_holds_none_of_them_either() {
+            merged(
+                Control::Checkbox,
+                None,
+                Overrides {
+                    pattern: Some("[0-9]+"),
+                    ..Overrides::NONE
+                },
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "`min`/`max`/`step`")]
+        fn a_file_input_takes_no_bounds() {
+            merged(
+                Control::File(FileControl::DEFAULT),
+                None,
+                Overrides {
+                    step: Some("1"),
+                    ..Overrides::NONE
+                },
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "`rows`/`cols`")]
+        fn a_temporal_control_takes_no_size() {
+            merged(
+                Control::Temporal(TemporalControl::DEFAULT),
+                None,
+                Overrides {
+                    cols: Some(4),
+                    ..Overrides::NONE
+                },
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "`minlength`/`maxlength`")]
+        fn a_chooser_takes_no_length() {
+            merged(
+                Control::SELECT,
+                None,
+                Overrides {
+                    minlength: Some(4),
+                    ..Overrides::NONE
+                },
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "`accept` applies only to a file input")]
+        fn a_textarea_accepts_no_media_type() {
+            merged(
+                Control::Textarea(TextareaControl::DEFAULT),
+                None,
+                Overrides {
+                    accept: Some("image/*"),
+                    ..Overrides::NONE
+                },
+            );
+        }
+
+        // ─── The two helpers the derive calls alongside it ────────────────────
+
+        /// The macro cannot see what a type's `DEFAULT` is, so the same trade
+        /// the control makes is made here for the value a blank form starts
+        /// with.
+        #[test]
+        fn a_field_default_falls_back_to_the_one_its_type_carries() {
+            assert_eq!(or_default(Some("field"), Some("type")), Some("field"));
+            assert_eq!(or_default(None, Some("type")), Some("type"));
+            assert_eq!(or_default(Some("field"), None), Some("field"));
+            assert_eq!(or_default(None, None), None);
+        }
+
+        /// A `#[value(validate = ...)]` function takes no context, but returns
+        /// everything a field's validator may return.
+        #[test]
+        fn a_types_own_check_returns_what_a_fields_check_does() {
+            assert_eq!(check_value(&4u32, |n| n % 2 == 0), Ok(()));
+            assert!(check_value(&3u32, |n| n % 2 == 0).is_err());
+
+            let keyed = check_value(&3u32, |_| Err::<(), _>(crate::Text::key("seats.odd")));
+            assert_eq!(keyed.unwrap_err().code(), Some("seats.odd"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::{Control, TextControl};
+
+    fn spec(name: &'static str) -> FieldSpec {
+        FieldSpec {
+            name,
+            ..FieldSpec::DEFAULT
+        }
+    }
+
+    fn required(name: &'static str) -> FieldSpec {
+        FieldSpec {
+            required: true,
+            ..spec(name)
+        }
+    }
+
+    // ─── Reading one raw value ────────────────────────────────────────────────
+
+    /// A name that *is* present but empty never uses the default, so a user can
+    /// still clear a field that has one.
+    #[test]
+    fn a_default_stands_in_for_an_absent_name_but_not_for_a_cleared_one() {
+        let with_default = FieldSpec {
+            default: Some("ada"),
+            ..spec("name")
+        };
+
+        let absent = Values::new();
+        assert!(matches!(
+            read(&absent, &with_default, "name"),
+            Raw::Present("ada")
+        ));
+
+        let cleared = Values::parse("name=");
+        assert!(matches!(read(&cleared, &with_default, "name"), Raw::Blank));
+
+        let filled = Values::parse("name=grace");
+        assert!(matches!(
+            read(&filled, &with_default, "name"),
+            Raw::Present("grace")
+        ));
+    }
+
+    /// Whitespace alone is not an answer, so it reads as blank rather than as
+    /// a value that happens to be spaces.
+    #[test]
+    fn a_whitespace_only_value_reads_as_blank() {
+        assert!(matches!(
+            read(&Values::parse("name=+++"), &spec("name"), "name"),
+            Raw::Blank
+        ));
+    }
+
+    /// A checkbox default describes the blank form only. An absent checkbox
+    /// means "unchecked", never "use the checked default".
+    #[test]
+    fn a_checkbox_default_never_stands_in_for_an_absent_box() {
+        let box_on = FieldSpec {
+            control: Control::Checkbox,
+            default: Some("true"),
+            ..spec("agree")
+        };
+        assert!(matches!(
+            read(&Values::new(), &box_on, "agree"),
+            Raw::Absent
+        ));
+    }
+
+    #[test]
+    fn a_field_with_no_default_is_simply_absent() {
+        assert!(matches!(
+            read(&Values::new(), &spec("name"), "name"),
+            Raw::Absent
+        ));
+    }
+
+    // ─── The prefix in scope ──────────────────────────────────────────────────
+
+    /// Outside a flatten there is no prefix to add, so the name in the spec is
+    /// what the parse looks for, borrowed as it stands.
+    #[test]
+    fn a_name_outside_a_flatten_is_borrowed_rather_than_built() {
+        let values = Values::new();
+        let ctx: ParseCtx<'_, ()> = ParseCtx::new(&values, &());
+
+        assert_eq!(ctx.prefix(), "");
+        assert_eq!(ctx.full_name("street"), "street");
+        assert!(matches!(ctx.full_name("street"), Cow::Borrowed(_)));
+    }
+
+    /// A hand-written impl reaches the submission and the caller's context
+    /// through the same accessors the derive uses.
+    #[test]
+    fn a_parse_carries_the_submission_and_the_context_it_was_given() {
+        let values = Values::parse("name=ada");
+        let context = "the context";
+        let ctx = ParseCtx::new(&values, &context);
+
+        assert_eq!(ctx.values().get("name"), Some("ada"));
+        assert_eq!(*ctx.context(), "the context");
+        assert!(ctx.errors().is_empty());
+    }
+
+    // ─── Collecting errors ────────────────────────────────────────────────────
+
+    /// Nothing stops early. A failed field records its error and the parse goes
+    /// on to the next one.
+    #[test]
+    fn an_error_is_recorded_against_the_field_that_caused_it() {
+        let values = Values::new();
+        let mut ctx: ParseCtx<'_, ()> = ParseCtx::new(&values, &());
+
+        ctx.push_error("email", FieldError::new(crate::ErrorKind::Required));
+        ctx.push_form_error(FieldError::custom("And the form as a whole is wrong."));
+        assert_eq!(ctx.errors().len(), 2);
+
+        // The same list, reachable for a caller that builds errors its own way.
+        ctx.errors_mut().reject_field("age", "Too young.");
+
+        let errors = ctx.into_errors();
+        assert!(errors.has_field("email"));
+        assert!(errors.has_field("age"));
+        assert_eq!(errors.form_errors().len(), 1);
+    }
+
+    /// A `#[form(validate = ...)]` function knows its fields by their bare
+    /// names. Merging is what puts them under the prefix in scope.
+    #[test]
+    fn merged_errors_take_the_prefix_in_scope() {
+        let values = Values::new();
+        let mut ctx: ParseCtx<'_, ()> = ParseCtx::new(&values, &());
+        ctx.prefix.push_str("billing_");
+
+        let mut incoming = FormErrors::new();
+        incoming.push("street", FieldError::new(crate::ErrorKind::Required));
+        ctx.merge_errors(incoming);
+
+        // The prefix is lent out and put back, so the parse can go on using it.
+        assert_eq!(ctx.prefix(), "billing_");
+        assert!(ctx.into_errors().has_field("billing_street"));
+    }
+
+    // ─── The four field shapes ────────────────────────────────────────────────
+
+    fn parse<T>(body: &str, take: impl FnOnce(&mut ParseCtx<'_, ()>) -> T) -> (T, FormErrors) {
+        let values = Values::parse(body);
+        let mut ctx: ParseCtx<'_, ()> = ParseCtx::new(&values, &());
+        let parsed = take(&mut ctx);
+        (parsed, ctx.into_errors())
+    }
+
+    #[test]
+    fn a_scalar_field_converts_what_arrived() {
+        let (parsed, errors) = parse("age=36", |ctx| ctx.field::<u32>(&spec("age")));
+        assert_eq!(parsed, Some(36));
+        assert!(errors.is_empty());
+    }
+
+    /// A blank value for a field that is *not* required still has to produce
+    /// some `T`. A `String` can hold nothing, and a `u32` cannot.
+    #[test]
+    fn a_blank_scalar_is_empty_where_the_type_can_hold_nothing() {
+        let (parsed, errors) = parse("name=", |ctx| ctx.field::<String>(&spec("name")));
+        assert_eq!(parsed, Some(String::new()));
+        assert!(errors.is_empty());
+
+        // A `u32` cannot, so the crate reports the field as required.
+        let (parsed, errors) = parse("age=", |ctx| ctx.field::<u32>(&spec("age")));
+        assert_eq!(parsed, None);
+        assert_eq!(
+            errors.field("age").next().unwrap().kind,
+            crate::ErrorKind::Required
+        );
+    }
+
+    #[test]
+    fn a_required_scalar_that_did_not_arrive_says_so() {
+        let (parsed, errors) = parse("", |ctx| ctx.field::<String>(&required("name")));
+        assert_eq!(parsed, None);
+        assert_eq!(
+            errors.field("name").next().unwrap().kind,
+            crate::ErrorKind::Required
+        );
+    }
+
+    #[test]
+    fn a_blank_or_absent_option_is_none_either_way() {
+        for body in ["", "age="] {
+            let (parsed, errors) = parse(body, |ctx| ctx.optional::<u32>(&spec("age")));
+            assert_eq!(parsed, Some(None), "{body:?}");
+            assert!(errors.is_empty());
+        }
+
+        let (parsed, _) = parse("age=36", |ctx| ctx.optional::<u32>(&spec("age")));
+        assert_eq!(parsed, Some(Some(36)));
+    }
+
+    /// An `Option` that is also required is a contradiction the caller wrote,
+    /// so the error stands and the field still parses as `None`.
+    #[test]
+    fn a_required_option_still_reports_the_missing_value() {
+        let (parsed, errors) = parse("", |ctx| ctx.optional::<u32>(&required("age")));
+        assert_eq!(parsed, Some(None));
+        assert!(errors.has_field("age"));
+    }
+
+    #[test]
+    fn a_many_field_collects_every_value_submitted_under_the_name() {
+        let (parsed, errors) = parse("tag=x&other=1&tag=y", |ctx| {
+            ctx.many::<String>(&spec("tag"))
+        });
+        assert_eq!(parsed, Some(vec!["x".to_owned(), "y".to_owned()]));
+        assert!(errors.is_empty());
+    }
+
+    /// An unselected `<select multiple>` and the hidden empty option of a
+    /// checkbox group both submit a blank, which is not a value.
+    #[test]
+    fn a_many_field_drops_the_blanks_a_group_submits() {
+        let (parsed, _) = parse("tag=&tag=x&tag=+", |ctx| ctx.many::<String>(&spec("tag")));
+        assert_eq!(parsed, Some(vec!["x".to_owned()]));
+
+        let (parsed, errors) = parse("tag=", |ctx| ctx.many::<String>(&spec("tag")));
+        assert_eq!(parsed, Some(Vec::new()));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn a_required_many_field_needs_at_least_one_value() {
+        let (parsed, errors) = parse("", |ctx| ctx.many::<String>(&required("tag")));
+        assert_eq!(parsed, None);
+        assert_eq!(
+            errors.field("tag").next().unwrap().kind,
+            crate::ErrorKind::Required
+        );
+    }
+
+    /// One bad entry fails the field, and the good ones are still converted so
+    /// that every error in the list is reported at once.
+    #[test]
+    fn a_many_field_reports_every_entry_it_could_not_convert() {
+        let (parsed, errors) = parse("n=1&n=x&n=y", |ctx| ctx.many::<u32>(&spec("n")));
+        assert_eq!(parsed, None);
+        assert_eq!(errors.field("n").count(), 2);
+        // And an empty result is not mistaken for "nothing was submitted".
+        assert!(
+            !errors
+                .field("n")
+                .any(|e| e.kind == crate::ErrorKind::Required)
+        );
+    }
+
+    #[test]
+    fn an_absent_box_is_false_rather_than_missing() {
+        let (parsed, errors) = parse("", |ctx| ctx.flag(&spec("agree")));
+        assert_eq!(parsed, Some(false));
+        assert!(errors.is_empty());
+
+        let (parsed, _) = parse("agree=on", |ctx| ctx.flag(&spec("agree")));
+        assert_eq!(parsed, Some(true));
+    }
+
+    /// A user must check a *required* box. That is the HTML rule, and it is
+    /// useful for "I accept the terms".
+    #[test]
+    fn a_required_box_has_to_be_checked() {
+        let (parsed, errors) = parse("", |ctx| ctx.flag(&required("agree")));
+        assert_eq!(parsed, None);
+        assert_eq!(
+            errors.field("agree").next().unwrap().kind,
+            crate::ErrorKind::Required
+        );
+
+        let (parsed, _) = parse("agree=off", |ctx| ctx.flag(&required("agree")));
+        assert_eq!(parsed, None, "an explicit `off` is not checked either");
+
+        let (parsed, errors) = parse("agree=true", |ctx| ctx.flag(&required("agree")));
+        assert_eq!(parsed, Some(true));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn a_box_with_a_value_nothing_can_read_is_reported() {
+        let (parsed, errors) = parse("agree=maybe", |ctx| ctx.flag(&spec("agree")));
+        assert_eq!(parsed, None);
+        assert!(matches!(
+            errors.field("agree").next().unwrap().kind,
+            crate::ErrorKind::Invalid { .. }
+        ));
+    }
+
+    // ─── Converting one value ─────────────────────────────────────────────────
+
+    /// A value that is both malformed *and* out of range reports the broken
+    /// constraint, which says more than "not a number".
+    #[test]
+    fn a_broken_constraint_wins_over_the_conversion_that_also_failed() {
+        let too_long = FieldSpec {
+            control: Control::Text(TextControl {
+                maxlength: Some(2),
+                ..TextControl::DEFAULT
+            }),
+            ..spec("n")
+        };
+        let (parsed, errors) = parse("n=hello", |ctx| ctx.field::<u32>(&too_long));
+
+        assert_eq!(parsed, None);
+        assert_eq!(errors.field("n").count(), 1);
+        assert!(matches!(
+            errors.field("n").next().unwrap().kind,
+            crate::ErrorKind::TooLong { .. }
+        ));
+    }
+
+    /// With nothing else wrong with it, the conversion is what reports.
+    #[test]
+    fn otherwise_the_conversion_says_what_it_wanted() {
+        let (_, errors) = parse("n=hello", |ctx| ctx.field::<u32>(&spec("n")));
+        assert_eq!(
+            errors.field("n").next().unwrap().kind,
+            crate::ErrorKind::Invalid {
+                expected: "a whole number".into()
+            }
+        );
+    }
+
+    /// The type's own check needs a converted value to look at, so it runs
+    /// last, and only once one exists.
+    #[test]
+    fn the_types_own_check_runs_after_the_conversion_and_the_constraints() {
+        struct Even(u32);
+
+        impl FormValue for Even {
+            const CONTROL: Control = Control::NUMBER;
+
+            fn parse_form_value(raw: &str) -> Result<Self, crate::ValueError> {
+                raw.parse()
+                    .map(Even)
+                    .map_err(|_| crate::ValueError::new("a number"))
+            }
+
+            fn to_form_value(&self) -> Cow<'_, str> {
+                Cow::Owned(self.0.to_string())
+            }
+
+            fn validate_form_value(&self) -> Result<(), FieldError> {
+                match self.0 % 2 {
+                    0 => Ok(()),
+                    _ => Err(FieldError::custom("Enter an even number.")),
+                }
+            }
+        }
+
+        let (parsed, errors) = parse("n=4", |ctx| ctx.field::<Even>(&spec("n")));
+        assert!(parsed.is_some());
+        assert!(errors.is_empty());
+
+        let (parsed, errors) = parse("n=3", |ctx| ctx.field::<Even>(&spec("n")));
+        assert!(parsed.is_none());
+        assert_eq!(
+            errors.field("n").next().unwrap().message.as_str(),
+            "Enter an even number."
+        );
+    }
+
+    // ─── The two `validate = ...` hooks ───────────────────────────────────────
+
+    #[test]
+    fn a_field_check_names_the_field_it_rejected() {
+        let values = Values::new();
+        let mut ctx: ParseCtx<'_, ()> = ParseCtx::new(&values, &());
+        ctx.check_custom(&spec("seats"), &3u32, |n: &u32| n.is_multiple_of(2));
+        ctx.check_custom(&spec("rows"), &4u32, |n: &u32| n.is_multiple_of(2));
+
+        let errors = ctx.into_errors();
+        assert!(errors.has_field("seats"));
+        assert!(!errors.has_field("rows"));
+    }
+
+    #[test]
+    fn a_form_check_may_reject_the_form_or_one_of_its_fields() {
+        let values = Values::new();
+        let mut ctx: ParseCtx<'_, ()> = ParseCtx::new(&values, &());
+        ctx.check_form(&(), |_: &()| Err::<(), _>(("confirm", "They differ.")));
+        ctx.check_form(&(), |_: &()| false);
+
+        let errors = ctx.into_errors();
+        assert!(errors.has_field("confirm"));
+        assert_eq!(errors.form_errors().len(), 1);
+    }
+
+    // ─── A value converted by its own `FromStr` ───────────────────────────────
+
+    /// `#[field(from_str)]` wraps the field's type for the length of the parse,
+    /// so a foreign type needs no impl of its own.
+    #[test]
+    fn a_foreign_type_converts_through_its_own_from_str_and_display() {
+        use crate::runtime::__private::Str;
+
+        let Str(parsed) = <Str<std::net::Ipv4Addr>>::parse_form_value("10.0.0.1").unwrap();
+        assert_eq!(parsed, std::net::Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(Str(parsed).to_form_value(), "10.0.0.1");
+
+        // A plain text input, because a foreign type has no `CONTROL` to give.
+        assert_eq!(<Str<std::net::Ipv4Addr>>::CONTROL, Control::TEXT);
+    }
+
+    /// The whitespace around a pasted value is a user's slip, not their answer.
+    #[test]
+    fn the_whitespace_around_a_pasted_value_goes_first() {
+        use crate::runtime::__private::Str;
+
+        let Str(parsed) = <Str<u16>>::parse_form_value("  8080  ").unwrap();
+        assert_eq!(parsed, 8080);
+    }
+
+    /// The message deliberately leaves out what the `FromStr` said. A parse
+    /// error speaks to whoever wrote the call, not to whoever filled the form.
+    #[test]
+    fn a_conversion_that_fails_says_nothing_of_what_the_type_complained() {
+        use crate::runtime::__private::Str;
+
+        let error = <Str<u16>>::parse_form_value("nope")
+            .err()
+            .expect("`nope` is not a number");
+        assert_eq!(error.expected, "a valid value");
+    }
 }

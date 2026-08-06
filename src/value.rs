@@ -240,3 +240,195 @@ macro_rules! impl_float {
 }
 
 impl_float!(f32, f64);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::NumberFormat;
+
+    fn expected<T: FormValue>(raw: &str) -> String {
+        T::parse_form_value(raw)
+            .err()
+            .expect("the value was supposed to be rejected")
+            .expected
+            .into_owned()
+    }
+
+    #[test]
+    fn a_string_takes_whatever_arrived_and_gives_it_straight_back() {
+        assert_eq!(
+            String::parse_form_value("  padded  "),
+            Ok("  padded  ".to_owned())
+        );
+        assert_eq!(String::parse_form_value(""), Ok(String::new()));
+        assert_eq!(String::from("ada").to_form_value(), "ada");
+        // Borrowed, because a string is already what a submission carries.
+        assert!(matches!(
+            String::from("ada").to_form_value(),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn a_char_is_exactly_one_of_them() {
+        assert_eq!(char::parse_form_value("x"), Ok('x'));
+        assert_eq!(
+            char::parse_form_value("\u{e9}"),
+            Ok('\u{e9}'),
+            "one character, two bytes"
+        );
+        assert_eq!(
+            char::parse_form_value("\u{1f600}"),
+            Ok('\u{1f600}'),
+            "or four"
+        );
+
+        assert_eq!(expected::<char>(""), "a single character");
+        assert_eq!(expected::<char>("xy"), "a single character");
+        assert_eq!('x'.to_form_value(), "x");
+    }
+
+    /// A checkbox arrives written in whatever way the client that sent it
+    /// writes one, so the conversion accepts every spelling in circulation.
+    #[test]
+    fn a_checkbox_is_read_from_every_spelling_a_client_sends() {
+        for raw in ["", "on", "true", "1", "yes", "y", "checked", " ON ", "TRUE"] {
+            assert_eq!(bool::parse_form_value(raw), Ok(true), "{raw:?}");
+        }
+        for raw in ["off", "false", "0", "no", "n", " OFF ", "False"] {
+            assert_eq!(bool::parse_form_value(raw), Ok(false), "{raw:?}");
+        }
+        assert_eq!(expected::<bool>("maybe"), "a yes/no value");
+    }
+
+    /// An empty value counts as *checked*, because that is what a checkbox with
+    /// no `value` attribute submits in some clients.
+    #[test]
+    fn an_empty_checkbox_value_still_means_checked() {
+        assert_eq!(bool::parse_form_value(""), Ok(true));
+    }
+
+    #[test]
+    fn a_bool_writes_itself_back_as_a_word() {
+        assert_eq!(true.to_form_value(), "true");
+        assert_eq!(false.to_form_value(), "false");
+    }
+
+    #[test]
+    fn an_integer_drops_the_whitespace_around_it() {
+        assert_eq!(u32::parse_form_value("  36  "), Ok(36));
+        assert_eq!(i64::parse_form_value("-1"), Ok(-1));
+        assert_eq!(36u32.to_form_value(), "36");
+    }
+
+    /// "Not a number at all" and "out of range" are different mistakes, and
+    /// only one of them is worth telling a user the limits for.
+    #[test]
+    fn an_integer_out_of_range_says_so_rather_than_just_not_a_number() {
+        assert_eq!(
+            expected::<u8>("300"),
+            "a whole number between 0 and 255",
+            "over the top"
+        );
+        assert_eq!(
+            expected::<u8>("-1"),
+            "a whole number between 0 and 255",
+            "under the bottom, which for an unsigned type is any negative"
+        );
+        assert_eq!(
+            expected::<i8>("-200"),
+            "a whole number between -128 and 127"
+        );
+        assert_eq!(expected::<u8>("abc"), "a whole number");
+        assert_eq!(
+            expected::<u8>("1.5"),
+            "a whole number",
+            "nor is it a whole one"
+        );
+        assert_eq!(expected::<u8>(""), "a whole number");
+    }
+
+    /// The `i128`/`u128` fallback covers a value too big for *either* of them,
+    /// which is no longer a number that was merely out of range.
+    #[test]
+    fn a_number_past_every_integer_type_is_reported_as_no_number_at_all() {
+        let enormous = "1".repeat(64);
+        assert_eq!(expected::<u64>(&enormous), "a whole number");
+        // But one that still fits an i128 keeps the more useful message.
+        assert_eq!(
+            expected::<u64>("-9223372036854775808"),
+            "a whole number between 0 and 18446744073709551615"
+        );
+    }
+
+    #[test]
+    fn every_integer_width_carries_the_bounds_its_type_implies() {
+        assert!(matches!(
+            <u32 as FormValue>::CONTROL,
+            Control::Number(NumberControl {
+                bounds: Bounds {
+                    min: Some("0"),
+                    step: Some("1"),
+                    max: None
+                },
+                format: NumberFormat::Number,
+            })
+        ));
+        // A signed type has no floor to promise.
+        assert!(matches!(
+            <i32 as FormValue>::CONTROL,
+            Control::Number(NumberControl {
+                bounds: Bounds {
+                    min: None,
+                    step: Some("1"),
+                    ..
+                },
+                ..
+            })
+        ));
+        assert_eq!(<usize as FormValue>::DEFAULT, None);
+    }
+
+    #[test]
+    fn a_float_takes_a_fraction_and_says_so_in_its_step() {
+        assert_eq!(f64::parse_form_value(" 1.5 "), Ok(1.5));
+        assert_eq!(f32::parse_form_value("-0.25"), Ok(-0.25));
+        assert_eq!(1.5f64.to_form_value(), "1.5");
+
+        assert!(matches!(
+            <f64 as FormValue>::CONTROL,
+            Control::Number(NumberControl {
+                bounds: Bounds {
+                    step: Some("any"),
+                    min: None,
+                    max: None
+                },
+                ..
+            })
+        ));
+    }
+
+    /// A form field holds a quantity. An infinity or a NaN is neither one a
+    /// user can have meant nor one a caller can do arithmetic with.
+    #[test]
+    fn a_float_that_is_not_finite_is_not_a_quantity() {
+        assert_eq!(expected::<f64>("inf"), "a finite number");
+        assert_eq!(expected::<f64>("-inf"), "a finite number");
+        assert_eq!(expected::<f64>("NaN"), "a finite number");
+        assert_eq!(expected::<f32>("infinity"), "a finite number");
+        // And what will not parse at all is simply not a number.
+        assert_eq!(expected::<f64>("abc"), "a number");
+        assert_eq!(expected::<f32>(""), "a number");
+    }
+
+    /// The check is the type's own business, and a type that makes none passes
+    /// everything the conversion accepted.
+    #[test]
+    fn the_built_in_types_check_nothing_beyond_converting() {
+        assert!(String::new().validate_form_value().is_ok());
+        assert!(0u8.validate_form_value().is_ok());
+        assert!(f64::MAX.validate_form_value().is_ok());
+        assert!(true.validate_form_value().is_ok());
+        assert!('x'.validate_form_value().is_ok());
+    }
+}

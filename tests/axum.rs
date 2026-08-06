@@ -127,6 +127,72 @@ async fn a_body_without_a_content_type_is_rejected() {
     ));
 }
 
+/// A header value that is not text at all cannot name a media type, so it is
+/// not the one the extractor wants.
+#[tokio::test]
+async fn a_content_type_that_is_not_even_text_is_rejected() {
+    let mut req = post("application/x-www-form-urlencoded", "email=a%40example.com");
+    req.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+    );
+
+    assert!(matches!(
+        extract(req).await.unwrap_err(),
+        FormRejection::UnsupportedMediaType
+    ));
+}
+
+/// The other rejection is about reading the body at all: the connection
+/// dropped, or the body went over the limit. The status comes from the
+/// rejection underneath rather than from this crate.
+#[tokio::test]
+async fn a_body_the_server_could_not_read_carries_the_status_it_came_with() {
+    let broken = Body::from_stream(futures_util::stream::once(async {
+        Err::<&[u8], _>(std::io::Error::other("the connection dropped"))
+    }));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/signup")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(broken)
+        .unwrap();
+
+    let rejection = extract(req).await.unwrap_err();
+    assert!(matches!(rejection, FormRejection::Body(_)));
+    assert_ne!(rejection.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(rejection.into_response().status(), StatusCode::BAD_REQUEST);
+}
+
+/// Both variants say what went wrong, and the one that wraps another error
+/// hands it on to whatever walks the chain.
+#[tokio::test]
+async fn a_rejection_explains_itself_and_names_its_cause() {
+    use std::error::Error as _;
+
+    let media_type = extract(post("application/json", "{}")).await.unwrap_err();
+    assert!(
+        media_type
+            .to_string()
+            .contains("application/x-www-form-urlencoded")
+    );
+    assert!(media_type.source().is_none(), "there is nothing underneath");
+
+    let broken = Body::from_stream(futures_util::stream::once(async {
+        Err::<&[u8], _>(std::io::Error::other("the connection dropped"))
+    }));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/signup")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(broken)
+        .unwrap();
+
+    let body = extract(req).await.unwrap_err();
+    assert!(!body.to_string().is_empty());
+    assert!(body.source().is_some(), "the rejection underneath");
+}
+
 #[tokio::test]
 async fn a_non_utf8_body_costs_one_field_its_value_rather_than_the_whole_form() {
     // A stray byte in one field is not a reason to throw a submission away:

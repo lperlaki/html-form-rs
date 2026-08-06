@@ -647,3 +647,577 @@ where
         self(value, context).into_form_errors()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::format::*;
+    use super::*;
+    use crate::spec::{
+        Choice, ChoiceStyle, ChooseControl, FileControl, NumberControl, NumberFormat,
+        TemporalControl, TextControl, TextareaControl,
+    };
+
+    /// A spec is a `const` everywhere else. A test builds one field at a time,
+    /// so it says only what the check under test reads.
+    fn spec(control: Control) -> FieldSpec {
+        FieldSpec {
+            name: "field",
+            control,
+            ..FieldSpec::DEFAULT
+        }
+    }
+
+    fn kinds(control: Control, raw: &str) -> Vec<ErrorKind> {
+        check(&spec(control), raw)
+            .into_iter()
+            .map(|e| e.kind)
+            .collect()
+    }
+
+    fn text(control: TextControl) -> Control {
+        Control::Text(control)
+    }
+
+    fn bounds(
+        min: Option<&'static str>,
+        max: Option<&'static str>,
+        step: Option<&'static str>,
+    ) -> Bounds {
+        Bounds { min, max, step }
+    }
+
+    fn number(bounds: Bounds) -> Control {
+        Control::Number(NumberControl {
+            format: NumberFormat::Number,
+            bounds,
+        })
+    }
+
+    fn temporal(format: TemporalFormat, bounds: Bounds) -> Control {
+        Control::Temporal(TemporalControl { format, bounds })
+    }
+
+    // ─── The address production ───────────────────────────────────────────────
+
+    #[test]
+    fn an_address_needs_a_local_part_an_at_sign_and_a_domain() {
+        assert!(is_email("ada@example.com"));
+        assert!(is_email("a@b"));
+        // Every punctuation character the HTML production lists.
+        assert!(is_email("a.!#$%&'*+/=?^_`{|}~-@example.com"));
+
+        assert!(!is_email("ada"), "no at sign");
+        assert!(!is_email("@example.com"), "no local part");
+        assert!(!is_email("ada@"), "no domain");
+        assert!(!is_email("ada name@example.com"), "a space is not allowed");
+    }
+
+    /// A second `@` lands in the domain, where it is not a legal label
+    /// character. There is no separate check for it.
+    #[test]
+    fn a_second_at_sign_is_rejected_by_the_domain_label() {
+        assert!(!is_email("ada@example@com"));
+    }
+
+    #[test]
+    fn a_domain_label_is_short_non_empty_and_not_hyphen_bounded() {
+        assert!(!is_email("ada@example..com"), "an empty label");
+        assert!(!is_email("ada@-example.com"), "a leading hyphen");
+        assert!(!is_email("ada@example-.com"), "a trailing hyphen");
+        assert!(!is_email("ada@ex_ample.com"), "an underscore");
+        assert!(is_email("ada@ex-ample.com"), "a hyphen inside is fine");
+
+        let long = "a".repeat(63);
+        assert!(is_email(&format!("ada@{long}.com")), "63 is the limit");
+        assert!(!is_email(&format!("ada@{long}a.com")), "64 is over it");
+    }
+
+    /// `multiple` accepts a comma-separated list, and trims around each entry,
+    /// as HTML does.
+    #[test]
+    fn a_multiple_email_field_takes_a_comma_separated_list() {
+        let one = text(TextControl {
+            format: TextFormat::Email { multiple: false },
+            ..TextControl::DEFAULT
+        });
+        let many = text(TextControl {
+            format: TextFormat::Email { multiple: true },
+            ..TextControl::DEFAULT
+        });
+
+        assert!(kinds(one, "a@b.com, c@d.com").len() == 1);
+        assert!(kinds(many, "a@b.com, c@d.com").is_empty());
+        // One bad entry rejects the list, and the message says it wanted a list.
+        assert_eq!(
+            kinds(many, "a@b.com, nope"),
+            [ErrorKind::Invalid {
+                expected: "a comma-separated list of email addresses".into()
+            }]
+        );
+    }
+
+    // ─── The other formats ────────────────────────────────────────────────────
+
+    #[test]
+    fn a_url_needs_a_scheme_a_colon_and_something_after_it() {
+        assert!(is_url("https://example.com"));
+        assert!(is_url("mailto:ada@example.com"));
+        assert!(is_url("a+b-c.d:x"), "the scheme punctuation HTML allows");
+
+        assert!(!is_url("example.com"), "no scheme");
+        assert!(!is_url("https:"), "nothing after the colon");
+        assert!(
+            !is_url("1https://example.com"),
+            "a scheme starts with a letter"
+        );
+        assert!(!is_url("ht tps://example.com"), "no whitespace anywhere");
+        assert!(!is_url("https://exa mple.com"), "not even later on");
+    }
+
+    #[test]
+    fn a_colour_is_six_hex_digits_behind_a_hash() {
+        assert!(is_color("#00ff7F"));
+        assert!(!is_color("00ff7f"), "no hash");
+        assert!(!is_color("#00ff7"), "five digits");
+        assert!(!is_color("#00ff7fa"), "seven digits");
+        assert!(!is_color("#00ff7g"), "not a hex digit");
+
+        assert_eq!(
+            kinds(Control::Color, "red"),
+            [ErrorKind::Invalid {
+                expected: "a color as #rrggbb".into()
+            }]
+        );
+        assert!(kinds(Control::Color, "#ffffff").is_empty());
+    }
+
+    #[test]
+    fn a_date_is_checked_against_the_calendar_not_just_the_digit_count() {
+        assert!(is_date("2026-08-06"));
+        assert!(is_date("2026-01-31"));
+        assert!(is_date("2024-02-29"), "a leap year");
+
+        assert!(!is_date("2026-02-29"), "not a leap year");
+        assert!(!is_date("1900-02-29"), "a century that is not a leap year");
+        assert!(is_date("2000-02-29"), "a century divisible by 400");
+        assert!(!is_date("2026-04-31"), "April has 30 days");
+        assert!(!is_date("2026-13-01"), "there is no month 13");
+        assert!(!is_date("2026-00-01"), "nor a month zero");
+        assert!(!is_date("2026-01-00"), "nor a day zero");
+        assert!(!is_date("2026-1-01"), "the month is two digits");
+        assert!(!is_date("26-01-01"), "the year is four");
+        assert!(!is_date("2026-01-1"), "and the day is two");
+        assert!(!is_date("20260101"), "with the separators");
+        assert!(!is_date("not-a-date"), "digits, at that");
+    }
+
+    #[test]
+    fn a_time_is_hours_and_minutes_and_may_carry_seconds() {
+        assert!(is_time("00:00"));
+        assert!(is_time("23:59"));
+        assert!(is_time("12:30:45"));
+        assert!(is_time("12:30:45.1"));
+        assert!(is_time("12:30:45.123"));
+
+        assert!(!is_time("24:00"), "the hour tops out at 23");
+        assert!(!is_time("12:60"), "and the minute at 59");
+        assert!(!is_time("12:30:60"), "and the second at 59");
+        assert!(!is_time("12"), "minutes are not optional");
+        assert!(!is_time("1:30"), "the hour is two digits");
+        assert!(!is_time("12:30:45.1234"), "at most three fraction digits");
+        assert!(!is_time("12:30:45."), "and at least one");
+        assert!(!is_time("12:30:45.abc"), "which are digits");
+        assert!(!is_time("12:30:45:00"), "there is no fourth part");
+    }
+
+    #[test]
+    fn a_local_datetime_joins_the_two_with_a_t_or_a_space() {
+        assert!(is_datetime_local("2026-08-06T12:30"));
+        assert!(is_datetime_local("2026-08-06 12:30"), "HTML allows a space");
+        assert!(is_datetime_local("2026-08-06T12:30:45.500"));
+
+        assert!(!is_datetime_local("2026-08-06"), "no time");
+        assert!(!is_datetime_local("2026-02-29T12:30"), "an impossible date");
+        assert!(!is_datetime_local("2026-08-06T25:00"), "an impossible time");
+    }
+
+    #[test]
+    fn a_month_is_a_year_and_a_month() {
+        assert!(is_month("2026-08"));
+        assert!(!is_month("2026-13"));
+        assert!(!is_month("2026"));
+        assert!(!is_month("2026-8"));
+    }
+
+    /// An ISO 8601 long year has 53 weeks. It starts on a Thursday, or on a
+    /// Wednesday in a leap year.
+    #[test]
+    fn a_week_number_is_checked_against_the_length_of_its_year() {
+        assert!(is_week("2026-W01"));
+        assert!(is_week("2026-W52"));
+
+        assert!(is_week("2026-W53"), "2026 starts on a Thursday");
+        assert!(
+            is_week("2020-W53"),
+            "2020 is a leap year starting Wednesday"
+        );
+        assert!(!is_week("2025-W53"), "2025 is an ordinary 52-week year");
+
+        assert!(!is_week("2026-W00"), "weeks are one-based");
+        assert!(!is_week("2026-W54"), "and never reach 54");
+        assert!(!is_week("2026W01"), "the separator is `-W`");
+        assert!(!is_week("26-W01"), "the year is four digits");
+        assert!(!is_week("2026-Wxx"), "and the week is two");
+    }
+
+    #[test]
+    fn a_temporal_control_reports_the_shape_it_wanted() {
+        for (format, raw, expected) in [
+            (TemporalFormat::Date, "nope", "a date as YYYY-MM-DD"),
+            (TemporalFormat::Time, "nope", "a time as HH:MM"),
+            (
+                TemporalFormat::DatetimeLocal,
+                "nope",
+                "a date and time as YYYY-MM-DDTHH:MM",
+            ),
+            (TemporalFormat::Month, "nope", "a month as YYYY-MM"),
+            (TemporalFormat::Week, "nope", "a week as YYYY-Www"),
+        ] {
+            assert_eq!(
+                kinds(temporal(format, Bounds::DEFAULT), raw),
+                [ErrorKind::Invalid {
+                    expected: expected.into()
+                }],
+                "{format:?}"
+            );
+        }
+    }
+
+    /// A format that accepts anything is not a check at all, so nothing about
+    /// the value can fail it.
+    #[test]
+    fn the_free_text_formats_accept_whatever_arrives() {
+        for format in [
+            TextFormat::Text,
+            TextFormat::Password,
+            TextFormat::Tel,
+            TextFormat::Search,
+        ] {
+            let control = text(TextControl {
+                format,
+                ..TextControl::DEFAULT
+            });
+            assert!(kinds(control, "\u{1f600} anything at all").is_empty());
+        }
+    }
+
+    // ─── Bounds ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_numeric_bound_is_compared_as_a_number() {
+        let control = number(bounds(Some("10"), Some("20"), None));
+        assert!(kinds(control, "15").is_empty());
+        assert_eq!(
+            kinds(control, "9"),
+            [ErrorKind::TooSmall { min: "10".into() }]
+        );
+        assert_eq!(
+            kinds(control, "21"),
+            [ErrorKind::TooLarge { max: "20".into() }]
+        );
+    }
+
+    /// The Rust type rejects what is not a number, and says more about it than
+    /// a bound could. So the bound check leaves it alone rather than adding a
+    /// second, vaguer complaint.
+    #[test]
+    fn a_value_that_is_not_a_number_is_left_to_the_rust_type() {
+        assert!(kinds(number(bounds(Some("10"), None, None)), "abc").is_empty());
+    }
+
+    #[test]
+    fn a_control_with_no_bounds_checks_nothing() {
+        assert!(kinds(number(Bounds::DEFAULT), "-1").is_empty());
+        assert!(Bounds::DEFAULT.is_empty());
+        assert!(!bounds(None, None, Some("1")).is_empty());
+    }
+
+    /// A bound the crate cannot read as a number is not a bound. It still
+    /// renders, so the browser makes whatever it can of it.
+    #[test]
+    fn an_unparseable_bound_is_skipped_rather_than_failing_everything() {
+        assert!(kinds(number(bounds(Some("ten"), Some("twenty"), None)), "15").is_empty());
+    }
+
+    #[test]
+    fn a_step_grid_starts_at_min_where_there_is_one() {
+        // No `min`: the grid starts at zero.
+        let from_zero = number(bounds(None, None, Some("5")));
+        assert!(kinds(from_zero, "10").is_empty());
+        assert_eq!(
+            kinds(from_zero, "12"),
+            [ErrorKind::Step { step: "5".into() }]
+        );
+
+        // With one: the grid starts there instead.
+        let from_two = number(bounds(Some("2"), None, Some("5")));
+        assert!(kinds(from_two, "12").is_empty());
+        assert!(!kinds(from_two, "10").is_empty());
+    }
+
+    /// Binary floating point cannot hold 0.1, so a strict remainder would
+    /// reject a value the user typed exactly as the grid asks for.
+    #[test]
+    fn a_fractional_step_tolerates_what_binary_floats_cannot_hold() {
+        let tenths = number(bounds(None, None, Some("0.1")));
+        assert!(kinds(tenths, "0.3").is_empty());
+        assert!(kinds(tenths, "12345.6").is_empty());
+        assert!(!kinds(tenths, "0.35").is_empty());
+    }
+
+    #[test]
+    fn a_step_the_check_cannot_use_turns_it_off() {
+        assert_eq!(parse_step("any"), None);
+        assert_eq!(parse_step("ANY"), None, "the keyword is case-insensitive");
+        assert_eq!(parse_step("0"), None, "a step of zero divides by nothing");
+        assert_eq!(parse_step("-1"), None, "nor does a negative one");
+        assert_eq!(parse_step("inf"), None, "nor an infinite one");
+        assert_eq!(parse_step("nope"), None);
+        assert_eq!(parse_step("0.5"), Some(0.5));
+
+        // And with it off, every value sits on the grid.
+        assert!(kinds(number(bounds(None, None, Some("any"))), "1.234567").is_empty());
+    }
+
+    /// Every format HTML uses puts string order and time order together, so a
+    /// string comparison is the whole job.
+    #[test]
+    fn a_date_bound_is_compared_as_a_string() {
+        let control = temporal(
+            TemporalFormat::Date,
+            bounds(Some("2026-01-01"), Some("2026-12-31"), None),
+        );
+        assert!(kinds(control, "2026-06-15").is_empty());
+        assert_eq!(
+            kinds(control, "2025-12-31"),
+            [ErrorKind::TooSmall {
+                min: "2026-01-01".into()
+            }]
+        );
+        assert_eq!(
+            kinds(control, "2027-01-01"),
+            [ErrorKind::TooLarge {
+                max: "2026-12-31".into()
+            }]
+        );
+    }
+
+    // ─── Length and pattern ───────────────────────────────────────────────────
+
+    #[test]
+    fn length_is_counted_in_characters_not_bytes() {
+        let control = text(TextControl {
+            minlength: Some(2),
+            maxlength: Some(4),
+            ..TextControl::DEFAULT
+        });
+        // Four characters, twelve bytes.
+        assert!(kinds(control, "\u{e9}\u{e9}\u{e9}\u{e9}").is_empty());
+        assert_eq!(
+            kinds(control, "a"),
+            [ErrorKind::TooShort {
+                minlength: 2,
+                length: 1
+            }]
+        );
+        assert_eq!(
+            kinds(control, "abcde"),
+            [ErrorKind::TooLong {
+                maxlength: 4,
+                length: 5
+            }]
+        );
+    }
+
+    #[test]
+    fn a_textarea_is_checked_for_length_and_nothing_else() {
+        let control = Control::Textarea(TextareaControl {
+            minlength: Some(10),
+            ..TextareaControl::DEFAULT
+        });
+        assert_eq!(
+            kinds(control, "short"),
+            [ErrorKind::TooShort {
+                minlength: 10,
+                length: 5
+            }]
+        );
+        assert!(kinds(control, "long enough to pass").is_empty());
+    }
+
+    #[test]
+    fn a_pattern_has_to_match_the_whole_value() {
+        let control = text(TextControl {
+            pattern: Some("[a-z]+"),
+            ..TextControl::DEFAULT
+        });
+        assert!(kinds(control, "abc").is_empty());
+        assert_eq!(
+            kinds(control, "abc1"),
+            [ErrorKind::Pattern {
+                pattern: "[a-z]+".into()
+            }]
+        );
+    }
+
+    /// A pattern the engine will not compile must not reject everything the
+    /// user types. The browser is then the only place that enforces it.
+    #[cfg(feature = "pattern")]
+    #[test]
+    fn a_pattern_that_does_not_compile_rejects_nothing() {
+        let control = text(TextControl {
+            pattern: Some("("),
+            ..TextControl::DEFAULT
+        });
+        assert!(kinds(control, "anything").is_empty());
+        // Twice, because the failure is cached like any other compilation.
+        assert!(kinds(control, "anything").is_empty());
+    }
+
+    /// The format check answers "is this an address at all". A finer check of
+    /// which addresses count says nothing useful until it is.
+    #[test]
+    fn a_broken_format_stops_the_finer_checks_of_the_same_control() {
+        let control = text(TextControl {
+            format: TextFormat::Email { multiple: false },
+            pattern: Some(".*@example\\.com"),
+            minlength: Some(30),
+            ..TextControl::DEFAULT
+        });
+        assert_eq!(
+            kinds(control, "nope"),
+            [ErrorKind::Invalid {
+                expected: "a valid email address".into()
+            }]
+        );
+    }
+
+    /// Where the format holds, though, every remaining check runs, so one pass
+    /// reports everything wrong with the value.
+    #[test]
+    fn otherwise_every_check_of_a_control_runs() {
+        let control = text(TextControl {
+            pattern: Some("[0-9]+"),
+            minlength: Some(10),
+            maxlength: Some(1),
+            ..TextControl::DEFAULT
+        });
+        assert_eq!(
+            kinds(control, "abc"),
+            [
+                ErrorKind::Pattern {
+                    pattern: "[0-9]+".into()
+                },
+                ErrorKind::TooShort {
+                    minlength: 10,
+                    length: 3
+                },
+                ErrorKind::TooLong {
+                    maxlength: 1,
+                    length: 3
+                },
+            ]
+        );
+    }
+
+    // ─── Choices, and the controls with nothing to check ──────────────────────
+
+    #[test]
+    fn a_value_has_to_be_one_of_the_declared_choices() {
+        const CHOICES: &[Choice] = &[Choice::new("de", "Germany"), Choice::new("ch", "Swiss")];
+        let control = Control::Choose(ChooseControl {
+            style: ChoiceStyle::Select,
+            multiple: false,
+            choices: CHOICES,
+        });
+        assert!(kinds(control, "de").is_empty());
+        assert_eq!(kinds(control, "fr"), [ErrorKind::NotAChoice]);
+    }
+
+    /// An empty list means the options arrive at render time, from a database
+    /// or wherever else. There is nothing yet to check the value against.
+    #[test]
+    fn choices_that_arrive_at_render_time_are_not_checked_here() {
+        assert!(kinds(Control::SELECT, "anything").is_empty());
+    }
+
+    #[test]
+    fn the_controls_the_spec_cannot_constrain_are_left_alone() {
+        for control in [
+            Control::Checkbox,
+            Control::File(FileControl::DEFAULT),
+            Control::Hidden,
+        ] {
+            assert!(kinds(control, "whatever").is_empty(), "{control:?}");
+        }
+    }
+
+    // ─── What a validator returns ─────────────────────────────────────────────
+
+    #[test]
+    fn a_predicate_rejects_with_the_built_in_message_and_no_code() {
+        assert_eq!(true.into_field_error(), None);
+        let error = false.into_field_error().unwrap();
+        assert_eq!(error.kind, ErrorKind::Custom { code: None });
+        assert_eq!(error.message.as_str(), "This value is not valid.");
+
+        assert_eq!(true.into_form_errors(), None);
+        let errors = false.into_form_errors().unwrap();
+        assert_eq!(errors.form_errors().len(), 1);
+    }
+
+    #[test]
+    fn a_result_carries_whatever_its_error_converts_into() {
+        let ok: Result<(), &'static str> = Ok(());
+        assert_eq!(ok.into_field_error(), None);
+
+        let failed: Result<(), &'static str> = Err("no");
+        assert_eq!(failed.into_field_error().unwrap().message.as_str(), "no");
+
+        let ok: Result<(), &'static str> = Ok(());
+        assert_eq!(ok.into_form_errors(), None);
+
+        let failed: Result<(), (&'static str, &'static str)> = Err(("password", "no"));
+        assert!(failed.into_form_errors().unwrap().has_field("password"));
+    }
+
+    /// Either arity works, and the crate reads which one was written off the
+    /// function itself.
+    #[test]
+    fn a_validator_may_take_the_context_or_ignore_it() {
+        fn alone(value: &u32) -> bool {
+            *value > 0
+        }
+        fn with_context(value: &u32, limit: &u32) -> bool {
+            value <= limit
+        }
+
+        assert_eq!(FieldValidator::check(&alone, &1, &10), None);
+        assert!(FieldValidator::check(&alone, &0, &10).is_some());
+        assert_eq!(FieldValidator::check(&with_context, &5, &10), None);
+        assert!(FieldValidator::check(&with_context, &50, &10).is_some());
+
+        assert_eq!(FormValidator::check(&alone, &1, &10), None);
+        assert!(FormValidator::check(&alone, &0, &10).is_some());
+        assert_eq!(FormValidator::check(&with_context, &5, &10), None);
+        assert!(FormValidator::check(&with_context, &50, &10).is_some());
+    }
+
+    #[test]
+    fn a_missing_required_value_is_reported_as_required() {
+        assert_eq!(
+            required_error(&spec(Control::TEXT)).kind,
+            ErrorKind::Required
+        );
+    }
+}

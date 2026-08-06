@@ -425,3 +425,267 @@ impl<'de> Visitor<'de> for ScalarVisitor {
 pub(crate) fn is_blank(value: &str) -> bool {
     value.trim().is_empty()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_submission_is_decoded_into_name_and_value_pairs() {
+        let values = Values::parse("email=a%40b.com&note=hello+world&empty=");
+        assert_eq!(values.get("email"), Some("a@b.com"));
+        assert_eq!(values.get("note"), Some("hello world"), "`+` is a space");
+        assert_eq!(values.get("empty"), Some(""));
+        assert_eq!(values.get("absent"), None);
+        assert_eq!(values.len(), 3);
+        assert!(!values.is_empty());
+    }
+
+    #[test]
+    fn an_empty_body_is_an_empty_submission() {
+        for values in [Values::parse(""), Values::new(), Values::default()] {
+            assert!(values.is_empty());
+            assert_eq!(values.len(), 0);
+            assert_eq!(values.to_urlencoded(), "");
+        }
+    }
+
+    /// A query string may arrive with the `?` still on it, which is not part
+    /// of any field's name.
+    #[test]
+    fn a_leading_question_mark_is_not_part_of_the_first_name() {
+        assert_eq!(Values::parse("?a=1&b=2"), Values::parse("a=1&b=2"));
+        assert_eq!(Values::parse("?a=1").get("a"), Some("1"));
+    }
+
+    /// The decode is lossy, so one broken byte costs a field its value rather
+    /// than costing the user their form.
+    #[test]
+    fn a_byte_that_is_not_utf8_costs_one_field_and_no_more() {
+        let mut body = b"good=yes&bad=".to_vec();
+        body.push(0xff);
+        let values = Values::parse_bytes(&body);
+
+        assert_eq!(values.get("good"), Some("yes"));
+        assert_eq!(values.get("bad"), Some("\u{fffd}"));
+    }
+
+    /// A name may repeat, which is how a checkbox group and a
+    /// `<select multiple>` submit their values.
+    #[test]
+    fn a_repeated_name_keeps_every_value_in_the_order_it_arrived() {
+        let values = Values::parse("tag=x&other=1&tag=y&tag=z");
+        assert_eq!(values.all("tag").collect::<Vec<_>>(), ["x", "y", "z"]);
+        assert_eq!(values.get("tag"), Some("x"), "`get` takes the first");
+        assert_eq!(values.all("absent").count(), 0);
+    }
+
+    /// A name with an empty value is still a name the client submitted, which
+    /// is what tells "cleared" apart from "left out".
+    #[test]
+    fn a_name_present_but_empty_is_not_a_name_that_is_absent() {
+        let values = Values::parse("cleared=");
+        assert!(values.contains("cleared"));
+        assert!(!values.contains("absent"));
+        assert_eq!(values.get("cleared"), Some(""));
+    }
+
+    #[test]
+    fn push_adds_a_value_and_set_replaces_every_one() {
+        let mut values = Values::parse("tag=x&keep=1&tag=y");
+        values.push("tag", "z");
+        assert_eq!(values.all("tag").collect::<Vec<_>>(), ["x", "y", "z"]);
+
+        values.set("tag", "only");
+        assert_eq!(values.all("tag").collect::<Vec<_>>(), ["only"]);
+        assert_eq!(values.get("keep"), Some("1"), "and leaves the rest alone");
+
+        // On a name that is not there yet, `set` simply adds it.
+        values.set("new", "1");
+        assert_eq!(values.get("new"), Some("1"));
+    }
+
+    #[test]
+    fn values_can_come_from_a_frameworks_own_body_parser() {
+        let expected = Values::parse("email=a%40b.com&tag=x");
+        let pairs = [("email", "a@b.com"), ("tag", "x")];
+
+        assert_eq!(Values::from_pairs(pairs), expected);
+        assert_eq!(pairs.into_iter().collect::<Values>(), expected);
+        // Owned halves work too, for names or values built at runtime.
+        assert_eq!(
+            Values::from_pairs([("email".to_owned(), "a@b.com".to_owned())]).get("email"),
+            Some("a@b.com")
+        );
+    }
+
+    #[test]
+    fn iterating_gives_the_pairs_back_in_submission_order() {
+        let values = Values::parse("z=1&a=2&z=3");
+        assert_eq!(
+            values.iter().collect::<Vec<_>>(),
+            [("z", "1"), ("a", "2"), ("z", "3")]
+        );
+    }
+
+    #[test]
+    fn a_submission_encodes_again_into_what_it_came_from() {
+        let values = Values::parse("email=a%40b.com&tag=x&tag=y");
+        assert_eq!(values.to_urlencoded(), "email=a%40b.com&tag=x&tag=y");
+        // And round-trips, which is the point of encoding it again.
+        assert_eq!(Values::parse(&values.to_urlencoded()), values);
+
+        // Including the characters that have to be escaped to survive.
+        let awkward = Values::from_pairs([("a b", "1&2=3"), ("\u{e9}", "+")]);
+        assert_eq!(Values::parse(&awkward.to_urlencoded()), awkward);
+    }
+
+    /// The grouping is what serialization needs, and the one thing the shape
+    /// of this type does not give. A repeated name is one entry, where its
+    /// first value stood.
+    #[test]
+    fn grouping_collects_a_repeated_name_where_it_first_appeared() {
+        let values = Values::parse("z=1&a=2&z=3&m=4");
+        assert_eq!(
+            values.grouped(),
+            [("z", vec!["1", "3"]), ("a", vec!["2"]), ("m", vec!["4"]),]
+        );
+        assert!(Values::new().grouped().is_empty());
+    }
+
+    // ─── Through serde ────────────────────────────────────────────────────────
+    //
+    // A JSON client covers most of this, and `tests/json.rs` puts it through
+    // one. What is left is what a *self-describing* format may hand a visitor
+    // and JSON never does: an integer too wide for 64 bits, an owned string, or
+    // an `Option` the format resolved itself.
+
+    use serde::de::IntoDeserializer;
+    use serde::de::value::{
+        BytesDeserializer, Error as ValueError, I128Deserializer, StringDeserializer,
+        U128Deserializer,
+    };
+
+    /// A deserializer that hands the visitor an `Option`, which is the one
+    /// shape no JSON parser produces.
+    struct Optional(Option<&'static str>);
+
+    impl<'de> Deserializer<'de> for Optional {
+        type Error = ValueError;
+
+        fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            match self.0 {
+                Some(value) => visitor.visit_some(value.into_deserializer()),
+                None => visitor.visit_none(),
+            }
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map struct enum identifier ignored_any
+        }
+    }
+
+    fn scalar<'de, D: Deserializer<'de, Error = ValueError>>(de: D) -> Option<String> {
+        Scalar::deserialize(de).expect("a form value").0
+    }
+
+    /// A form field is a string whatever type the client used, however wide
+    /// the number it wrote is.
+    #[test]
+    fn a_number_of_any_width_arrives_as_the_string_it_writes_as() {
+        assert_eq!(
+            scalar(I128Deserializer::new(i128::MIN)),
+            Some(i128::MIN.to_string())
+        );
+        assert_eq!(
+            scalar(U128Deserializer::new(u128::MAX)),
+            Some(u128::MAX.to_string())
+        );
+    }
+
+    #[test]
+    fn a_string_the_format_already_owns_is_taken_rather_than_copied() {
+        assert_eq!(
+            scalar(StringDeserializer::new("ada".to_owned())),
+            Some("ada".to_owned())
+        );
+    }
+
+    /// `null` is *no* value, not an empty one, whichever way the format says
+    /// so.
+    #[test]
+    fn an_option_the_format_resolved_means_the_same_as_a_null() {
+        assert_eq!(scalar(Optional(Some("ada"))), Some("ada".to_owned()));
+        assert_eq!(scalar(Optional(None)), None);
+    }
+
+    /// The same holds for a name that may carry several values. One value and
+    /// several differ nowhere but in the list.
+    #[test]
+    fn a_name_that_may_repeat_reads_a_lone_value_the_same_way() {
+        fn one<'de, D: Deserializer<'de, Error = ValueError>>(de: D) -> Values {
+            let mut values = Values::new();
+            Submitted::deserialize(de)
+                .expect("a form value")
+                .push_into(&mut values, "field".to_owned());
+            values
+        }
+
+        assert_eq!(one(I128Deserializer::new(-1)).get("field"), Some("-1"));
+        assert_eq!(
+            one(U128Deserializer::new(u128::MAX)).get("field"),
+            Some(u128::MAX.to_string().as_str())
+        );
+        assert_eq!(
+            one(StringDeserializer::new("ada".to_owned())).get("field"),
+            Some("ada")
+        );
+        assert_eq!(one(Optional(Some("ada"))).get("field"), Some("ada"));
+        assert!(one(Optional(None)).is_empty());
+    }
+
+    /// What a submission cannot be says what one is, so the message is worth
+    /// as much as the parse.
+    #[test]
+    fn a_value_of_no_shape_a_form_takes_says_what_one_looks_like() {
+        let error = Scalar::deserialize(BytesDeserializer::<ValueError>::new(b"x"))
+            .err()
+            .expect("bytes are not a form value");
+        assert!(
+            error
+                .to_string()
+                .contains("a string, a number, a boolean or null"),
+            "{error}"
+        );
+
+        let error = Submitted::deserialize(BytesDeserializer::<ValueError>::new(b"x"))
+            .err()
+            .expect("bytes are not a form value");
+        assert!(error.to_string().contains("or a list of them"), "{error}");
+
+        // And a whole submission is one of the two shapes it arrives in.
+        let error = serde_json::from_str::<Values>("42").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("an object of form fields, or a list of name/value pairs"),
+            "{error}"
+        );
+    }
+
+    /// The browser checks only for the empty string. But a whitespace-only
+    /// answer to a required question is never what the caller wanted.
+    #[test]
+    fn whitespace_alone_counts_as_not_filled_in() {
+        assert!(is_blank(""));
+        assert!(is_blank("   "));
+        assert!(is_blank("\t\n\r"));
+        assert!(is_blank("\u{a0}"), "including a non-breaking space");
+
+        assert!(!is_blank("x"));
+        assert!(!is_blank(" x "));
+        assert!(!is_blank("0"));
+    }
+}
