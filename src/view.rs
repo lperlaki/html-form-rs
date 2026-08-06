@@ -1,37 +1,36 @@
-//! The render format: a flat, fully-resolved, serialisable description of a
-//! form *as it should appear right now* — including the values the user already
-//! typed and the errors attached to each field.
+//! The render format: a flat, fully resolved, serializable description of a
+//! form *as it should appear right now*. It holds the values the user typed and
+//! the errors on each field.
 //!
-//! This is deliberately flat and stringly-typed: it has to survive a trip
-//! through `serde` into a MiniJinja context, and template authors should not
-//! have to know about Rust enums. [`crate::Control`] is where the same
-//! information lives in a form the compiler can check.
+//! It is flat and stringly typed on purpose. It has to survive a trip through
+//! `serde` into a MiniJinja context, and a template author should not have to
+//! know about Rust enums. [`crate::Control`] holds the same information in a
+//! form the compiler can check.
 //!
-//! # Localised strings
+//! # Localized strings
 //!
-//! Every string a person reads comes with a companion `…_key` field. It is
-//! `Some` only while the string is still an unresolved i18n key — which is also
-//! what the string itself holds until then, so `{{ field.label }}` renders
-//! something either way. Resolve them with [`FormView::localize`], or let the
-//! template do it from the key.
+//! Every string a person reads has a companion `…_key` field. It is `Some` only
+//! while the string is still an unresolved i18n key. Until then the string
+//! itself holds that key too, so `{{ field.label }}` renders text either way.
+//! Resolve the keys with [`FormView::localize`], or let the template resolve
+//! them.
 //!
-//! Error messages are a *list* of strings, so their keys are a list too:
-//! `error_keys[i]` belongs to `errors[i]`, and the two are always the same
-//! length. A template that just prints the messages needs to know nothing
-//! about it.
+//! Error messages are a *list* of strings, so their keys are a list too.
+//! `error_keys[i]` belongs to `errors[i]`, and the two lists always have the
+//! same length. A template that only prints the messages can ignore this.
 //!
 //! # Why every string here is a `Cow`
 //!
-//! Nearly everything in a view was copied out of a [`FormSpec`], where it is
-//! already `&'static str`, so the view borrows it: building one allocates only
-//! for what a spec cannot know — the values the user submitted, the ids derived
-//! from a field's name, and anything a caller supplies at render time. The
-//! owned half of the [`Cow`] is what keeps the view a plain owned value that a
-//! handler can return, and what lets `set_value`, `set_choices` and `localize`
+//! Nearly everything in a view comes from a [`FormSpec`], where it is already a
+//! `&'static str`, so the view borrows it. Building a view allocates only for
+//! what a spec cannot know. That is the values the user submitted, the ids
+//! derived from a field's name, and anything a caller supplies at render time.
+//! The owned half of the [`Cow`] keeps the view a plain owned value that a
+//! handler can return. It also lets `set_value`, `set_choices` and `localize`
 //! put runtime strings in.
 //!
-//! Serialisation is unaffected: a `Cow` serialises as the string it holds, so a
-//! template sees exactly what it always did.
+//! Serialization does not change. A `Cow` serializes as the string it holds, so
+//! a template sees exactly what it always did.
 
 use std::borrow::Cow;
 
@@ -42,9 +41,9 @@ use crate::kind::FieldKind;
 use crate::spec::{Attr, Choice, FormEncType, FormMethod, FormSpec, Text, sanitize_id};
 use crate::values::Values;
 
-/// Split a spec [`Text`] into the string to render now and the key that is
-/// still waiting to be resolved. Both borrow the spec unless it was itself
-/// built at runtime.
+/// Split a spec [`Text`] into the string to render now and the key that still
+/// waits for a lookup. Both borrow the spec, unless the spec itself was built
+/// at runtime.
 fn split(text: Option<&Text>) -> (Option<Cow<'static, str>>, Option<Cow<'static, str>>) {
     match text {
         Some(text) => (
@@ -55,23 +54,23 @@ fn split(text: Option<&Text>) -> (Option<Cow<'static, str>>, Option<Cow<'static,
     }
 }
 
-/// A [`Text`] taken apart the same way, by value.
+/// A [`Text`] split the same way, by value.
 fn parts(text: Text) -> (Cow<'static, str>, Option<Cow<'static, str>>) {
     let key = text.is_key.then(|| text.content.clone());
     (text.content, key)
 }
 
 /// The messages of a set of errors, split into what to show now and the keys
-/// still waiting to be resolved — the two index-aligned lists a view carries.
+/// that still wait for a lookup. A view carries the two lists in step.
 fn split_messages<'a>(
     errors: impl Iterator<Item = &'a FieldError>,
 ) -> (Vec<Cow<'static, str>>, Vec<Option<Cow<'static, str>>>) {
     errors.map(|error| parts(error.message.clone())).unzip()
 }
 
-/// Look one key up, and drop it once it has been resolved so that nothing
-/// downstream translates it twice. An unrecognised key is left in place, key and
-/// all: showing `signup.email.label` is a bug a reader can report.
+/// Look one key up, and drop the key after the lookup, so that nothing later
+/// translates it twice. A key that nothing knows stays in place, key and all.
+/// Showing `signup.email.label` is a bug a reader can report.
 fn resolve(
     text: &mut Option<Cow<'static, str>>,
     key: &mut Option<Cow<'static, str>>,
@@ -84,7 +83,7 @@ fn resolve(
     *key = None;
 }
 
-/// [`resolve`], for a string that is always there to be replaced.
+/// [`resolve`], for a string that is always present.
 fn resolve_str(
     text: &mut Cow<'static, str>,
     key: &mut Option<Cow<'static, str>>,
@@ -108,8 +107,8 @@ fn resolve_messages(
     }
 }
 
-/// The erased form of the translation function, so the recursive walk down to
-/// each choice is not generic over the whole tree.
+/// The erased form of the translation function. It keeps the recursive walk
+/// down to each choice from being generic over the whole tree.
 type Translate<'a> = dyn Fn(&str) -> Option<Cow<'static, str>> + 'a;
 
 /// A whole form, ready to render.
@@ -123,18 +122,19 @@ pub struct FormView {
     pub enctype: Option<&'static str>,
     pub novalidate: bool,
     pub class: Option<Cow<'static, str>>,
-    /// Caption of the submit button the built-in renderer emits.
+    /// The caption of the submit button the built-in renderer emits.
     pub submit_label: Cow<'static, str>,
     /// Set while [`FormView::submit_label`] is still an unresolved i18n key.
     pub submit_label_key: Option<Cow<'static, str>>,
     /// Attributes the crate has no opinion about, in declaration order.
     pub attrs: Vec<AttrView>,
-    /// Errors that belong to the form as a whole rather than to one field.
+    /// Errors that belong to the whole form rather than to one field.
     pub errors: Vec<Cow<'static, str>>,
-    /// One entry per [`FormView::errors`] message — same length, same order —
-    /// set while that message is still an unresolved i18n key.
+    /// One entry per [`FormView::errors`] message, in the same order and of the
+    /// same length. An entry is set while its message is still an unresolved
+    /// i18n key.
     pub error_keys: Vec<Option<Cow<'static, str>>>,
-    /// True when the form or any of its fields has an error.
+    /// True when the form, or any of its fields, has an error.
     pub has_errors: bool,
     pub fields: Vec<FieldView>,
 }
@@ -142,9 +142,9 @@ pub struct FormView {
 /// One control, ready to render.
 #[derive(Debug, Clone, Serialize)]
 pub struct FieldView {
-    /// Full submitted name, including any flatten prefixes.
+    /// The full submitted name, with every flatten prefix.
     pub name: Cow<'static, str>,
-    /// DOM id of the control.
+    /// The DOM id of the control.
     pub id: Cow<'static, str>,
     pub label: Option<Cow<'static, str>>,
     /// Set while [`FieldView::label`] is still an unresolved i18n key.
@@ -153,14 +153,14 @@ pub struct FieldView {
     pub kind: FieldKind,
     /// `"input"`, `"select"` or `"textarea"`.
     pub element: &'static str,
-    /// The `type` attribute, absent for `<select>` and `<textarea>`.
+    /// The `type` attribute. A `<select>` and a `<textarea>` have none.
     pub input_type: Option<&'static str>,
-    /// The current value: what the user submitted, or the field's default on a
-    /// blank form.
+    /// The current value: what the user submitted, or, on a blank form, the
+    /// field's default.
     pub value: Option<Cow<'static, str>>,
     /// Every current value, for controls that accept more than one.
     pub values: Vec<Cow<'static, str>>,
-    /// Current state of a checkbox.
+    /// The current state of a checkbox.
     pub checked: bool,
     pub required: bool,
     pub multiple: bool,
@@ -186,23 +186,24 @@ pub struct FieldView {
     pub class: Option<Cow<'static, str>>,
     /// Attributes the crate has no opinion about, in declaration order.
     pub attrs: Vec<AttrView>,
-    /// Options of a `<select>`, radio group or checkbox group.
+    /// The options of a `<select>`, a radio group or a checkbox group.
     pub choices: Vec<ChoiceView>,
     /// Messages to show under the control.
     pub errors: Vec<Cow<'static, str>>,
-    /// One entry per [`FieldView::errors`] message — same length, same order —
-    /// set while that message is still an unresolved i18n key.
+    /// One entry per [`FieldView::errors`] message, in the same order and of
+    /// the same length. An entry is set while its message is still an
+    /// unresolved i18n key.
     pub error_keys: Vec<Option<Cow<'static, str>>>,
     pub has_errors: bool,
-    /// Legend of the flattened group this field belongs to, if any.
+    /// The legend of the flattened group that holds this field, if there is one.
     pub group: Option<Cow<'static, str>>,
     /// Set while [`FieldView::group`] is still an unresolved i18n key.
     pub group_key: Option<Cow<'static, str>>,
-    /// Id of the element listing this field's errors.
+    /// The id of the element that lists this field's errors.
     pub error_id: Cow<'static, str>,
-    /// Id of the element carrying this field's help text.
+    /// The id of the element that carries this field's help text.
     pub help_id: Cow<'static, str>,
-    /// Id of the caption naming a radio or checkbox group.
+    /// The id of the caption that names a radio or checkbox group.
     pub label_id: Cow<'static, str>,
 }
 
@@ -226,7 +227,7 @@ impl AttrView {
     }
 }
 
-/// One option of a `<select>`, radio group or checkbox group.
+/// One option of a `<select>`, a radio group or a checkbox group.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChoiceView {
     pub value: Cow<'static, str>,
@@ -241,7 +242,7 @@ pub struct ChoiceView {
 }
 
 impl ChoiceView {
-    /// Resolve this option's i18n keys. See [`FormView::localize`].
+    /// Resolve the i18n keys of this option. See [`FormView::localize`].
     pub fn localize<S, F>(&mut self, translate: F)
     where
         F: Fn(&str) -> Option<S>,
@@ -275,24 +276,24 @@ fn enctype_str(enctype: Option<FormEncType>) -> Option<&'static str> {
 impl FormView {
     /// Build the view for `spec`.
     ///
-    /// Pass `values` to re-render a submission (typically together with the
-    /// errors it produced); pass `None` for a blank form, where each field
-    /// falls back to its declared default.
+    /// Pass `values` to re-render a submission, usually with the errors it
+    /// produced. Pass `None` for a blank form, where each field shows its
+    /// declared default.
     ///
-    /// `generated` is what the form produced for *this* render —
+    /// `generated` is what the form produced for *this* render. It comes from
     /// [`Form::defaults_with_context`](crate::Form::defaults_with_context),
-    /// keyed by fully-qualified field name, and `None` for a form that declares
-    /// no generated default. It is separate from `values` because the two are
-    /// not interchangeable: a value the form minted itself is minted again on a
-    /// re-render, where one the user typed is echoed back.
+    /// under fully qualified field names, and it is `None` for a form that
+    /// declares no generated default. It stays apart from `values` because the
+    /// two differ. On a re-render, the crate mints a value the form made itself
+    /// again. It sends a value the user typed back as it was.
     pub fn build(
         spec: &FormSpec,
         values: Option<&Values>,
         generated: Option<&Values>,
         errors: &FormErrors,
     ) -> FormView {
-        // The flattened field list is walked straight into the view rather than
-        // collected first: nothing but the `FieldView`s themselves is built.
+        // The walk goes straight into the view. It does not collect the
+        // flattened field list first, so it builds only the `FieldView`s.
         let mut fields = Vec::new();
         spec.walk(|resolved| {
             fields.push(FieldView::build(
@@ -328,9 +329,9 @@ impl FormView {
     }
 
     /// Resolve every i18n key in the form to the text `translate` returns for
-    /// it, leaving literal text and unrecognised keys alone.
+    /// it. Literal text and unknown keys stay as they are.
     ///
-    /// The crate has no opinion about your i18n stack: `translate` is any
+    /// The crate has no opinion about your i18n stack. `translate` is any
     /// `Fn(&str) -> Option<impl Into<String>>`, so a closure over whatever your
     /// backend calls a bundle is enough.
     ///
@@ -356,7 +357,7 @@ impl FormView {
         self.localize_in(&|key| translate(key).map(Into::into));
     }
 
-    /// [`FormView::localize`], by value, so it can be chained onto `render()`.
+    /// [`FormView::localize`], by value, so you can chain it onto `render()`.
     #[must_use]
     pub fn localized<S, F>(mut self, translate: F) -> Self
     where
@@ -379,24 +380,24 @@ impl FormView {
         }
     }
 
-    /// Look up a field by its full (prefixed) name.
+    /// Find a field by its full, prefixed name.
     pub fn field(&self, name: &str) -> Option<&FieldView> {
         self.fields.iter().find(|f| f.name == name)
     }
 
-    /// Mutable lookup, for adjusting a field before rendering — filling in
-    /// choices loaded from a database, for instance.
+    /// The same lookup, but mutable, to change a field before it renders. Use
+    /// it to fill in choices that come from a database, for example.
     pub fn field_mut(&mut self, name: &str) -> Option<&mut FieldView> {
         self.fields.iter_mut().find(|f| f.name == name)
     }
 
-    /// Attach an error to a field after the fact, e.g. a uniqueness violation
-    /// only the database could detect.
+    /// Attach an error to a field later, such as a duplicate value that only
+    /// the database could find.
     ///
-    /// The message may be a [`Text::key`](crate::Text::key), which a later
-    /// [`localize`](FormView::localize) resolves like any other.
+    /// The message may be a [`Text::key`](crate::Text::key). A later
+    /// [`localize`](FormView::localize) resolves it like any other key.
     ///
-    /// Returns `false` if no such field exists.
+    /// Returns `false` if the field does not exist.
     pub fn add_field_error(&mut self, name: &str, message: impl Into<Text>) -> bool {
         match self.field_mut(name) {
             Some(field) => {
@@ -408,14 +409,15 @@ impl FormView {
         }
     }
 
-    /// Set a custom attribute on the `<form>`, replacing any of the same name.
+    /// Set a custom attribute on the `<form>`. It replaces any attribute of the
+    /// same name.
     ///
-    /// Pass `None` as the value for a bare boolean attribute.
+    /// Pass `None` as the value to get a bare boolean attribute.
     pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) {
         set_attr(&mut self.attrs, name.into(), value);
     }
 
-    /// Attach a form-level error, as text or as an i18n key.
+    /// Add a form-level error, as text or as an i18n key.
     pub fn add_error(&mut self, message: impl Into<Text>) {
         let (message, key) = parts(message.into());
         self.errors.push(message);
@@ -437,9 +439,9 @@ impl FieldView {
         let kind = control.kind();
         let full_name = &name;
 
-        // What the form generated for this render, if anything, stands ahead of
-        // the literal in the spec. It was produced once, before the walk: a
-        // generator consulted twice would hand out two different tokens.
+        // What the form generated for this render, if anything, wins over the
+        // literal in the spec. The crate produced it once, before the walk. A
+        // generator called twice would give out two different tokens.
         let generated = generated
             .and_then(|generated| generated.get(full_name))
             .map(|value| Cow::Owned(value.to_owned()));
@@ -448,9 +450,8 @@ impl FieldView {
 
         let checked = if control.is_checkable() {
             match values {
-                // A standalone radio is checked when its own value came back;
-                // a radio or checkbox *group* tracks selection per choice
-                // instead.
+                // A lone radio is checked when its own value came back. A radio
+                // or checkbox *group* tracks the selection per choice instead.
                 Some(values) => match (kind, values.get(full_name)) {
                     (FieldKind::Radio | FieldKind::CheckboxGroup, Some(submitted)) => {
                         default.as_deref().is_none_or(|own| own == submitted)
@@ -467,36 +468,38 @@ impl FieldView {
             false
         };
 
-        // On a blank form the default is the value; on a re-render the
-        // submission is, so that an unchecked box or a cleared field stays that
-        // way. A literal default comes from the spec and is borrowed; only what
-        // the user typed has to be copied out of the submission.
+        // On a blank form the default is the value. On a re-render the
+        // submission is, so an unchecked box or a cleared field stays that way.
+        // A literal default comes from the spec, borrowed. Only what the user
+        // typed has to be copied out of the submission.
         let current: Vec<Cow<'static, str>> = match values {
             Some(values) => {
-                // A hidden field with a generated default is the form's own,
-                // not the user's: nobody typed it, and echoing a rejected token
-                // back would leave the retry failing exactly as the first
-                // attempt did, so it is minted again.
+                // A hidden field with a generated default belongs to the form,
+                // not to the user. Nobody typed it, and a rejected token sent
+                // back would make the retry fail exactly as the first attempt
+                // did. So the crate mints it again.
                 //
-                // Nothing else is. Once there are values to show — a submission
-                // to re-render, a record to edit — an empty field is empty
-                // because that is what it holds, and a form that filled it in
-                // would be putting a value the caller never had in front of the
+                // Nothing else is. Once there are values to show, such as a
+                // submission to re-render or a record to edit, an empty field
+                // is empty because that is what it holds. A form that filled it
+                // in would put a value the caller never had in front of the
                 // user, for them to save without noticing.
                 let regenerate = is_generated && kind == FieldKind::Hidden;
                 if regenerate {
                     default.into_iter().collect()
                 } else {
-                    // Decided before anything is copied, so the submission a
-                    // regenerated field is about to discard is never collected.
+                    // The crate decides this before it copies anything, so it
+                    // never collects the submission that a regenerated field is
+                    // about to drop.
                     values
                         .all(full_name)
                         .map(|value| Cow::Owned(value.to_owned()))
                         .collect()
                 }
             }
-            // A checkbox default says whether the box starts checked, not what
-            // to put in a `value` attribute — a box with no value submits "on".
+            // A checkbox default says whether the box starts checked. It does
+            // not say what to put in a `value` attribute, because a box with no
+            // value submits "on".
             None if kind == FieldKind::Checkbox => Vec::new(),
             None => default.into_iter().collect(),
         };
@@ -505,8 +508,9 @@ impl FieldView {
             .choices()
             .iter()
             .map(|choice| {
-                // An option with no label of its own is labelled by its value,
-                // which is literal text however the others were declared.
+                // An option with no label of its own uses its value as the
+                // label. That value is literal text, however you declared the
+                // other labels.
                 let (label, label_key) = if choice.label.is_empty() {
                     (choice.value.clone(), None)
                 } else {
@@ -580,8 +584,9 @@ impl FieldView {
         }
     }
 
-    /// Resolve this field's i18n keys — its label, help text, placeholder,
-    /// group legend and the label of every option. See [`FormView::localize`].
+    /// Resolve the i18n keys of this field: its label, help text, placeholder,
+    /// group legend, and the label of every option. See
+    /// [`FormView::localize`].
     pub fn localize<S, F>(&mut self, translate: F)
     where
         F: Fn(&str) -> Option<S>,
@@ -612,7 +617,7 @@ impl FieldView {
         self.value = Some(value);
     }
 
-    /// Replace the options, keeping the current selection.
+    /// Replace the options and keep the current selection.
     pub fn set_choices<I>(&mut self, choices: I)
     where
         I: IntoIterator<Item = Choice>,
@@ -637,14 +642,15 @@ impl FieldView {
         self.values = current;
     }
 
-    /// Set a custom attribute on this control, replacing any of the same name.
+    /// Set a custom attribute on this control. It replaces any attribute of the
+    /// same name.
     ///
-    /// Pass `None` as the value for a bare boolean attribute.
+    /// Pass `None` as the value to get a bare boolean attribute.
     pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) {
         set_attr(&mut self.attrs, name.into(), value);
     }
 
-    /// Attach another error message to this field, as text or as an i18n key.
+    /// Add another error message to this field, as text or as an i18n key.
     pub fn add_error(&mut self, message: impl Into<Text>) {
         let (message, key) = parts(message.into());
         self.errors.push(message);
@@ -652,9 +658,10 @@ impl FieldView {
         self.has_errors = true;
     }
 
-    /// The value of `aria-describedby`, linking help text and error list.
+    /// The value of `aria-describedby`, which links the help text and the error
+    /// list.
     ///
-    /// Borrowed from the field itself unless both ids have to be listed.
+    /// It borrows from the field itself, unless it has to list both ids.
     pub fn described_by(&self) -> Option<Cow<'_, str>> {
         match (self.help.is_some(), self.has_errors) {
             (false, false) => None,
@@ -671,7 +678,8 @@ impl FieldView {
     }
 }
 
-/// `base` with `suffix` appended — the ids the view derives from a field name.
+/// `base` with `suffix` added. These are the ids the view derives from a field
+/// name.
 fn suffixed(base: &str, suffix: &str) -> Cow<'static, str> {
     let mut out = String::with_capacity(base.len() + suffix.len());
     out.push_str(base);
@@ -679,7 +687,7 @@ fn suffixed(base: &str, suffix: &str) -> Cow<'static, str> {
     Cow::Owned(out)
 }
 
-/// Overwrite an attribute in place, keeping its position, or append it.
+/// Overwrite an attribute in place and keep its position, or add it at the end.
 fn set_attr(attrs: &mut Vec<AttrView>, name: Cow<'static, str>, value: Option<&str>) {
     let value = value.map(|value| Cow::Owned(value.to_owned()));
     match attrs.iter_mut().find(|a| a.name == name) {

@@ -1,10 +1,10 @@
-//! `#[derive(FormValue)]` — a type carries its own control, its own default and
+//! `#[derive(FormValue)]`. A type carries its own control, its own default and
 //! its own check, so a form that uses it says only where it goes.
 //!
-//! Something already knows how to turn the type into a string and back: the one
-//! value it wraps, or — with `#[value(from_str)]` — the type itself, through
-//! `FromStr` and `Display`. This derive writes that conversion out and hangs
-//! the rest off it.
+//! Something already knows how to turn the type into a string and back. That is
+//! the one value it wraps, or, with `#[value(from_str)]`, the type itself
+//! through `FromStr` and `Display`. This derive writes that conversion out and
+//! builds the rest on top of it.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -20,9 +20,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let mut generics = input.generics.clone();
     let params: Vec<syn::Ident> = generics.type_params().map(|p| p.ident.clone()).collect();
 
-    // Where the conversion comes from: the type's own `FromStr`/`Display`, or
-    // the one value it wraps. The first asks nothing of the type's shape, which
-    // is why it is the only one an enum or a several-field struct can use.
+    // Where the conversion comes from: the type's own `FromStr` and `Display`,
+    // or the one value it wraps. The first asks nothing of the type's shape, so
+    // it is the only one an enum or a several-field struct can use.
     let Conversion {
         implied,
         parse,
@@ -40,9 +40,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         }
         false => {
             let (member, inner) = wrapped(&input)?;
-            // As in `Form`: a bound only where a parameter is what has to
-            // satisfy it, so a concrete inner type reports its own missing impl
-            // at the field that names it.
+            // As in `Form`: write a bound only where a parameter has to satisfy
+            // it. A concrete inner type then reports its own missing impl at
+            // the field that names it.
             if mentions(inner, &params) {
                 generics
                     .make_where_clause()
@@ -55,13 +55,14 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    // Everything `#[value(...)]` said, placed into the control the conversion
-    // implies — the same merge, and the same rejections, a field goes through.
+    // Everything `#[value(...)]` said goes into the control the conversion
+    // implies. This is the same merge, and the same rejections, that a field
+    // goes through.
     let control = control_tokens(&attrs.constraints, &[], implied, false)?;
     let written = opt_str(&attrs.default);
 
-    // Left off entirely when nothing was declared, so the type inherits the
-    // trait's own empty check rather than a call that does nothing.
+    // Left out where nothing was declared, so the type takes the trait's own
+    // empty check in place of a call that does nothing.
     let validate = match &attrs.validate {
         Some(path) => quote! {
             fn validate_form_value(&self) -> ::core::result::Result<(), ::html_form::FieldError> {
@@ -94,16 +95,16 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     })
 }
 
-/// The four things the choice of conversion decides.
+/// The four things the choice of conversion settles.
 struct Conversion {
-    /// The control the conversion implies, before `#[value(...)]` is applied.
+    /// The control the conversion implies, before `#[value(...)]` applies.
     implied: TokenStream,
     /// The body of `parse_form_value`.
     parse: TokenStream,
     /// The body of `to_form_value`.
     render: TokenStream,
-    /// The default this type has before `#[value(default = ...)]` — the wrapped
-    /// type's, where there is one to inherit.
+    /// The default this type has before `#[value(default = ...)]`. It is the
+    /// wrapped type's default, where there is one to take.
     inherited: TokenStream,
 }
 
@@ -111,11 +112,11 @@ impl Conversion {
     /// `#[value(from_str)]`: the type converts itself.
     fn from_str() -> Self {
         Self {
-            // A type converting itself says nothing about what it looks like,
-            // so it renders as text until `type = "..."` says otherwise.
+            // A type that converts itself says nothing about how it looks, so
+            // it renders as text until `type = "..."` says otherwise.
             implied: quote!(::html_form::Control::TEXT),
-            // The message is the adapter's, and for the same reason: what a
-            // `FromStr` says went wrong is written for whoever wrote the call.
+            // The message belongs to the adapter, for the same reason. What a
+            // `FromStr` reports speaks to whoever wrote the call.
             parse: quote! {
                 match ::core::primitive::str::trim(__raw).parse::<Self>() {
                     ::core::result::Result::Ok(__value) => {
@@ -133,7 +134,7 @@ impl Conversion {
         }
     }
 
-    /// The default: the one value the type wraps does the converting, and this
+    /// The default. The one value the type wraps does the conversion, and this
     /// writes it through the wrapper.
     fn wrapping(member: &Member, inner: &syn::Type) -> Self {
         let parsed = quote!(<#inner as ::html_form::FormValue>::parse_form_value(__raw)?);
@@ -150,21 +151,22 @@ impl Conversion {
     }
 }
 
-/// How the one wrapped value is reached.
+/// How to reach the one wrapped value.
 enum Member {
     /// A tuple struct: `self.0`.
     Index,
     Named(syn::Ident),
 }
 
-/// The single field a `FormValue` wrapper is, and how to reach it.
+/// The single field that a `FormValue` wrapper holds, and how to reach it.
 ///
-/// One field, because a form control submits one string: a type with two of
-/// them has no way to say which one that string is, and a type with none has
-/// nothing to convert. A struct that genuinely has several fields is either a
-/// *form*, flattened into its parent with `#[field(flatten)]`, or a type that
-/// converts itself — which is what `#[value(from_str)]` says, and why it is the
-/// only spelling this function is not consulted for.
+/// One field, because a form control submits one string. A type with two fields
+/// cannot say which one that string is, and a type with none has nothing to
+/// convert. A struct that really has several fields is one of two things. It is
+/// a *form*, which goes into its parent with `#[field(flatten)]`. Or it is a
+/// type that converts itself, which is what `#[value(from_str)]` says. That is
+/// also why `#[value(from_str)]` is the one spelling that never calls this
+/// function.
 fn wrapped(input: &DeriveInput) -> Result<(Member, &Type)> {
     let Data::Struct(data) = &input.data else {
         return Err(Error::new_spanned(

@@ -1,7 +1,7 @@
 //! Validation and conversion errors.
 //!
-//! Parsing never stops at the first problem: every field is attempted, every
-//! failure is recorded in a [`FormErrors`], and the caller gets the complete
+//! Parsing does not stop at the first problem. The crate tries every field and
+//! records every failure in a [`FormErrors`], so the caller gets the whole
 //! picture in one pass.
 
 use std::borrow::Cow;
@@ -12,16 +12,16 @@ use serde::{Serialize, Serializer};
 
 use crate::spec::Text;
 
-/// Why a value was rejected.
+/// Why the crate rejected a value.
 ///
-/// The variants carry the constraint that was violated so callers can render
-/// their own (localised) messages instead of the built-in English ones.
+/// Each variant carries the constraint the value broke, so a caller can render
+/// its own translated message in place of the built-in English one.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ErrorKind {
     /// Required, but missing or blank.
     Required,
-    /// Present, but not convertible to the field's Rust type.
+    /// Present, but the crate cannot convert it to the field's Rust type.
     Invalid { expected: Cow<'static, str> },
     /// Did not match `pattern`.
     Pattern { pattern: Cow<'static, str> },
@@ -37,15 +37,15 @@ pub enum ErrorKind {
     Step { step: Cow<'static, str> },
     /// Not one of the field's declared choices.
     NotAChoice,
-    /// Produced by a `#[field(validate = ...)]` or `#[form(validate = ...)]`
-    /// function.
+    /// A `#[field(validate = ...)]` or `#[form(validate = ...)]` function
+    /// produced this error.
     ///
-    /// Unlike the other kinds there is no constraint to carry, so `code` is
-    /// what a caller matches on to tell one custom rejection from another —
-    /// and to render a message of its own for it. It is set from the i18n key
-    /// when the validator returned one (the key doubles as the code), or named
-    /// outright with [`FieldError::coded`]; a validator that returned nothing
-    /// but a message or a `false` leaves it `None`.
+    /// This kind carries no constraint, unlike the others. A caller therefore
+    /// matches on `code` to tell one custom rejection from another, and to
+    /// render its own message. The crate sets `code` from the i18n key when the
+    /// validator returned one, because the key is also the code. You can also
+    /// name the code with [`FieldError::coded`]. A validator that returned only
+    /// a message, or `false`, leaves `code` as `None`.
     Custom {
         #[serde(skip_serializing_if = "Option::is_none")]
         code: Option<Cow<'static, str>>,
@@ -55,9 +55,9 @@ pub enum ErrorKind {
 impl ErrorKind {
     /// The built-in English message for this kind.
     ///
-    /// The kinds whose message says nothing about the value carry a `'static`
-    /// message — which is most submissions, since `Required` is the error users
-    /// produce most.
+    /// A kind whose message says nothing about the value carries a `'static`
+    /// message. That covers most submissions, because users produce `Required`
+    /// more than any other error.
     pub fn default_message(&self) -> Cow<'static, str> {
         match self {
             ErrorKind::Required => "This field is required.".into(),
@@ -73,8 +73,8 @@ impl ErrorKind {
                 plural(*maxlength)
             )
             .into(),
-            // A bound on a date reads as a point in time, one on a number as a
-            // quantity.
+            // A bound on a date reads as a point in time. A bound on a number
+            // reads as a quantity.
             ErrorKind::TooSmall { min } if is_number(min) => {
                 format!("Must be {min} or more.").into()
             }
@@ -98,25 +98,25 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-/// A single rejection, with a ready-to-display message.
+/// A single rejection, with a message ready to display.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FieldError {
     pub kind: ErrorKind,
     /// What to show the person who submitted the form: literal text, or an
-    /// i18n key like every other person-facing string in the crate. A key is
-    /// resolved by [`FormView::localize`](crate::FormView::localize) along with
-    /// the labels, or left in place to be translated from the view.
+    /// i18n key like every other person-facing string in the crate.
+    /// [`FormView::localize`](crate::FormView::localize) resolves a key with
+    /// the labels. Or leave the key in place and translate it from the view.
     pub message: Text,
 }
 
 impl FieldError {
-    /// An error carrying the built-in message for its kind.
+    /// An error that carries the built-in message for its kind.
     pub fn new(kind: ErrorKind) -> Self {
         let message = kind.default_message().into();
         Self { kind, message }
     }
 
-    /// An error with a caller-supplied message.
+    /// An error with a message the caller supplies.
     pub fn with_message(kind: ErrorKind, message: impl Into<Text>) -> Self {
         Self {
             kind,
@@ -126,10 +126,10 @@ impl FieldError {
 
     /// The error a `validate = ...` function produces.
     ///
-    /// A message written as an i18n key doubles as the error's
-    /// [code](ErrorKind::Custom): a validator that returns
-    /// `Err(Text::key("signup.username.reserved"))` produces an error a caller
-    /// can both translate and match on.
+    /// A message written as an i18n key is also the error's
+    /// [code](ErrorKind::Custom). A validator that returns
+    /// `Err(Text::key("signup.username.reserved"))` therefore produces an error
+    /// that a caller can both translate and match on.
     pub fn custom(message: impl Into<Text>) -> Self {
         let message = message.into();
         let code = message.is_key.then(|| message.content.clone());
@@ -139,8 +139,8 @@ impl FieldError {
         }
     }
 
-    /// A custom error whose code is not its message — for a validator that
-    /// wants a stable name for what went wrong *and* a message that reads
+    /// A custom error whose code is not its message. Use it for a validator
+    /// that wants a stable name for the failure *and* a message that reads
     /// well on its own.
     pub fn coded(code: impl Into<Cow<'static, str>>, message: impl Into<Text>) -> Self {
         Self::with_message(
@@ -151,14 +151,14 @@ impl FieldError {
         )
     }
 
-    /// Replace the message, keeping the kind.
+    /// Replace the message and keep the kind.
     pub fn message(mut self, message: impl Into<Text>) -> Self {
         self.message = message.into();
         self
     }
 
-    /// The code of a custom error, or `None` for every other kind — those are
-    /// told apart by the [`ErrorKind`] itself.
+    /// The code of a custom error, or `None` for every other kind. The
+    /// [`ErrorKind`] itself tells those apart.
     pub fn code(&self) -> Option<&str> {
         match &self.kind {
             ErrorKind::Custom { code } => code.as_deref(),
@@ -180,7 +180,7 @@ impl From<ErrorKind> for FieldError {
 }
 
 impl From<Text> for FieldError {
-    /// A custom error, keyed or not — see [`FieldError::custom`].
+    /// A custom error, keyed or not. See [`FieldError::custom`].
     fn from(message: Text) -> Self {
         FieldError::custom(message)
     }
@@ -204,17 +204,18 @@ impl From<Cow<'static, str>> for FieldError {
     }
 }
 
-/// Every problem found while parsing one submission.
+/// Every problem the crate found while parsing one submission.
 ///
-/// Errors are keyed by the *full* field name, so a field inside a flattened
-/// sub-form appears under its prefixed name. A field may carry more than one
-/// error.
+/// Each error uses the *full* field name as its key, so a field inside a
+/// flattened sub-form appears under its prefixed name. A field may carry more
+/// than one error.
 ///
-/// The key is a [`Cow`] rather than a `String`: a name comes from the spec,
-/// where it is already `'static`, and only a flatten prefix makes a new one
-/// necessary. It is not an enum of the form's own field names, because errors
-/// from a flattened sub-form, from a `#[form(validate = ...)]` function and
-/// from the caller (`add_field_error`) all land in the same set.
+/// The key is a [`Cow`], not a `String`. A name comes from the spec, where it
+/// is already `'static`, and only a flatten prefix makes a new one necessary.
+/// The key is not an enum of the form's own field names. One set holds three
+/// kinds of error: those from a flattened sub-form, those from a
+/// `#[form(validate = ...)]` function, and those the caller adds through
+/// `add_field_error`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FormErrors {
     form: Vec<FieldError>,
@@ -233,7 +234,7 @@ impl FormErrors {
         self.form.is_empty() && self.fields.is_empty()
     }
 
-    /// Total number of errors, across all fields plus form-level ones.
+    /// The number of errors, over every field plus the form-level ones.
     pub fn len(&self) -> usize {
         self.form.len() + self.fields.len()
     }
@@ -243,23 +244,23 @@ impl FormErrors {
         self.fields.push((field.into(), error));
     }
 
-    /// Record an error that belongs to the form as a whole rather than to one
-    /// field — cross-field checks, for example.
+    /// Record an error that belongs to the whole form rather than to one
+    /// field, such as the result of a cross-field check.
     pub fn push_form(&mut self, error: FieldError) {
         self.form.push(error);
     }
 
-    /// Convenience for the common cross-field case.
+    /// A shorthand for the common cross-field case.
     pub fn reject(&mut self, message: impl Into<Text>) {
         self.push_form(FieldError::custom(message));
     }
 
-    /// Convenience for rejecting one field with a custom message.
+    /// A shorthand to reject one field with a custom message.
     pub fn reject_field(&mut self, field: impl Into<Cow<'static, str>>, message: impl Into<Text>) {
         self.push(field, FieldError::custom(message));
     }
 
-    /// Errors attached to one field, in the order they were found.
+    /// The errors on one field, in the order the crate found them.
     pub fn field(&self, name: &str) -> impl Iterator<Item = &FieldError> {
         self.fields
             .iter()
@@ -267,7 +268,7 @@ impl FormErrors {
             .map(|(_, e)| e)
     }
 
-    /// Whether a specific field failed.
+    /// Whether one named field failed.
     pub fn has_field(&self, name: &str) -> bool {
         self.fields.iter().any(|(k, _)| k == name)
     }
@@ -282,17 +283,18 @@ impl FormErrors {
         self.fields.iter().map(|(k, e)| (k.as_ref(), e))
     }
 
-    /// Fold `other` into `self`.
+    /// Add every error in `other` to `self`.
     pub fn merge(&mut self, other: FormErrors) {
         self.form.extend(other.form);
         self.fields.extend(other.fields);
     }
 
-    /// Fold `other` in, prefixing each of its field names — used when a
-    /// sub-form is validated on its own and then spliced into a parent.
+    /// Add every error in `other`, and put the prefix on each of its field
+    /// names. The crate uses this when it validates a sub-form on its own and
+    /// then puts the sub-form into a parent.
     ///
     /// An empty prefix keeps every key exactly as it was, so the common case
-    /// rebuilds nothing.
+    /// builds nothing.
     pub fn merge_prefixed(&mut self, prefix: &str, other: FormErrors) {
         self.form.extend(other.form);
         if prefix.is_empty() {
@@ -307,10 +309,10 @@ impl FormErrors {
         }));
     }
 
-    /// All errors as `(field name, message)`, form-level ones under `None`.
+    /// Every error as `(field name, message)`. Form-level errors use `None`.
     ///
-    /// A message that is still an i18n key is handed back as the key, which is
-    /// also what it renders as until something resolves it.
+    /// A message that is still an i18n key comes back as the key. That is also
+    /// what it renders as until something resolves it.
     pub fn messages(&self) -> Vec<(Option<&str>, &str)> {
         self.form
             .iter()
@@ -334,7 +336,8 @@ impl From<FieldError> for FormErrors {
 }
 
 impl From<String> for FormErrors {
-    /// Shorthand so a `#[form(validate = ...)]` function can return a message.
+    /// A shorthand that lets a `#[form(validate = ...)]` function return a
+    /// message.
     fn from(message: String) -> Self {
         FieldError::custom(message).into()
     }
@@ -360,7 +363,7 @@ impl From<Text> for FormErrors {
 }
 
 impl<F: Into<Cow<'static, str>>, M: Into<Text>> From<(F, M)> for FormErrors {
-    /// Shorthand for rejecting one named field: `Err(("password", "…"))`.
+    /// A shorthand to reject one named field: `Err(("password", "…"))`.
     fn from((field, message): (F, M)) -> Self {
         let mut errors = FormErrors::new();
         errors.reject_field(field, message);
@@ -391,8 +394,8 @@ impl fmt::Display for FormErrors {
 impl std::error::Error for FormErrors {}
 
 impl Serialize for FormErrors {
-    /// Serialised as `{"form": [...], "fields": {"name": [...]}}` so templates
-    /// can look messages up by field name.
+    /// Serializes as `{"form": [...], "fields": {"name": [...]}}`, so a
+    /// template can find a message by field name.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(Serialize)]
         struct Repr<'a> {
@@ -415,10 +418,10 @@ impl Serialize for FormErrors {
     }
 }
 
-/// A value that could not be converted to its Rust type.
+/// A value the crate could not convert to its Rust type.
 ///
-/// Turned into [`ErrorKind::Invalid`] with `expected` describing what the
-/// parser wanted, e.g. `"a whole number"`.
+/// It becomes an [`ErrorKind::Invalid`], where `expected` says what the parser
+/// wanted, such as `"a whole number"`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueError {
     pub expected: Cow<'static, str>,

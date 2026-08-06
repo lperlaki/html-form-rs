@@ -1,10 +1,9 @@
-//! Rendering a form through MiniJinja instead of the built-in renderer.
+//! How to render a form through MiniJinja in place of the built-in renderer.
 //!
-//! `FormView` is `serde::Serialize`, so it drops straight into a template
-//! context and the template decides what the markup looks like. The same view
-//! type is used for the blank form and for the re-render after a failed
-//! submission — the only difference is that the second one carries values and
-//! error messages.
+//! `FormView` is `serde::Serialize`, so it goes straight into a template
+//! context, and the template decides what the markup looks like. The blank form
+//! and the re-render after a failed submission use the same view type. The only
+//! difference is that the second one carries values and error messages.
 //!
 //! Run with: `cargo run --example minijinja_render`
 
@@ -101,15 +100,15 @@ fn main() {
     env.add_template("signup.html", TEMPLATE).unwrap();
     let template = env.get_template("signup.html").unwrap();
 
-    // 1. GET /signup — a blank form, showing each field's default.
+    // 1. GET /signup: a blank form, where each field shows its default.
     println!("── GET /signup ─────────────────────────────────────────────");
     let html = template
         .render(context! { form => Signup::render() })
         .unwrap();
     println!("{html}");
 
-    // 2. POST /signup with a bad body — same template, same view type, now
-    //    carrying what the user typed and what was wrong with it.
+    // 2. POST /signup with a bad body: the same template and the same view
+    //    type, now carrying what the user typed and each error.
     let body = "email=not-an-email&password=short&age=7&plan=free&bio=Hi&newsletter=on";
     println!("── POST /signup (rejected) ─────────────────────────────────");
     match Signup::submit_urlencoded(body) {
@@ -120,7 +119,7 @@ fn main() {
         }
     }
 
-    // 3. POST /signup with a good body — straight to a typed struct.
+    // 3. POST /signup with a good body: straight to a typed struct.
     let body = "email=ada@example.com&password=correct-horse-battery&age=36&plan=pro&newsletter=on";
     println!("── POST /signup (accepted) ─────────────────────────────────");
     match Signup::submit_urlencoded(body) {

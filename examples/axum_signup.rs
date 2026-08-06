@@ -1,9 +1,9 @@
 //! A signup form served by axum, using `Outcome<T>` as an extractor.
 //!
-//! `GET /` renders the blank form, `POST /signup` handles the submission. A
-//! failed validation is not an extractor rejection: the handler still runs, and
-//! gets back the same form to render again — with the values the user typed and
-//! the messages attached to their fields.
+//! `GET /` renders the blank form, and `POST /signup` handles the submission. A
+//! failed validation is not an extractor rejection. The handler still runs, and
+//! it gets back the same form to render again. That form carries the values the
+//! user typed and the message on each field.
 //!
 //! Run with: `cargo run --example axum_signup --features axum`
 //! then open <http://127.0.0.1:3000>.
@@ -53,7 +53,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-/// The empty form, each field showing its declared default.
+/// The empty form, where each field shows its declared default.
 async fn blank_form() -> Html<String> {
     Html(page("Sign up", &Signup::render().to_html()))
 }
@@ -70,7 +70,7 @@ async fn signup(form: Outcome<Signup>) -> Response {
         ))
         .into_response(),
 
-        // Every problem at once, each one already attached to its field.
+        // Every problem at once, and each one is already on its field.
         Outcome::Invalid { errors, view } => {
             eprintln!("rejected {} field(s): {errors}", errors.len());
             (

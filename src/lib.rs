@@ -2,17 +2,17 @@
 //!
 //! One struct describes a form. From it you get:
 //!
-//! * a **render format** — [`FormView`], a flat serialisable description of the
-//!   form, ready for MiniJinja, Askama or the built-in HTML renderer;
-//! * a **parser** — the same struct is reconstructed from an
-//!   `application/x-www-form-urlencoded` submission, with every attribute
-//!   re-checked server-side;
-//! * an **error render** — when validation fails you get the same
-//!   [`FormView`], carrying the values the user already typed and the messages
-//!   attached to each field.
+//! * a **render format**. [`FormView`] is a flat, serializable description of
+//!   the form, ready for MiniJinja, Askama or the built-in HTML renderer.
+//! * a **parser**. The crate builds the same struct again from an
+//!   `application/x-www-form-urlencoded` submission, and checks every attribute
+//!   again on the server.
+//! * an **error render**. When validation fails, you get the same
+//!   [`FormView`]. It carries the values the user typed and the messages for
+//!   each field.
 //!
-//! Validation never stops at the first problem. Every field is attempted and
-//! every failure is collected into one [`FormErrors`].
+//! Validation does not stop at the first problem. The crate tries every field
+//! and collects every failure into one [`FormErrors`].
 //!
 //! # Example
 //!
@@ -45,7 +45,7 @@
 //! match Signup::submit_urlencoded(body) {
 //!     Outcome::Valid(_) => unreachable!(),
 //!     Outcome::Invalid { errors, view } => {
-//!         // Bad address, short password, age below the minimum.
+//!         // A bad address, a short password, an age below the minimum.
 //!         assert_eq!(errors.len(), 3);
 //!         // The re-render keeps what the user typed…
 //!         assert_eq!(view.field("email").unwrap().value.as_deref(), Some("nope"));
@@ -65,10 +65,10 @@
 //!
 //! # Checks the markup cannot express
 //!
-//! `validate = ...` names a function run after everything the spec could check
-//! — per field with `#[field(...)]`, or once over the assembled struct with
-//! `#[form(...)]`. A predicate is enough when the built-in message will do;
-//! return a `Result` to say more. See [`FieldValidation`] and
+//! `validate = ...` names a function. The crate runs it after every check the
+//! spec could make: per field with `#[field(...)]`, or once over the whole
+//! struct with `#[form(...)]`. A predicate is enough when the built-in message
+//! will do. Return a `Result` to say more. See [`FieldValidation`] and
 //! [`FormValidation`] for every shape either one may return.
 //!
 //! ```
@@ -93,7 +93,7 @@
 //!     if form.password == form.confirm {
 //!         Ok(())
 //!     } else {
-//!         // Attached to the field that can be corrected, not to the form.
+//!         // Attach it to the field the user can correct, not to the form.
 //!         Err(("confirm", "The two passwords do not match.").into())
 //!     }
 //! }
@@ -105,11 +105,11 @@
 //!
 //! # A type that carries its own rules
 //!
-//! A check the whole application makes of a value does not belong to one field
-//! of one form. `#[derive(FormValue)]` puts it on the type instead: the wrapped
-//! type does the converting, and `#[value(...)]` says what the wrapper adds —
-//! the control, the constraints, the default, and the check no markup could
-//! make. A form that uses the type then says only where it goes.
+//! A check that the whole application makes of a value does not belong to one
+//! field of one form. `#[derive(FormValue)]` puts the check on the type
+//! instead. The wrapped type does the conversion. `#[value(...)]` says what the
+//! wrapper adds: the control, the constraints, the default, and the check no
+//! markup could make. A form that uses the type then says only where it goes.
 //!
 //! ```
 //! use html_form::{Form, Text};
@@ -131,7 +131,7 @@
 //!     colleague: WorkEmail,
 //! }
 //!
-//! // The control, and everything it constrains, came from the type.
+//! // The control, and every constraint on it, came from the type.
 //! let view = Invite::render();
 //! let field = view.field("colleague").unwrap();
 //! assert_eq!(field.kind, html_form::FieldKind::Email);
@@ -147,15 +147,15 @@
 //!
 //! What a field writes wins over what the type said, exactly as an attribute
 //! wins over the control a Rust type implies. What the type will not carry is
-//! anything describing the *field* — a label, a placeholder — since the same
-//! type is a "Work email" on one form and a "Recipient" on the next. See
+//! anything that describes the *field*, such as a label or a placeholder. The
+//! same type is a "Work email" on one form and a "Recipient" on the next. See
 //! [`FormValue`] for the trait, and the derive for every `#[value(...)]` key.
 //!
 //! # A type from a crate that has never heard of this one
 //!
 //! `#[field(from_str)]` converts a field with the type's own [`FromStr`] and
-//! [`Display`], so a `Uuid`, a `NaiveDate` or a `Decimal` is a field with no
-//! impl written and no newtype wrapped around it.
+//! [`Display`]. A `Uuid`, a `NaiveDate` or a `Decimal` is therefore a field
+//! with no impl written and no newtype wrapped around it.
 //!
 //! ```
 //! use html_form::Form;
@@ -180,8 +180,8 @@
 //! let booking = Booking::from_urlencoded("day=2026-08-06").unwrap();
 //! assert_eq!(booking.day, Date("2026-08-06".to_owned()));
 //!
-//! // Everything the spec could check is checked first, and says more than a
-//! // conversion could: this is the date control's own format check.
+//! // The crate makes every check the spec could make first. Those checks say
+//! // more than a conversion could: this is the date control's format check.
 //! let errors = Booking::from_urlencoded("day=whenever").unwrap_err();
 //! assert_eq!(
 //!     errors.field("day").next().unwrap().message.as_str(),
@@ -190,28 +190,29 @@
 //! ```
 //!
 //! It applies to the field's own type, `Option<T>` and `Vec<T>` included, and
-//! changes nothing else: a `validate` function still sees the type the field
-//! was written as, and `Display` writes the value back out for an edit form.
-//! What it cannot do is imply a control — a foreign type has no `CONTROL` to be
-//! asked for one — so the field renders as text until `type = "..."` says
-//! otherwise, and a value that will not parse is reported as the generic "Enter
-//! a valid value.", a `FromStr` error being written for whoever wrote the call
-//! rather than for whoever filled in the form.
+//! changes nothing else. A `validate` function still sees the type the field
+//! was written as, and `Display` writes the value out again for an edit form.
+//! What it cannot do is imply a control, because a foreign type has no
+//! `CONTROL` to give one. The field therefore renders as text until
+//! `type = "..."` says otherwise. And a value that will not parse gets the
+//! general message "Enter a valid value." A `FromStr` error speaks to whoever
+//! wrote the call, not to whoever filled in the form.
 //!
-//! For a type you own, `#[derive(FormValue)]` with `#[value(from_str)]` says it
-//! once, on the type, instead of at every field that mentions it — and, since
-//! converting itself asks nothing of its shape, that is also how a several-field
-//! struct or an enum becomes one value.
+//! For a type you own, `#[derive(FormValue)]` with `#[value(from_str)]` says
+//! this once, on the type, in place of at every field that names it.
+//! Self-conversion asks nothing of a type's shape, so that is also how a
+//! several-field struct or an enum becomes one value.
 //!
 //! [`FromStr`]: std::str::FromStr
 //! [`Display`]: std::fmt::Display
 //!
-//! # Localisation
+//! # Localization
 //!
-//! Any string a person reads — a label, help text, a placeholder, a legend, an
-//! option's label, an error message — can be written as `t("key")` instead of
-//! as text. The crate resolves nothing itself; hand [`FormView::localize`] a
-//! lookup, or read the `…_key` companion field and translate in the template.
+//! You can write any string a person reads as `t("key")` in place of the text.
+//! That covers a label, help text, a placeholder, a legend, an option's label
+//! and an error message. The crate resolves no key itself. Give
+//! [`FormView::localize`] a lookup, or read the `…_key` companion field and
+//! translate in the template.
 //!
 //! ```
 //! use html_form::Form;
@@ -235,11 +236,11 @@
 //! assert_eq!(view.field("email").unwrap().help.as_deref(), Some("Never shared."));
 //! ```
 //!
-//! A key nothing recognises is left in place — the view shows the key itself,
-//! which is a visible bug rather than a silently blank label.
+//! The crate leaves a key that nothing knows in place. The view then shows the
+//! key itself, which is a visible bug rather than a silently blank label.
 //!
-//! A `validate = ...` function localises the same way: return a [`Text::key`]
-//! and the message is resolved with everything else. The key doubles as the
+//! A `validate = ...` function localizes the same way. Return a [`Text::key`],
+//! and the crate resolves the message with everything else. The key is also the
 //! error's [code](ErrorKind::Custom), so a caller that would rather build its
 //! own message can match on that instead.
 //!
@@ -268,15 +269,15 @@
 //! assert_eq!(view.field("username").unwrap().errors[0], "Schon vergeben.");
 //! ```
 //!
-//! The messages of the *built-in* checks are English, and deliberately not
-//! keyed: every [`ErrorKind`] carries the constraint it was violating, so a
-//! caller that needs them translated matches on the kind and writes its own —
-//! there is no key to guess at, and no message table to keep in step.
+//! The messages of the *built-in* checks are English, and carry no key on
+//! purpose. Every [`ErrorKind`] carries the constraint the value broke, so a
+//! caller that needs a translation matches on the kind and writes its own text.
+//! There is no key to guess at, and no message table to keep in step.
 //!
 //! # Reuse: flattening one form into another
 //!
-//! A form can be spliced into another with `#[field(flatten)]`. Give the
-//! flatten a `prefix` to embed the same sub-form more than once.
+//! `#[field(flatten)]` puts one form inside another. Give the flatten a
+//! `prefix` to use the same sub-form more than once.
 //!
 //! ```
 //! use html_form::Form;
@@ -322,12 +323,12 @@
 //! assert_eq!(order.shipping.postcode, "54321");
 //! ```
 //!
-//! A form may be generic, which is what makes a *wrapper* possible: [`SPEC`](Form::SPEC) is
-//! an associated constant, so `<T as Form>::SPEC` is resolved once per
-//! instantiation, and the bounds each field implies are added by the derive.
-//! What a flatten splices in is the sub-form's fields — its `action`, `method`
-//! and submit label describe its own `<form>` element, so a wrapper declares the
-//! ones it wants.
+//! A form may be generic, which is what makes a *wrapper* possible.
+//! [`SPEC`](Form::SPEC) is an associated constant, so the compiler resolves
+//! `<T as Form>::SPEC` once per instantiation, and the derive adds the bounds
+//! each field implies. A flatten brings in the sub-form's fields alone. Its
+//! `action`, `method` and submit label describe its own `<form>` element, so a
+//! wrapper declares the ones it wants.
 //!
 //! ```
 //! use html_form::Form;
@@ -349,7 +350,7 @@
 //! }
 //!
 //! fn fresh_token() -> String {
-//!     // A real one comes from a CSPRNG, and is remembered in the session.
+//!     // A real one comes from a CSPRNG, and the session remembers it.
 //!     "3f9c…".to_owned()
 //! }
 //!
@@ -362,37 +363,38 @@
 //! # Defaults the form produces itself
 //!
 //! `default = "…"` is a value written into the spec. `default = some_fn` is a
-//! function called once per render, for the defaults a constant cannot hold: a
-//! CSRF token, a nonce, today's date. It may return any string type.
+//! function the crate calls once per render, for the defaults a constant cannot
+//! hold: a CSRF token, a nonce, today's date. It may return any string type.
 //!
 //! A generated default belongs to *rendering* alone. It is never a fallback
-//! while parsing — if it were, a submission that left the CSRF token out would
-//! arrive carrying a freshly minted, valid one.
+//! while parsing. If it were, a submission that left the CSRF token out would
+//! arrive with a fresh and valid one.
 //!
 //! On a blank form it is the value, as any default is. Once there are values to
-//! show — a submission being re-rendered, a record being edited — only a
-//! **hidden** field is minted again: nobody typed it, so there is nothing of
-//! the caller's to preserve, and echoing a rejected token back would leave the
-//! retry failing exactly as the first attempt did. Every other control shows
-//! what it was given, empty included. A form that filled a visible field in
-//! would be putting a value the caller never had in front of the user, for them
-//! to send back without noticing.
+//! show, such as a submission to re-render or a record to edit, the crate mints
+//! only a **hidden** field again. Nobody typed that field, so there is nothing
+//! of the caller's to keep. And a rejected token sent back would make the retry
+//! fail exactly as the first attempt did. Every other control shows what it
+//! received, an empty value included. A form that filled a visible field in
+//! would put a value the caller never had in front of the user. The user could
+//! then send it back without noticing.
 //!
-//! # What the form's own functions are handed
+//! # What the form's own functions receive
 //!
-//! A token that has to match the session, a list of options only the database
-//! knows, a check that depends on who is logged in: none of that fits in a
-//! `const`. `#[form(context = …)]` declares a type the caller passes in at the
-//! moment it renders or parses, and every function the form names is handed it.
+//! A `const` cannot hold a token that has to match the session. Nor a list of
+//! options only the database knows, nor a check that depends on who is logged
+//! in. `#[form(context = …)]` declares a type. The caller passes it in at the
+//! moment the form renders or parses, and every function the form names
+//! receives it.
 //!
-//! Declaring a context changes the *names* of the calls, not their meaning:
+//! A context changes the *names* of the calls, not their meaning.
 //! [`render`](Form::render) becomes
-//! [`render_with_context`](Form::render_with_context),
+//! [`render_with_context`](Form::render_with_context), and
 //! [`from_values`](Form::from_values) becomes
-//! [`from_values_with_context`](Form::from_values_with_context), and so on
-//! through the pairs. Both halves are on [`Form`] itself; the short one asks
-//! for `Context: EmptyContext`, which `()` — what a form that declares no
-//! context gets — is.
+//! [`from_values_with_context`](Form::from_values_with_context). The other
+//! pairs work the same way. [`Form`] itself holds both halves. The short one
+//! asks for `Context: EmptyContext`, which `()` satisfies. A form that declares
+//! no context gets `()`.
 //!
 //! ```
 //! use html_form::{Form, Text};
@@ -412,12 +414,12 @@
 //!     body: String,
 //! }
 //!
-//! /// A default may take the context, and is called once per render.
+//! /// A default may take the context. The crate calls it once per render.
 //! fn issued_token(session: &Session) -> String {
 //!     session.csrf.clone()
 //! }
 //!
-//! /// So may a validator, after the value it is checking.
+//! /// So may a validator, after the value it checks.
 //! fn is_our_token(submitted: &String, session: &Session) -> Result<(), Text> {
 //!     match *submitted == session.csrf {
 //!         true => Ok(()),
@@ -427,7 +429,7 @@
 //!
 //! let session = Session { csrf: "3f9c…".to_owned() };
 //!
-//! // The hidden field is filled in from the session that will check it.
+//! // The session that will check the hidden field also fills it in.
 //! let view = Comment::render_with_context(&session);
 //! assert_eq!(view.field("csrf_token").unwrap().value.as_deref(), Some("3f9c…"));
 //!
@@ -438,7 +440,7 @@
 //! .unwrap();
 //! assert_eq!(comment.body, "Nice post");
 //!
-//! // Somebody else's token is rejected by the check the markup could not make.
+//! // The check the markup could not make rejects somebody else's token.
 //! let errors =
 //!     Comment::from_urlencoded_with_context("csrf_token=forged&body=x", &session).unwrap_err();
 //! assert_eq!(
@@ -447,21 +449,22 @@
 //! );
 //! ```
 //!
-//! Either arity will do wherever a function is named: `fn() -> String` and
+//! Either arity works wherever you name a function: `fn() -> String` and
 //! `fn(&Session) -> String`, `fn(&T) -> bool` and `fn(&T, &Session) -> bool`.
-//! Which one was written is read off the function itself, so a form that gains
-//! a context does not have to rewrite the checks that never needed one. See
-//! [`DefaultSource`], [`FieldValidator`] and [`FormValidator`].
+//! The crate reads which one you wrote off the function itself. A form that
+//! gains a context therefore need not rewrite the checks that never took one.
+//! See [`DefaultSource`], [`FieldValidator`] and [`FormValidator`].
 //!
-//! A flattened sub-form is parsed and rendered with the enclosing form's
-//! context. [`Provides`] is what lets the two differ — most usefully, what lets
-//! a form written without a context be reused inside one that has a context.
-//! `examples/csrf.rs` puts the lot together.
+//! The crate parses and renders a flattened sub-form with the enclosing form's
+//! context. [`Provides`] lets the two differ. Most usefully, it lets you reuse
+//! a form written without a context inside one that has a context.
+//! `examples/csrf.rs` puts all of this together.
 //!
 //! # Attributes the crate has no opinion about
 //!
-//! `attr(...)` carries anything else the markup needs — `data-*`, `hx-*` — onto
-//! the `<form>` or onto one control. It never takes part in validation.
+//! `attr(...)` carries anything else the markup needs, such as `data-*` and
+//! `hx-*`, onto the `<form>` or onto one control. It never takes part in
+//! validation.
 //!
 //! ```
 //! use html_form::Form;
@@ -478,33 +481,34 @@
 //! assert!(html.contains(r#"autocorrect="off""#));
 //! ```
 //!
-//! A dashed name has to be written as a string literal; a bare word is taken as
-//! written, and one with no value renders a boolean attribute. Naming something
-//! the crate renders itself is a compile error, so `attr("class" = "x")` points
-//! you at `#[field(class = "x")]` rather than emitting a second `class`.
+//! Write a dashed name as a string literal. The crate takes a bare word as
+//! written, and a bare word with no value renders a boolean attribute. Naming
+//! something the crate renders itself is a compile error, so
+//! `attr("class" = "x")` points you at `#[field(class = "x")]` in place of
+//! emitting a second `class`.
 //!
 //! # Rendering with a template engine
 //!
-//! [`FormView`] is `serde::Serialize`, so it drops straight into a MiniJinja
-//! context, and its fields are public, so an Askama template can walk it
-//! directly. See `examples/minijinja_render.rs`.
+//! [`FormView`] is `serde::Serialize`, so it goes straight into a MiniJinja
+//! context. Its fields are public, so an Askama template can walk it directly.
+//! See `examples/minijinja_render.rs`.
 //!
-//! The built-in renderer — [`FormView::to_html`], [`FieldView::to_html`], the
-//! `Display` impls and [`escape`] — is the `html` feature, on by default. A
-//! crate that renders through a template engine can turn it off; everything
-//! else, [`FormView`] included, is unaffected.
+//! The built-in renderer is the `html` feature, on by default. It covers
+//! [`FormView::to_html`], [`FieldView::to_html`], the `Display` impls and
+//! [`escape`]. A crate that renders through a template engine can turn the
+//! feature off. Nothing else changes, [`FormView`] included.
 //!
 //! # Framework integration
 //!
-//! Nothing here is tied to an HTTP stack: [`Values::from_pairs`] takes whatever
+//! Nothing here depends on an HTTP stack. [`Values::from_pairs`] takes whatever
 //! a framework's body parser produced. With the `axum` feature, [`Outcome<T>`]
-//! is additionally an axum 0.8 extractor — see `FormRejection` and
+//! is also an axum 0.8 extractor. See `FormRejection` and
 //! `examples/axum_signup.rs`.
 //!
-//! Nor is it tied to a submission being a form. [`Values`] is `Serialize` and
-//! `Deserialize`, so a JSON body is a submission too — the same struct, the
-//! same checks, the same errors, which already serialise for a client that
-//! sent JSON in the first place.
+//! A submission also does not have to be a form. [`Values`] is `Serialize` and
+//! `Deserialize`, so a JSON body is a submission too. You get the same struct,
+//! the same checks and the same errors, which already serialize for a client
+//! that sent JSON in the first place.
 //!
 //! ```
 //! # use html_form::{Form, Values};
@@ -520,48 +524,49 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! A number or a boolean is read as the string a form would have submitted, a
-//! list is a name submitted repeatedly, and `null` is a name not submitted at
-//! all.
+//! The crate reads a number or a boolean as the string a form would have
+//! submitted. A list is a name submitted more than once, and `null` is a name
+//! the client did not submit at all.
 //!
 //! # The two descriptions of a form
 //!
 //! [`FormSpec`] is the static one: what the derive emits, and what both the
 //! renderer and the parser read. Each of its fields names a [`Control`], which
-//! carries the attributes that control accepts and no others — there is no way
+//! carries the attributes that control accepts and no others. There is no way
 //! to give a date a `minlength` or a `<select>` an `accept`.
 //!
-//! [`FormView`] is the runtime one: flat, serialisable, and carrying the things
-//! a spec cannot know — what the user typed, what was wrong with it, and options
-//! loaded from a database.
+//! [`FormView`] is the runtime one: flat, serializable, and carrying the things
+//! a spec cannot know. That is what the user typed, what was wrong with it, and
+//! the options that come from a database.
 //!
 //! [`Text`] is what every person-facing string in the spec is: literal text, or
-//! an i18n key. Both end up in the view, the key alongside the string.
+//! an i18n key. Both reach the view, the key next to the string.
 //!
 //! # What rendering costs
 //!
-//! A spec is `const`: [`Form::SPEC`] is one const-evaluated value, flattened
-//! sub-forms and all, so nothing is built the first time a form is rendered.
+//! A spec is `const`. [`Form::SPEC`] is one const-evaluated value, flattened
+//! sub-forms included, so the first render of a form builds nothing.
 //!
 //! Every string in a [`FormView`] is a `Cow<'static, str>`, and rendering
-//! borrows from the spec wherever it can. What a blank form still allocates is
-//! what the spec does not contain: the three ids derived from each field's name,
-//! the `Vec`s holding the fields and their options, and — on a re-render — the
-//! values the user submitted, which do not outlive the request they came in on.
-//! Names, labels, help text, placeholders, options, constraints and error
-//! messages are borrowed. The owned half of each `Cow` is what keeps the view an
-//! ordinary owned value that a handler can return, and what lets `set_value`,
-//! `set_choices` and [`FormView::localize`] put runtime strings in.
+//! borrows from the spec where it can. A blank form allocates only what the
+//! spec does not hold. That is the three ids derived from each field's name,
+//! and the `Vec`s that hold the fields and their options. On a re-render it
+//! also allocates the values the user submitted, which do not outlive the
+//! request they came in on. Names, labels, help text, placeholders, options,
+//! constraints and error messages stay borrowed. The owned half of each `Cow`
+//! keeps the view an ordinary owned value that a handler can return. It also
+//! lets `set_value`, `set_choices` and [`FormView::localize`] put runtime
+//! strings in.
 //!
-//! The same holds while parsing: a field's name reaches [`FormErrors`] borrowed
-//! from the spec, and only a `#[field(flatten, prefix = "…")]` makes a name that
-//! has to be built.
+//! Parsing works the same way. A field's name reaches [`FormErrors`] borrowed
+//! from the spec, and only a `#[field(flatten, prefix = "…")]` makes a name
+//! that the crate has to build.
 //!
-//! A context costs a reference passed down the walk, and nothing else. The
-//! defaults a form generates are the one thing that has to be produced before
-//! the view is built, and [`Form::GENERATES_DEFAULTS`] — const-evaluated
-//! through the whole flatten tree — is what keeps a form that declares none from
-//! paying for the mechanism at all.
+//! A context costs one reference passed down the walk, and nothing else. The
+//! defaults a form generates are the one thing the crate has to produce before
+//! it builds the view. [`Form::GENERATES_DEFAULTS`] is const-evaluated through
+//! the whole flatten tree, so a form that declares no such default pays nothing
+//! for the mechanism.
 
 #[cfg(feature = "axum")]
 mod axum;
@@ -603,8 +608,8 @@ pub use html_form_derive::{Form, FormChoice, FormValue};
 
 /// Everything needed to declare and use a form.
 pub mod prelude {
-    // `Form` and `FormValue` each name both the trait and, with the `derive`
-    // feature, the macro — one `use` brings whichever of the two is meant.
+    // `Form` and `FormValue` each name the trait and, with the `derive`
+    // feature, the macro. One `use` brings in whichever of the two you mean.
     #[cfg(feature = "derive")]
     pub use crate::{Choice, FormChoice};
     pub use crate::{FieldKind, Form, FormErrors, FormValue, FormView, Outcome, Values};
@@ -612,9 +617,8 @@ pub mod prelude {
 
 /// The result of handling a submission.
 ///
-/// The invalid case carries both the typed errors and a [`FormView`] that is
-/// ready to render back to the user, complete with the values they already
-/// entered.
+/// The invalid case carries the typed errors and a [`FormView`] ready to render
+/// back to the user, with the values they entered.
 #[derive(Debug)]
 pub enum Outcome<T> {
     Valid(T),
@@ -629,7 +633,7 @@ impl<T> Outcome<T> {
         matches!(self, Outcome::Valid(_))
     }
 
-    /// The parsed value, discarding the re-render.
+    /// The parsed value, without the re-render.
     pub fn ok(self) -> Option<T> {
         match self {
             Outcome::Valid(value) => Some(value),
@@ -637,7 +641,7 @@ impl<T> Outcome<T> {
         }
     }
 
-    /// The re-render, discarding the parsed value.
+    /// The re-render, without the parsed value.
     pub fn view(self) -> Option<Box<FormView>> {
         match self {
             Outcome::Valid(_) => None,
@@ -656,71 +660,73 @@ impl<T> Outcome<T> {
 
 /// A struct that describes an HTML form.
 ///
-/// Implemented by `#[derive(Form)]`. The members without a body are what the
-/// derive generates; everything else is provided.
+/// `#[derive(Form)]` implements it. The derive generates the members without a
+/// body. The trait provides everything else.
 ///
-/// Every method that renders or parses takes the form's [`Context`](Self::Context)
-/// and says so in its name. Each one has a twin without the argument or the
-/// suffix — `Signup::render()` rather than `Signup::render_with_context(&())` —
-/// available where the context is an [`EmptyContext`], which is every form that
-/// has not declared one.
+/// Every method that renders or parses takes the form's
+/// [`Context`](Self::Context) and says so in its name. Each one has a twin
+/// without the argument and without the suffix, such as `Signup::render()` in
+/// place of `Signup::render_with_context(&())`. The twin is available where the
+/// context is an [`EmptyContext`], which covers every form that declares none.
 pub trait Form: Sized {
-    /// What this form's own functions are handed besides the value they are
-    /// looking at: the session, a database handle, the request's locale —
-    /// whatever `#[field(default = ...)]` and `validate = ...` need to know and
-    /// a `const` spec cannot hold.
+    /// What this form's own functions receive besides the value they look at:
+    /// the session, a database handle, the request's locale. It holds whatever
+    /// `#[field(default = ...)]` and `validate = ...` need to know and a
+    /// `const` spec cannot hold.
     ///
-    /// `()` for a form that needs nothing, which is what the derive assumes
-    /// until `#[form(context = ...)]` says otherwise. [`DefaultSource`],
-    /// [`FieldValidator`] and [`FormValidator`] are how a function reaches it;
-    /// [`Provides`] is what lets a form with a context flatten one without.
+    /// It is `()` for a form that needs nothing, which is what the derive
+    /// assumes until `#[form(context = ...)]` says otherwise.
+    /// [`DefaultSource`], [`FieldValidator`] and [`FormValidator`] are how a
+    /// function reaches it. [`Provides`] lets a form with a context flatten one
+    /// without a context.
     type Context;
 
     /// The static description of this form.
     ///
-    /// A constant rather than a function: the derive builds it entirely at
-    /// const-evaluation time, so a flattened sub-form is a reference the
-    /// compiler has already resolved rather than a call made at render time,
-    /// and `SPEC` can be read from any `const` context.
+    /// It is a constant, not a function. The derive builds all of it at
+    /// const-evaluation time. A flattened sub-form is therefore a reference the
+    /// compiler has already resolved, not a call made at render time, and any
+    /// `const` context can read `SPEC`.
     const SPEC: &'static FormSpec;
 
     /// Whether this form, or anything it flattens, has a default it produces at
     /// render time rather than one written into the spec.
     ///
-    /// Const-evaluated through the whole flatten tree, so a form that has none
-    /// — nearly every form — pays nothing for the mechanism: the walk in
-    /// [`generate_defaults`](Self::generate_defaults) is never made.
+    /// The crate const-evaluates this through the whole flatten tree. A form
+    /// that has no such default — nearly every form — therefore pays nothing
+    /// for the mechanism, because the walk in
+    /// [`generate_defaults`](Self::generate_defaults) never runs.
     const GENERATES_DEFAULTS: bool = false;
 
-    /// Parse the form out of `ctx`, honouring the flatten prefix in scope.
+    /// Parse the form out of `ctx`, and honor the flatten prefix in scope.
     ///
-    /// Returns `None` when a value could not be produced. Errors are pushed
-    /// into the context rather than returned, so parsing always visits every
+    /// Returns `None` when it could not produce a value. It pushes errors into
+    /// the context in place of returning them, so parsing always visits every
     /// field.
     fn parse_in(ctx: &mut ParseCtx<'_, Self::Context>) -> Option<Self>;
 
-    /// Write this value back out as raw submitted values, so an existing record
-    /// can be rendered into the form it came from.
+    /// Write this value out again as raw submitted values, so you can render an
+    /// existing record into the form it came from.
     fn fill_in(&self, values: &mut Values, prefix: &str);
 
-    /// Produce the defaults this form makes afresh for one render — every
-    /// `#[field(default = path)]` — under fully-qualified field names.
+    /// Produce the defaults this form makes anew for one render, under fully
+    /// qualified field names. That is every `#[field(default = path)]`.
     ///
     /// Rendering is the whole of it. A generated default never stands in while
-    /// *parsing*: if it did, a submission that left the CSRF token out would
-    /// arrive carrying a freshly minted, valid one.
+    /// *parsing*. If it did, a submission that left the CSRF token out would
+    /// arrive with a fresh and valid one.
     fn generate_defaults(values: &mut Values, prefix: &str, context: &Self::Context) {
         let _ = (values, prefix, context);
     }
 
-    /// [`Form::SPEC`], for call sites that would rather not name the type.
+    /// [`Form::SPEC`], for a call site that would rather not name the type.
     fn spec() -> &'static FormSpec {
         Self::SPEC
     }
 
-    /// What this form generates for one render, ready to be handed to
-    /// [`FormView::build`] — `None`, and unvisited, for the forms that declare
-    /// no generated default at all.
+    /// What this form generates for one render, ready for
+    /// [`FormView::build`]. A form that declares no generated default gets
+    /// `None`, and the crate does not visit it.
     fn defaults_with_context(context: &Self::Context) -> Option<Values> {
         Self::GENERATES_DEFAULTS.then(|| {
             let mut values = Values::new();
@@ -744,7 +750,7 @@ pub trait Form: Sized {
     }
 
     /// [`from_values_with_context`](Form::from_values_with_context), for a
-    /// form with nothing to be told.
+    /// form that needs no context.
     fn from_values(values: &Values) -> Result<Self, FormErrors>
     where
         Self::Context: EmptyContext,
@@ -762,7 +768,7 @@ pub trait Form: Sized {
     }
 
     /// [`from_urlencoded_with_context`](Form::from_urlencoded_with_context),
-    /// for a form with nothing to be told.
+    /// for a form that needs no context.
     fn from_urlencoded(body: &str) -> Result<Self, FormErrors>
     where
         Self::Context: EmptyContext,
@@ -783,8 +789,8 @@ pub trait Form: Sized {
         }
     }
 
-    /// [`submit_with_context`](Form::submit_with_context), for a form with
-    /// nothing to be told.
+    /// [`submit_with_context`](Form::submit_with_context), for a form that
+    /// needs no context.
     fn submit(values: &Values) -> Outcome<Self>
     where
         Self::Context: EmptyContext,
@@ -815,7 +821,7 @@ pub trait Form: Sized {
         )
     }
 
-    /// A blank form, for a form with nothing to be told.
+    /// A blank form, for a form that needs no context.
     fn render() -> FormView
     where
         Self::Context: EmptyContext,
@@ -825,8 +831,8 @@ pub trait Form: Sized {
 
     /// A blank form with every i18n key already resolved.
     ///
-    /// The general form is [`FormView::localized`], which does the same to a
-    /// view from any of the other constructors:
+    /// [`FormView::localized`] is the general form. It does the same to a view
+    /// from any of the other constructors:
     /// `article.render_filled().localized(&translate)`.
     fn render_localized_with_context<S, F>(translate: F, context: &Self::Context) -> FormView
     where
@@ -837,7 +843,7 @@ pub trait Form: Sized {
     }
 
     /// [`render_localized_with_context`](Form::render_localized_with_context),
-    /// for a form with nothing to be told.
+    /// for a form that needs no context.
     fn render_localized<S, F>(translate: F) -> FormView
     where
         F: Fn(&str) -> Option<S>,
@@ -847,8 +853,8 @@ pub trait Form: Sized {
         Self::render_localized_with_context(translate, empty::<Self>())
     }
 
-    /// The form as it should be shown after a submission: the submitted values
-    /// with the errors attached to their fields.
+    /// The form to show after a submission: the submitted values, with each
+    /// error attached to its field.
     fn render_submitted_with_context(
         values: &Values,
         errors: &FormErrors,
@@ -863,7 +869,7 @@ pub trait Form: Sized {
     }
 
     /// [`render_submitted_with_context`](Form::render_submitted_with_context),
-    /// for a form with nothing to be told.
+    /// for a form that needs no context.
     fn render_submitted(values: &Values, errors: &FormErrors) -> FormView
     where
         Self::Context: EmptyContext,
@@ -882,7 +888,7 @@ pub trait Form: Sized {
     }
 
     /// [`render_filled_with_context`](Form::render_filled_with_context), for
-    /// a form with nothing to be told.
+    /// a form that needs no context.
     fn render_filled(&self) -> FormView
     where
         Self::Context: EmptyContext,
@@ -898,8 +904,8 @@ pub trait Form: Sized {
     }
 }
 
-/// The context of a form that has nothing to be told, named once so that each
-/// short method above is its `…_with_context` counterpart and nothing else.
+/// The context of a form that needs no context, named once so that each short
+/// method above is its `…_with_context` twin and nothing else.
 fn empty<T: Form>() -> &'static T::Context
 where
     T::Context: EmptyContext,

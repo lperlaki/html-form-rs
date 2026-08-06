@@ -1,29 +1,29 @@
-//! What a form's own functions are handed besides the value they are looking at.
+//! What a form's own functions receive besides the value they look at.
 //!
-//! Everything in a [`FormSpec`](crate::FormSpec) is `const`, so the two escape
-//! hatches that run code — `#[field(default = ...)]` and `validate = ...` —
-//! used to see nothing of the request they were serving. A CSRF token that has
-//! to match the session had to reach them through thread-local state.
+//! Everything in a [`FormSpec`](crate::FormSpec) is `const`. The two escape
+//! hatches that run code, `#[field(default = ...)]` and `validate = ...`,
+//! therefore used to see nothing of the request they served. A CSRF token that
+//! has to match the session had to reach them through thread-local state.
 //!
 //! [`Form::Context`](crate::Form::Context) is that missing argument. It is
-//! whatever the form says it is, it is handed in at the call that renders or
-//! parses, and it reaches every function the form declares:
+//! whatever the form says it is. The caller passes it in at the call that
+//! renders or parses, and it reaches every function the form declares:
 //!
 //! * `#[field(default = path)]`, where `path` may be `fn() -> String` or
-//!   `fn(&Context) -> String` — see [`DefaultSource`];
-//! * `#[field(validate = path)]`, `fn(&T) -> V` or `fn(&T, &Context) -> V`;
+//!   `fn(&Context) -> String`. See [`DefaultSource`].
+//! * `#[field(validate = path)]`, `fn(&T) -> V` or `fn(&T, &Context) -> V`.
 //! * `#[form(validate = path)]`, `fn(&Self) -> V` or `fn(&Self, &Context) -> V`.
 //!
-//! Which shape a function has is read off its own signature rather than
-//! declared, so a form that gains a context does not have to rewrite the checks
+//! You do not declare which shape a function has. The crate reads it off the
+//! signature, so a form that gains a context does not have to rewrite the checks
 //! that never needed one.
 //!
 //! # Flattening across contexts
 //!
-//! A flattened sub-form is parsed and rendered with the enclosing form's
-//! context, so by default the two have to agree. [`Provides`] is how they stop
-//! having to: it says which context an enclosing one can hand down, and its
-//! blanket impl is the identity — every context provides itself. A form that
+//! The crate parses and renders a flattened sub-form with the enclosing form's
+//! context, so by default the two have to agree. [`Provides`] removes that
+//! requirement. It says which context an enclosing one can give away, and its
+//! blanket impl is the identity: every context provides itself. A form that
 //! wants no context at all asks for `()`, which is the one thing a context has
 //! to be told it can supply:
 //!
@@ -33,7 +33,7 @@
 //!     token: String,
 //! }
 //!
-//! // `Session` can stand in wherever a context-free sub-form is flattened.
+//! // `Session` stands in wherever a form flattens a context-free sub-form.
 //! impl Provides<()> for Session {
 //!     fn provide(&self) -> &() {
 //!         &()
@@ -45,10 +45,10 @@ use std::borrow::Cow;
 
 /// Marker: the function ignores the context.
 ///
-/// Never written down. It is inferred from the function's own arity, which is
-/// what lets [`DefaultSource`], [`FieldValidator`](crate::FieldValidator) and
-/// [`FormValidator`](crate::FormValidator) each accept two shapes without the
-/// derive — which cannot see a signature — having to know which was written.
+/// You never write it down. The crate infers it from the function's own arity.
+/// That is what lets [`DefaultSource`], [`FieldValidator`](crate::FieldValidator)
+/// and [`FormValidator`](crate::FormValidator) each accept two shapes. The
+/// derive cannot see a signature, so it never has to know which one you wrote.
 pub enum WithoutContext {}
 
 /// Marker: the function takes the context as its last argument.
@@ -57,18 +57,18 @@ pub enum WithContext {}
 /// How an enclosing form's context supplies the one a flattened sub-form asks
 /// for.
 ///
-/// Every context provides itself, which is the whole of it for a form flattened
-/// into another that shares its context. Write an impl to hand a sub-form
-/// something else — most often `()`, for a sub-form that was written without a
-/// context and should not have to gain one just to be reused.
+/// Every context provides itself. That is the whole of it where a sub-form
+/// shares the context of the form it goes into. Write an impl to give a
+/// sub-form something else. Most often that is `()`, for a sub-form written
+/// without a context that should not have to gain one to be reused.
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` cannot supply the `{C}` a flattened sub-form is asking for",
+    message = "`{Self}` cannot supply the `{C}` that a flattened sub-form asks for",
     label = "this form's context is `{Self}`",
-    note = "a flattened sub-form is parsed and rendered with the enclosing form's context",
-    note = "write `impl html_form::Provides<{C}> for {Self}` to hand it one of its own"
+    note = "the crate renders and parses a flattened sub-form with the enclosing form's context",
+    note = "write `impl html_form::Provides<{C}> for {Self}` to give it one of its own"
 )]
 pub trait Provides<C> {
-    /// The context to hand down.
+    /// The context to give away.
     fn provide(&self) -> &C;
 }
 
@@ -78,18 +78,18 @@ impl<C> Provides<C> for C {
     }
 }
 
-/// What `#[field(default = path)]` may name: a function producing the value a
-/// field starts a render with.
+/// What `#[field(default = path)]` may name: a function that produces the value
+/// a field starts a render with.
 ///
-/// Either arity will do, and the crate works out which was written:
+/// Either arity works, and the crate finds out which one you wrote:
 ///
-/// | Signature | Called with |
+/// | Signature | The crate calls it with |
 /// |---|---|
 /// | `fn() -> impl Into<Cow<'static, str>>` | nothing |
 /// | `fn(&Context) -> impl Into<Cow<'static, str>>` | the render's context |
 ///
-/// The return type is any string: `String` for a token minted on the spot,
-/// `&'static str` for one that was already around.
+/// The return type is any string: `String` for a token you mint on the spot,
+/// `&'static str` for one that already exists.
 ///
 /// ```
 /// use html_form::Form;
@@ -116,7 +116,7 @@ impl<C> Provides<C> for C {
 /// assert_eq!(view.field("csrf_token").unwrap().value.as_deref(), Some("3f9c"));
 /// ```
 pub trait DefaultSource<C, M> {
-    /// The value this field starts with, produced afresh for one render.
+    /// The value this field starts with, produced anew for one render.
     fn generate(&self, context: &C) -> Cow<'static, str>;
 }
 
@@ -140,24 +140,24 @@ where
     }
 }
 
-/// A context there is nothing to decide about, so a caller need not be asked
-/// for one.
+/// A context with nothing to decide, so the crate never asks a caller for one.
 ///
-/// A form whose context is one of these has the short names —
-/// [`render`](crate::Form::render), [`from_values`](crate::Form::from_values),
-/// [`submit`](crate::Form::submit) — alongside the `…_with_context` ones,
-/// and they hand [`EMPTY`](EmptyContext::EMPTY) over on the caller's behalf.
+/// A form with such a context gets the short names next to the
+/// `…_with_context` ones: [`render`](crate::Form::render),
+/// [`from_values`](crate::Form::from_values) and
+/// [`submit`](crate::Form::submit). They pass
+/// [`EMPTY`](EmptyContext::EMPTY) on the caller's behalf.
 ///
-/// `()` is the only implementor here, and is what a form that declares no
+/// `()` is the only implementor here, and it is what a form that declares no
 /// context gets. Implement it for a context of your own that carries no
-/// decision either — a unit struct standing in for "no session yet".
+/// decision either, such as a unit struct that stands for "no session yet".
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` is a context a caller has to supply",
+    message = "`{Self}` is a context the caller has to supply",
     note = "the methods without a context are for a form whose context is `()`",
     note = "call the `…_with_context` one, or implement `html_form::EmptyContext` for `{Self}`"
 )]
 pub trait EmptyContext: 'static {
-    /// The one value of this context, handed to a form on the caller's behalf.
+    /// The one value of this context, passed to a form on the caller's behalf.
     const EMPTY: &Self;
 }
 

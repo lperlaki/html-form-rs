@@ -1,7 +1,7 @@
 //! Derive macros for [`html-form`](https://docs.rs/html-form).
 //!
-//! Everything these macros generate is documented on the `html_form` crate; this
-//! crate exists only because procedural macros need their own compilation unit.
+//! The `html_form` crate documents everything these macros generate. This crate
+//! exists only because a procedural macro needs its own compilation unit.
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
@@ -18,37 +18,37 @@ mod value;
 ///
 /// | Attribute | Meaning |
 /// |---|---|
-/// | `id`, `name`, `action`, `class` | Rendered onto the `<form>` element |
-/// | `method = "post"` | `get`, `post` or `dialog` (default `post`) |
-/// | `enctype = "multipart/form-data"` | Encoding, e.g. for file uploads |
-/// | `novalidate` | Suppress the browser's own validation |
-/// | `submit = "Create account"` | Caption of the built-in submit button |
+/// | `id`, `name`, `action`, `class` | The crate renders these onto the `<form>` element |
+/// | `method = "post"` | `get`, `post` or `dialog`. Defaults to `post` |
+/// | `enctype = "multipart/form-data"` | The encoding, such as for file uploads |
+/// | `novalidate` | Turn off the browser's own validation |
+/// | `submit = "Create account"` | The caption of the built-in submit button |
 /// | `validate = path::to::fn` | Cross-field check, `fn(&Self) -> bool` or `-> Result<(), E>` |
 ///
 /// # Field attributes — `#[field(...)]`
 ///
 /// | Attribute | Meaning |
 /// |---|---|
-/// | `type = "email"` | The control to render; inferred from the Rust type otherwise |
-/// | `label = "Email"` | Label text; defaults to the humanised field name, `""` renders none |
-/// | `label = t("email.label")` | An i18n key instead of text. Also on `help`, `placeholder`, `legend`, and on `#[form(submit)]`, `#[option(...)]` and `#[choice(...)]` labels and groups |
-/// | `name = "e-mail"` | Submitted name; defaults to the field name |
-/// | `required` / `optional` | Overrides the default (required unless `Option`, `Vec` or `bool`) |
-/// | `default = "…"` | Value shown on a blank form |
-/// | `default = path::to::fn` | A default produced once per render — a CSRF token, a nonce — instead of a fixed one |
-/// | `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept` | Validation, enforced in the browser *and* on the server |
+/// | `type = "email"` | The control to render. The crate infers it from the Rust type otherwise |
+/// | `label = "Email"` | The label text. It defaults to the humanized field name, and `""` renders no label |
+/// | `label = t("email.label")` | An i18n key in place of text. Also on `help`, `placeholder`, `legend`, and on the labels and groups of `#[form(submit)]`, `#[option(...)]` and `#[choice(...)]` |
+/// | `name = "e-mail"` | The submitted name. Defaults to the field name |
+/// | `required` / `optional` | Overrides the default, which is required unless the type is `Option`, `Vec` or `bool` |
+/// | `default = "…"` | The value a blank form shows |
+/// | `default = path::to::fn` | A default the crate produces once per render, such as a CSRF token or a nonce, in place of a fixed one |
+/// | `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept` | Validation. The browser *and* the server enforce these |
 /// | `placeholder`, `help`, `autocomplete`, `id`, `class`, `rows`, `cols` | Presentation |
 /// | `disabled`, `readonly`, `autofocus`, `multiple` | Flags |
 /// | `choices = SOME_CONST` | A `&'static [Choice]` of options |
 /// | `validate = path::to::fn` | Per-field check, `fn(&FieldType) -> bool` or `-> Result<(), E>` |
-/// | `from_str` | Convert with the type's own `FromStr`/`Display` instead of a `FormValue` impl |
-/// | `flatten` (+ `prefix`, `legend`) | Splice another form in |
-/// | `skip` | Leave the field out of the form; filled with `Default::default()` |
+/// | `from_str` | Convert with the type's own `FromStr` and `Display` in place of a `FormValue` impl |
+/// | `flatten` (+ `prefix`, `legend`) | Put another form in |
+/// | `skip` | Leave the field out of the form. The crate fills it with `Default::default()` |
 ///
 /// # A type from a crate that has never heard of this one
 ///
-/// `from_str` is how a foreign type becomes a field: nothing but its own
-/// `FromStr` and `Display` is asked of it, so a `Uuid`, a `NaiveDate` or a
+/// `from_str` is how a foreign type becomes a field. The crate asks it for
+/// nothing but its own `FromStr` and `Display`, so a `Uuid`, a `NaiveDate` or a
 /// `Decimal` needs no impl and no newtype.
 ///
 /// ```ignore
@@ -61,32 +61,33 @@ mod value;
 /// }
 /// ```
 ///
-/// It applies to the field's own type, `Option<T>` and `Vec<T>` included, and
-/// everything else about the field is unchanged: the constraints in the spec
-/// are checked first, a `validate` function is handed the type the field was
-/// written as, and `Display` writes the value back out for an edit form.
+/// It applies to the field's own type, `Option<T>` and `Vec<T>` included.
+/// Everything else about the field stays the same. The crate checks the
+/// constraints in the spec first. A `validate` function gets the type the field
+/// was written as, and `Display` writes the value out again for an edit form.
 ///
-/// Two things it does not do. It has no control to imply — a foreign type has
-/// no `CONTROL` to be asked for one — so the field renders as text until
-/// `type = "..."` says otherwise. And the message for a value that will not
-/// parse is the generic "Enter a valid value.", because a `FromStr` error is
-/// written for whoever wrote the call, not for whoever filled in the form. Both
-/// are answered the same way: give the field the `type` or the `pattern` it
-/// really has, whose check runs first and describes what it wanted.
+/// There are two things it does not do. It implies no control, because a
+/// foreign type has no `CONTROL` to give one, so the field renders as text
+/// until `type = "..."` says otherwise. And a value that will not parse gets
+/// the general message "Enter a valid value." A `FromStr` error speaks to
+/// whoever wrote the call, not to whoever filled in the form. One answer covers
+/// both: give the field the `type` or the `pattern` it really has. That check
+/// runs first, and it says what it wanted.
 ///
 /// For a type you own, `#[derive(FormValue)] #[value(from_str)]` says the same
-/// thing once, on the type, instead of on every field of it.
+/// thing once, on the type, in place of on every field of it.
 ///
-/// Options can also be listed inline with repeated `#[option("value", "Label")]`
-/// attributes, which additionally accept `group = "…"` and `disabled`.
+/// You can also list options inline with repeated
+/// `#[option("value", "Label")]` attributes, which also accept `group = "…"`
+/// and `disabled`.
 ///
 /// # Generic forms
 ///
-/// A struct with type parameters derives like any other: `SPEC` is an
-/// associated constant, so `<T as Form>::SPEC` is resolved per
-/// instantiation. The bounds a field implies — `Form` for one that is
-/// flattened, `FormValue` for one that is a value — are added for you, so a
-/// wrapper form needs none written on it:
+/// A struct with type parameters derives like any other. `SPEC` is an
+/// associated constant, so the compiler resolves `<T as Form>::SPEC` per
+/// instantiation. The derive adds the bounds each field implies: `Form` for a
+/// flattened field, and `FormValue` for a value field. A wrapper form therefore
+/// needs no bound written on it:
 ///
 /// ```ignore
 /// #[derive(Form)]
@@ -99,27 +100,26 @@ mod value;
 /// }
 /// ```
 ///
-/// A flatten splices in the sub-form's *fields*; its `action`, `method` and
+/// A flatten brings in the sub-form's *fields*. Its `action`, `method` and
 /// submit label belong to its own `<form>` element, so a wrapper declares its
 /// own. See `examples/csrf.rs`.
 ///
 /// # What a `validate` function may return
 ///
-/// A `bool`, or a `Result` whose error is anything that becomes a message: a
-/// `&'static str`, a `String`, a `Text` (so an i18n key), or a `FieldError`.
-/// A `#[form(validate = ...)]` function may additionally return a
-/// `(field, message)` pair or a whole `FormErrors`, so a cross-field check can
-/// blame the field the user has to change. See `html_form::FieldValidation` and
-/// `html_form::FormValidation`.
+/// A `bool`, or a `Result` whose error is anything that becomes a message. That
+/// is a `&'static str`, a `String`, a `Text`, which carries an i18n key, or a
+/// `FieldError`. A `#[form(validate = ...)]` function may also return a
+/// `(field, message)` pair or a whole `FormErrors`. A cross-field check can
+/// therefore name the field the user has to change. See
+/// `html_form::FieldValidation` and `html_form::FormValidation`.
 ///
 /// # Attributes that do not apply
 ///
-/// Each control accepts only the attributes HTML gives it, so
-/// `#[field(type = "date", minlength = 3)]` and a `pattern` on a `u32` field are
-/// compile errors rather than attributes that quietly do nothing. The check
-/// happens during `const` evaluation of the generated spec, because which
-/// control a field renders as can come from its Rust type — which a macro
-/// cannot inspect.
+/// Each control accepts only the attributes HTML gives it. So
+/// `#[field(type = "date", minlength = 3)]` and a `pattern` on a `u32` field
+/// are compile errors, not attributes that quietly do nothing. The check
+/// happens while the compiler const-evaluates the generated spec. The control a
+/// field renders as can come from its Rust type, which a macro cannot inspect.
 #[proc_macro_derive(Form, attributes(form, field, option))]
 pub fn derive_form(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -128,10 +128,10 @@ pub fn derive_form(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Derive `FormValue` for a struct wrapping one value, so that a type carries
+/// Derive `FormValue` for a struct that wraps one value, so the type carries
 /// what every field of it would otherwise repeat.
 ///
-/// The wrapped type does the converting — it is already a `FormValue` — and
+/// The wrapped type does the conversion, because it is already a `FormValue`.
 /// `#[value(...)]` says what the wrapper adds on top:
 ///
 /// ```ignore
@@ -151,33 +151,33 @@ pub fn derive_form(input: TokenStream) -> TokenStream {
 ///
 /// | Attribute | Meaning |
 /// |---|---|
-/// | `type = "email"` | The control every field of this type renders as; the wrapped type's otherwise |
-/// | `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept`, `rows`, `cols`, `multiple` | Constraints the type carries, enforced in the browser *and* on the server |
-/// | `choices = SOME_CONST` | A `&'static [Choice]` the value has to be one of |
+/// | `type = "email"` | The control every field of this type renders as. The wrapped type's control otherwise |
+/// | `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept`, `rows`, `cols`, `multiple` | Constraints the type carries. The browser *and* the server enforce them |
+/// | `choices = SOME_CONST` | A `&'static [Choice]`. The value has to be one of them |
 /// | `default = "…"` | What a blank form shows for a field of this type |
 /// | `validate = path::to::fn` | The type's own check: `fn(&Self) -> bool`, or `-> Result<(), E>` |
-/// | `from_str` | Convert with the type's own `FromStr`/`Display` rather than through the value it wraps |
+/// | `from_str` | Convert with the type's own `FromStr` and `Display` in place of the value it wraps |
 ///
-/// Everything here is a *default* a field may still override — `#[field(type =
-/// "hidden")]` on a field of the type wins, exactly as an attribute wins over
-/// the control a Rust type implies. The check is the type's own and always
-/// runs, alongside any `#[field(validate = ...)]`.
+/// Everything here is a *default* that a field may still override.
+/// `#[field(type = "hidden")]` on a field of the type wins, exactly as an
+/// attribute wins over the control a Rust type implies. The check belongs to
+/// the type and always runs, next to any `#[field(validate = ...)]`.
 ///
-/// What is deliberately absent is anything that describes the field rather than
+/// What is missing on purpose is anything that describes the field rather than
 /// the value: a label, help text, a placeholder. The same type is a "Work
 /// email" on one form and a "Recipient" on the next.
 ///
 /// # Converting through the wrapped value, or by itself
 ///
-/// By default the wrapped type does the converting, which is why the derive
-/// asks for a struct with exactly one field, named or not: a form control
-/// submits one string, so there is one value to convert.
+/// By default the wrapped type does the conversion. That is why the derive asks
+/// for a struct with exactly one field, named or not. A form control submits
+/// one string, so there is one value to convert.
 ///
 /// `#[value(from_str)]` says the type converts *itself*, through its own
-/// `FromStr` and `Display`. That asks nothing of the type's shape, so it is
-/// also what a several-field struct or an enum uses — and what turns a type
-/// that already round-trips through a string into a form field once, rather
-/// than at every field that mentions it:
+/// `FromStr` and `Display`. That asks nothing of the type's shape, so a
+/// several-field struct or an enum uses it too. It also turns a type that
+/// already round-trips through a string into a form field once, in place of at
+/// every field that names it:
 ///
 /// ```ignore
 /// #[derive(FormValue)]
@@ -185,17 +185,17 @@ pub fn derive_form(input: TokenStream) -> TokenStream {
 /// struct Version { major: u32, minor: u32, patch: u32 }
 /// ```
 ///
-/// It renders as text until `type = "..."` says otherwise — a type converting
-/// itself says nothing about what it looks like — and a value it will not parse
-/// is reported as the generic "Enter a valid value.", since a `FromStr` error
-/// is written for whoever wrote the call. A `type` or a `pattern` is checked
-/// first and says more.
+/// It renders as text until `type = "..."` says otherwise, because a type that
+/// converts itself says nothing about how it looks. A value it will not parse
+/// gets the general message "Enter a valid value." A `FromStr` error speaks to
+/// whoever wrote the call. The crate checks a `type` or a `pattern` first, and
+/// that check says more.
 ///
-/// A struct with several fields and no `from_str` is a form of its own: derive
-/// `Form` and splice it in with `#[field(flatten)]`. A fieldless enum whose
-/// variants are a `<select>`'s options is `#[derive(FormChoice)]`.
+/// A struct with several fields and no `from_str` is a form of its own. Derive
+/// `Form` and put it in with `#[field(flatten)]`. For a fieldless enum whose
+/// variants are the options of a `<select>`, use `#[derive(FormChoice)]`.
 ///
-/// A validator is handed `&Self` and nothing else: a `FormValue` belongs to no
+/// A validator receives `&Self` and nothing else. A `FormValue` belongs to no
 /// form, so there is no context to reach. A check that needs one belongs on the
 /// field, as `#[field(validate = ...)]`.
 #[proc_macro_derive(FormValue, attributes(value))]
@@ -206,11 +206,11 @@ pub fn derive_form_value(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Derive `FormValue` for a fieldless enum, turning it into a `<select>` whose
-/// options are the variants.
+/// Derive `FormValue` for a fieldless enum, which turns it into a `<select>`
+/// whose options are the variants.
 ///
-/// Each variant submits its name in `kebab-case` and is labelled with its name
-/// split into words; both can be overridden:
+/// Each variant submits its name in `kebab-case`. Its label is its name split
+/// into words. You can override both:
 ///
 /// ```ignore
 /// #[derive(FormChoice)]

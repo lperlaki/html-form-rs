@@ -7,17 +7,17 @@ use syn::{Data, DeriveInput, Error, Fields, Ident, Result, Type};
 use crate::attrs::{CustomAttr, FieldAttrs, FormAttrs, opt_str, opt_text};
 use crate::control::control_tokens;
 
-/// What a struct field maps to in a submission.
+/// What a struct field becomes in a submission.
 enum Shape<'a> {
-    /// `#[field(skip)]` — not part of the form.
+    /// `#[field(skip)]`: not part of the form.
     Skip,
-    /// `#[field(flatten)]` — a whole sub-form spliced in.
+    /// `#[field(flatten)]`: a whole sub-form put in here.
     Flatten,
-    /// A `bool`, i.e. a checkbox: absent means `false`.
+    /// A `bool`, which is a checkbox. An absent value means `false`.
     Flag(&'a Type),
-    /// `Option<T>` — blank and absent both mean `None`.
+    /// `Option<T>`. A blank value and an absent one both mean `None`.
     Optional(&'a Type),
-    /// `Vec<T>` — every value submitted under the name.
+    /// `Vec<T>`: every value submitted under the name.
     Many(&'a Type),
     /// Anything else.
     Scalar(&'a Type),
@@ -50,18 +50,18 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let form = FormAttrs::parse(&input.attrs)?;
     let ident = &input.ident;
 
-    // What this form's own functions are handed. Everything the form declares
-    // — `default = ...`, `validate = ...` — is called with it, and a flattened
-    // sub-form is parsed and rendered with it too.
+    // What this form's own functions receive. The crate calls everything the
+    // form declares with it, such as `default = ...` and `validate = ...`. It
+    // also parses and renders a flattened sub-form with it.
     let context: Type = form
         .context
         .clone()
         .unwrap_or_else(|| syn::parse_quote!(()));
 
-    // A generic form is one whose `SPEC` names `<T as Form>::SPEC` — an
+    // A generic form is one whose `SPEC` names `<T as Form>::SPEC`. That is an
     // associated constant of a parameter, which the compiler resolves at
-    // monomorphisation like any other. What a form *cannot* be generic over is
-    // anything the spec would have to borrow from, since it is `'static`.
+    // monomorphization like any other. A form *cannot* be generic over anything
+    // the spec would have to borrow from, because the spec is `'static`.
     let mut generics = input.generics.clone();
     let params: Vec<Ident> = generics.type_params().map(|p| p.ident.clone()).collect();
 
@@ -69,17 +69,18 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let mut parse_steps = Vec::new();
     let mut construct = Vec::new();
     let mut fill_steps = Vec::new();
-    // The `default = path` calls, and what says whether making them is worth a
-    // walk at all — `false` unless something here, or in something flattened
-    // here, produces a default at render time. A field of this form settles it
-    // outright; a flattened one is a const of the sub-form's own.
+    // The `default = path` calls, and the flag that says whether a walk is
+    // worth making. The flag is `false` unless something here, or in something
+    // flattened here, produces a default at render time. A field of this form
+    // settles it outright. A flattened field brings a const of the sub-form's
+    // own.
     let mut default_steps = Vec::new();
     let mut generates_here = false;
     let mut generates: Vec<TokenStream> = Vec::new();
-    // Bounds inferred from how each field is used, so that `struct WithCsrf<T>`
-    // needs no bound written on it. Only types that mention a parameter get
-    // one: adding `where Address: Form` for a concrete field would move the
-    // error away from the field that caused it.
+    // Bounds taken from how each field is used, so `struct WithCsrf<T>` needs
+    // no bound written on it. Only a type that names a parameter gets one.
+    // Adding `where Address: Form` for a concrete field would move the error
+    // away from the field that caused it.
     let mut bounds: Vec<syn::WherePredicate> = Vec::new();
 
     for field in &fields.named {
@@ -92,15 +93,15 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             continue;
         }
 
-        // The index this field takes in `FormSpec::entries`; the generated
-        // parser looks its spec up by position.
+        // The index this field takes in `FormSpec::entries`. The generated
+        // parser finds its spec by position.
         let index = entries.len();
         let binding = format_ident!("__field_{}", index);
         let ty = &field.ty;
 
         if let Some(generic) = shape.value_type().filter(|ty| mentions(ty, &params)) {
-            // Which trait the field needs of its type is which conversion it
-            // was told to use.
+            // The conversion the field was told to use decides which trait the
+            // field needs of its type.
             bounds.push(match attrs.from_str {
                 true => {
                     syn::parse_quote!(#generic: ::core::str::FromStr + ::core::fmt::Display)
@@ -113,11 +114,11 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             if mentions(ty, &params) {
                 bounds.push(syn::parse_quote!(#ty: ::html_form::Form));
             }
-            // A sub-form is parsed and rendered with this form's context, or
-            // with whatever that context hands down in its place. The bound is
-            // only written when one side of it is a parameter: for two concrete
-            // types it holds or it does not, and saying so here would move the
-            // complaint away from the field that caused it.
+            // The crate parses and renders a sub-form with this form's context,
+            // or with whatever that context gives in its place. The bound
+            // appears only when one side of it is a parameter. For two concrete
+            // types the bound holds or it does not, and stating it here would
+            // move the error away from the field that caused it.
             if mentions(ty, &params) || mentions(&context, &params) {
                 bounds.push(syn::parse_quote!(
                     #context: ::html_form::Provides<<#ty as ::html_form::Form>::Context>
@@ -140,8 +141,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 ::html_form::Entry::Flatten(::html_form::Flattened {
                     prefix: #prefix,
                     legend: #legend,
-                    // The sub-form's own `SPEC` constant, resolved while this
-                    // one is const-evaluated.
+                    // The sub-form's own `SPEC` constant. The compiler resolves
+                    // it while it const-evaluates this one.
                     spec: <#ty as ::html_form::Form>::SPEC,
                 })
             });
@@ -161,9 +162,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             });
 
             generates.push(quote!(<#ty as ::html_form::Form>::GENERATES_DEFAULTS));
-            // One call, as on the parse side: which sub-forms are worth
-            // walking, how the prefix is joined and what context the sub-form
-            // is handed are the runtime's to decide, not this macro's.
+            // One call, as on the parse side. The runtime decides which
+            // sub-forms are worth a walk, how to join the prefix, and which
+            // context the sub-form receives. This macro decides none of it.
             default_steps.push(quote! {
                 ::html_form::__private::nested_defaults::<#ty, #context>(
                     __values,
@@ -178,9 +179,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         entries.push(field_spec(field_ident, &attrs, &shape)?);
 
         let spec_ref = quote!(__spec.field_at(#index));
-        // A `from_str` field is read as the adapter and unwrapped here and now,
-        // so that everything after this — a `validate` function, the struct
-        // being built — sees the type the caller wrote.
+        // The crate reads a `from_str` field as the adapter and unwraps it here
+        // and now. Everything after this sees the type the caller wrote, such
+        // as a `validate` function and the struct the parse builds.
         let value_ty = shape.value_type().map(|ty| value_type(&attrs, ty));
         let read = match (&shape, attrs.from_str) {
             (Shape::Flag(_), _) => quote!(::html_form::ParseCtx::flag(__ctx, #spec_ref)),
@@ -215,7 +216,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         parse_steps.push(quote!(let #binding = #read;));
         if let Some(validate) = &attrs.validate {
             // The validator sees the field's own Rust type, `Option<T>` and
-            // `Vec<T>` included, so it can check emptiness or cardinality too.
+            // `Vec<T>` included. It can therefore also check whether the field
+            // is empty and how many values it holds.
             parse_steps.push(quote! {
                 if let ::core::option::Option::Some(__value) = &#binding {
                     ::html_form::ParseCtx::check_custom(__ctx, #spec_ref, __value, #validate);
@@ -231,9 +233,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
         if let Some(path) = &attrs.default_fn {
             generates_here = true;
-            // Which of the two shapes the function has — with the context or
-            // without — is settled by `DefaultSource`, since a macro cannot
-            // see a signature.
+            // `DefaultSource` settles which of the two shapes the function has,
+            // with the context or without, because a macro cannot see a
+            // signature.
             default_steps.push(quote! {
                 ::html_form::__private::generate_default(
                     __values,
@@ -246,7 +248,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         }
 
         let push_value = |value: TokenStream| {
-            // The other half of the conversion the field was told to use.
+            // The other half of the conversion the field uses.
             let written = match attrs.from_str {
                 true => quote!(::std::string::ToString::to_string(#value)),
                 false => quote!(::html_form::FormValue::to_form_value(#value).into_owned()),
@@ -257,7 +259,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         };
         fill_steps.push(match &shape {
             Shape::Flag(_) => quote! {
-                // An unchecked box submits nothing at all.
+                // An unchecked box submits nothing.
                 if self.#field_ident {
                     __values.push(::std::format!("{}{}", __prefix, #name), "true");
                 }
@@ -300,8 +302,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         None => quote!(),
     };
 
-    // A form with nothing to generate leaves the trait's own empty body in
-    // place, and says so in the const the renderer branches on.
+    // A form with nothing to generate keeps the trait's own empty body, and
+    // says so in the const the renderer branches on.
     let generates_defaults = if generates_here {
         quote!(true)
     } else {
@@ -333,9 +335,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
             const GENERATES_DEFAULTS: bool = #generates_defaults;
 
-            // The whole description is one const-evaluated value: the reference
-            // is to memory the compiler laid out, so nothing here runs, or
-            // allocates, at render time.
+            // The whole description is one const-evaluated value. The reference
+            // points at memory the compiler laid out, so nothing here runs or
+            // allocates at render time.
             const SPEC: &'static ::html_form::FormSpec = &::html_form::FormSpec {
                 id: #form_id,
                 name: #form_name,
@@ -353,8 +355,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 __ctx: &mut ::html_form::ParseCtx<'_, #context>,
             ) -> ::core::option::Option<Self> {
                 let __spec = <Self as ::html_form::Form>::SPEC;
-                // Every field is read before anything is returned, so one pass
-                // collects every error.
+                // This reads every field before it returns anything, so one
+                // pass collects every error.
                 #(#parse_steps)*
                 let __form = Self { #(#construct),* };
                 #form_validate
@@ -370,7 +372,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     })
 }
 
-/// Work out how a field participates in the form, from its attributes and the
+/// Decide what part a field takes in the form, from its attributes and the
 /// shape of its type.
 fn shape_of<'a>(ident: &Ident, ty: &'a Type, attrs: &FieldAttrs) -> Result<Shape<'a>> {
     if attrs.skip {
@@ -411,13 +413,13 @@ fn shape_of<'a>(ident: &Ident, ty: &'a Type, attrs: &FieldAttrs) -> Result<Shape
     Ok(Shape::Scalar(ty))
 }
 
-/// The type whose `FormValue` impl drives a field: the one it was written as,
-/// or — for `#[field(from_str)]` — the adapter that converts that one with its
-/// own `FromStr` and `Display`.
+/// The type whose `FormValue` impl drives a field. That is the type you wrote,
+/// or, for `#[field(from_str)]`, the adapter that converts it with its own
+/// `FromStr` and `Display`.
 ///
-/// Everything else the field goes through reads the same either way, which is
-/// the point of routing the conversion through a type rather than through a
-/// second parse.
+/// Everything else the field goes through reads the same either way. That is
+/// the point of routing the conversion through a type, and not through a second
+/// parse.
 fn value_type(attrs: &FieldAttrs, ty: &Type) -> TokenStream {
     match attrs.from_str {
         true => quote!(::html_form::__private::Str<#ty>),
@@ -428,8 +430,8 @@ fn value_type(attrs: &FieldAttrs, ty: &Type) -> TokenStream {
 /// The `FieldSpec` const for one field.
 fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<TokenStream> {
     let name = attrs.name.clone().unwrap_or_else(|| ident.to_string());
-    // What the field's control and default are read off: the type it was
-    // written as, or the adapter standing in for it.
+    // Where the field's control and default come from: the type you wrote, or
+    // the adapter that stands in for it.
     let inner = shape.value_type().map(|ty| value_type(attrs, ty));
 
     let required = attrs.required.unwrap_or(matches!(shape, Shape::Scalar(_)));
@@ -443,8 +445,8 @@ fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<To
     let custom = attrs.custom.iter().map(CustomAttr::tokens);
 
     // What the field says, then what its type says. The merge is a `const fn`
-    // for the same reason the control's is: a type's own default is an
-    // associated const the macro cannot read.
+    // for the same reason the control's merge is. A type's own default is an
+    // associated const, which the macro cannot read.
     let written = opt_str(&attrs.default);
     let default = match &inner {
         Some(ty) => quote! {
@@ -460,8 +462,8 @@ fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<To
         Some(ty) => quote!(<#ty as ::html_form::FormValue>::CONTROL),
         None => quote!(::html_form::Control::TEXT),
     };
-    // A `Vec<T>` field submits repeatedly by nature; whether that renders as a
-    // `multiple` attribute depends on the control.
+    // A `Vec<T>` field submits many values by nature. The control decides
+    // whether that renders as a `multiple` attribute.
     let control = control_tokens(
         &attrs.constraints,
         &attrs.options,
@@ -489,9 +491,9 @@ fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<To
     })
 }
 
-/// An explicit label, or one derived from the field name.
+/// A label you wrote, or one derived from the field name.
 ///
-/// `label = ""` means "render no label", which is what a hidden field wants.
+/// `label = ""` means "render no label", which is what a hidden field needs.
 fn label_tokens(attrs: &FieldAttrs, ident: &Ident) -> TokenStream {
     match &attrs.label {
         Some(label) if label.is_blank() => quote!(::core::option::Option::None),
@@ -506,8 +508,8 @@ fn label_tokens(attrs: &FieldAttrs, ident: &Ident) -> TokenStream {
             ) {
                 return quote!(::core::option::Option::None);
             }
-            // A label nobody wrote is derived from the field name, so it is
-            // literal text — there is no key to guess.
+            // A label nobody wrote comes from the field name, so it is literal
+            // text. There is no key to guess.
             let text = humanize(&ident.to_string());
             quote!(::core::option::Option::Some(::html_form::Text::literal(#text)))
         }
@@ -571,7 +573,7 @@ fn enctype_tokens(enctype: Option<&(String, Span)>) -> Result<TokenStream> {
 
 // ─── Type inspection ──────────────────────────────────────────────────────────
 
-/// The `T` of a `Wrapper<T>`, matched on the last path segment so that
+/// The `T` of a `Wrapper<T>`. This matches the last path segment, so
 /// `std::option::Option<T>` works too.
 fn generic_arg<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
     let Type::Path(path) = ty else { return None };
@@ -591,8 +593,8 @@ fn generic_arg<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
     })
 }
 
-/// Whether a type mentions one of the struct's own type parameters, at any
-/// depth — `T`, `Option<T>` and `Vec<Wrapper<T>>` all do.
+/// Whether a type names one of the struct's own type parameters, at any depth.
+/// `T`, `Option<T>` and `Vec<Wrapper<T>>` all do.
 pub(crate) fn mentions(ty: &Type, params: &[Ident]) -> bool {
     fn walk(tokens: TokenStream, params: &[Ident]) -> bool {
         tokens.into_iter().any(|tree| match tree {

@@ -1,6 +1,6 @@
 //! Axum integration: submit a form straight out of a request.
 //!
-//! Enabled by the `axum` feature. It brings in `axum-core` rather than `axum`
+//! The `axum` feature turns it on. It depends on `axum-core`, not on `axum`
 //! itself, so it fits any handler in an axum 0.8 application.
 //!
 //! [`Outcome<T>`](crate::Outcome) is an extractor. It is the *last* argument to
@@ -21,7 +21,7 @@
 //! async fn signup(form: Outcome<Signup>) -> Response {
 //!     match form {
 //!         Outcome::Valid(signup) => Html(format!("Welcome, {}!", signup.email)).into_response(),
-//!         // The re-render carries what the user typed and what was wrong with it.
+//!         // The re-render carries what the user typed and each error.
 //!         Outcome::Invalid { view, .. } => {
 //!             (StatusCode::UNPROCESSABLE_ENTITY, Html(view.to_html())).into_response()
 //!         }
@@ -29,25 +29,25 @@
 //! }
 //! ```
 //!
-//! A failed *validation* is not a rejection: it is [`Outcome::Invalid`], and
-//! the handler still runs. The rejection type covers only the cases where there
-//! is no submission to validate at all — see [`FormRejection`].
+//! A failed *validation* is not a rejection. It is [`Outcome::Invalid`], and
+//! the handler still runs. The rejection type covers only the cases with no
+//! submission to validate. See [`FormRejection`].
 //!
 //! # Where the values come from
 //!
-//! As with `axum::Form`, a `GET` or `HEAD` request is read from the query
-//! string and every other method from the body, which must be
-//! `application/x-www-form-urlencoded`. `multipart/form-data` is out of scope:
-//! parse it with a multipart crate and go through
+//! As with `axum::Form`, the crate reads a `GET` or `HEAD` request from the
+//! query string, and every other method from the body. That body must be
+//! `application/x-www-form-urlencoded`. `multipart/form-data` is out of scope.
+//! Parse it with a multipart crate, then use
 //! [`Values::from_pairs`](crate::Values::from_pairs) and
 //! [`Form::submit`](crate::Form::submit).
 //!
 //! # Forms that ask for a context
 //!
 //! An extractor has nothing but the request, so [`Outcome<T>`] extracts only a
-//! form whose [`Context`](crate::Form::Context) needs no supplying. A form
-//! that wants one is submitted in the handler, where the context is: take the
-//! body with `axum::Form<Values>` or `Bytes`, then call
+//! form whose [`Context`](crate::Form::Context) the caller need not supply.
+//! Submit a form that wants a context in the handler, where the context is.
+//! Take the body with `axum::Form<Values>` or `Bytes`, then call
 //! [`Form::submit_with_context`](crate::Form::submit_with_context).
 
 use std::fmt;
@@ -61,21 +61,21 @@ use crate::{EmptyContext, Form, Outcome, Values};
 
 /// Why there was no submission to validate.
 ///
-/// Every variant is about the request itself — the wrong content type, a body
-/// that could not be read. A submission that arrives intact but fails
-/// validation is [`Outcome::Invalid`], not a rejection.
+/// Every variant is about the request itself: the wrong content type, or a body
+/// the server could not read. A submission that arrives whole but fails
+/// validation is an [`Outcome::Invalid`], not a rejection.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum FormRejection {
     /// Not `application/x-www-form-urlencoded` (`415`).
     UnsupportedMediaType,
-    /// The body could not be read — disconnected, or over the body limit
-    /// (whatever status the underlying rejection carries).
+    /// The server could not read the body. The connection dropped, or the body
+    /// went over the limit. The status comes from the rejection underneath.
     Body(axum_core::extract::rejection::BytesRejection),
 }
 
 impl FormRejection {
-    /// The status this rejection responds with.
+    /// The status this rejection answers with.
     pub fn status(&self) -> StatusCode {
         match self {
             FormRejection::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -112,17 +112,17 @@ impl IntoResponse for FormRejection {
 
 impl<T, S> FromRequest<S> for Outcome<T>
 where
-    // An extractor has nothing but the request, so it can only submit a form
-    // that asks for no context of its own. One that does is submitted in the
-    // handler, where the context is — see `submit_with_context`.
+    // An extractor has nothing but the request, so it can submit only a form
+    // that asks for no context of its own. A form that asks for one goes
+    // through the handler, where the context is. See `submit_with_context`.
     T: Form<Context: EmptyContext> + Send,
     S: Send + Sync,
 {
     type Rejection = FormRejection;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        // A form submitted with GET carries its values in the query string, and
-        // has no body to type.
+        // A form submitted with GET carries its values in the query string. It
+        // has no body, so it has no content type.
         if req.method() == Method::GET || req.method() == Method::HEAD {
             let query = req.uri().query().unwrap_or_default();
             return Ok(T::submit_urlencoded(query));
@@ -136,14 +136,14 @@ where
             .await
             .map_err(FormRejection::Body)?;
 
-        // The body is decoded where it is percent-decoded, so it never has to
-        // be a `str` on the way there — see `Values::parse_bytes`.
+        // The percent-decode also decodes the body, so the body never has to be
+        // a `str` on the way there. See `Values::parse_bytes`.
         Ok(T::submit(&Values::parse_bytes(&bytes)))
     }
 }
 
-/// Whether the request declares an urlencoded body, ignoring any parameters
-/// (`; charset=utf-8`) the sender chose to add.
+/// Whether the request declares an urlencoded body. This ignores any parameter
+/// the sender added, such as `; charset=utf-8`.
 fn is_urlencoded(req: &Request) -> bool {
     let Some(content_type) = req.headers().get(header::CONTENT_TYPE) else {
         return false;

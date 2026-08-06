@@ -1,13 +1,14 @@
-//! Assembling a field's or a type's [`Control`] out of what was written about
-//! it.
+//! How the crate builds the [`Control`] of a field or of a type out of what you
+//! wrote about it.
 //!
-//! The macro cannot see what `<T as FormValue>::CONTROL` is — a field's control
-//! can come from its Rust type, and a `#[derive(FormValue)]` type's from the
-//! type it wraps — so nothing is decided here. The three ingredients (the
-//! implied control, the one `type = "..."` names, the declared options) and
-//! every attribute that belongs *inside* a control are handed to
-//! `__private::control`, which is a `const fn`: an attribute that has nowhere
-//! to go is a compile error at the point the form or the type is declared.
+//! The macro cannot see what `<T as FormValue>::CONTROL` is. A field's control
+//! can come from its Rust type, and the control of a `#[derive(FormValue)]`
+//! type can come from the type it wraps. Nothing is decided here. This module
+//! passes three things to `__private::control`: the implied control, the one
+//! `type = "..."` names, and the declared options. It also passes every
+//! attribute that belongs *inside* a control. `__private::control` is a
+//! `const fn`, so an attribute with nowhere to go is a compile error where the
+//! form or the type is declared.
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -17,11 +18,11 @@ use crate::attrs::{Constraints, OptionAttr, opt_str, opt_u32, opt_usize};
 
 /// The `Control` const for one field or one type.
 ///
-/// `implied` is what the Rust type says, `options` any `#[option(...)]` entries
-/// written alongside `choices`, and `multiple` what the shape of the field
-/// implies before `multiple` is written on it — a `Vec<T>` submits repeatedly
-/// by nature, though whether that renders as an attribute depends on the
-/// control.
+/// `implied` is what the Rust type says. `options` is any `#[option(...)]`
+/// entry written next to `choices`. `multiple` is what the shape of the field
+/// implies before you write `multiple` on it. A `Vec<T>` submits more than one
+/// value by nature, though the control decides whether that renders as an
+/// attribute.
 pub fn control_tokens(
     constraints: &Constraints,
     options: &[OptionAttr],
@@ -70,8 +71,7 @@ pub fn control_tokens(
     })
 }
 
-/// The empty control that `type = "..."` names, with no attribute placed in it
-/// yet.
+/// The empty control that `type = "..."` names, before any attribute goes in.
 fn control_skeleton(name: &str, span: Span) -> Result<TokenStream> {
     let text = |format: &str| {
         let format = Ident::new(format, span);
@@ -176,8 +176,8 @@ fn choices_tokens(constraints: &Constraints, options: &[OptionAttr]) -> Result<T
         }
         let items = options.iter().map(|option| {
             let value = &option.value;
-            // An option with no label of its own is labelled by its value,
-            // which is text, never a key.
+            // An option with no label of its own uses its value as the label.
+            // That value is text, never a key.
             let label = match &option.label {
                 Some(label) => label.tokens(),
                 None => {

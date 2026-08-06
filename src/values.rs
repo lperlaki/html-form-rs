@@ -1,4 +1,4 @@
-//! A form's fields untyped: an ordered multi-map of `name` → `value`.
+//! A form's fields untyped: an ordered multi-map of `name` to `value`.
 
 use std::fmt;
 
@@ -8,14 +8,15 @@ use serde::{Deserialize, Serialize, Serializer};
 
 /// A form's fields as name/value pairs, in the shape a submission arrives in.
 ///
-/// A submission is where these come from most often — [`Values::parse`] builds
-/// one exactly as it came off the wire — but it is the crate's one carrier for
-/// "fully-qualified field name → value", so it is also what an existing record
-/// is written back out as ([`Form::to_values`](crate::Form::to_values))
-/// and what a form generates for a render
-/// ([`Form::generate_defaults`](crate::Form::generate_defaults)).
+/// Most often these come from a submission, and [`Values::parse`] builds one
+/// exactly as it came off the wire. It is also the crate's one carrier for
+/// "fully qualified field name to value". So it is what
+/// [`Form::to_values`](crate::Form::to_values) writes an existing record out
+/// as, and what
+/// [`Form::generate_defaults`](crate::Form::generate_defaults) produces for a
+/// render.
 ///
-/// Order is preserved and a name may repeat, which is how checkbox groups and
+/// The order stays, and a name may repeat. That is how a checkbox group and a
 /// `<select multiple>` submit their values.
 ///
 /// ```
@@ -32,7 +33,7 @@ use serde::{Deserialize, Serialize, Serializer};
 /// # As JSON
 ///
 /// `Values` is `Serialize` and `Deserialize`, so the same form serves a JSON
-/// API and an HTML page — the submission is the only thing that differs, and it
+/// API and an HTML page. The submission is the only thing that differs, and it
 /// stops differing here. See the [`Serialize`] and [`Deserialize`] impls for
 /// what each shape means.
 ///
@@ -56,7 +57,7 @@ use serde::{Deserialize, Serialize, Serializer};
 /// assert_eq!(signup.age, Some(36));
 /// assert_eq!(signup.tags, ["rust", "forms"]);
 ///
-/// // And back out, for a client that would rather be handed JSON than markup.
+/// // And back out, for a client that wants JSON in place of markup.
 /// let json = serde_json::to_string(&signup.to_values()).unwrap();
 /// assert_eq!(json, r#"{"email":"ada@example.com","age":"36","tags":["rust","forms"]}"#);
 /// ```
@@ -75,14 +76,14 @@ impl Values {
         Self::parse_bytes(encoded.as_bytes())
     }
 
-    /// Parse a body that has not been checked for UTF-8 yet — a request body
-    /// as it arrived, before anything has decided whether it is a string.
+    /// Parse a body that nothing has checked for UTF-8 yet: a request body as
+    /// it arrived, before anything decided whether it is a string.
     ///
-    /// Percent-decoding produces bytes whatever the body was, so the decode is
-    /// where the encoding matters, and it is lossy: an invalid sequence becomes
-    /// `U+FFFD` rather than rejecting the whole submission. That is what
-    /// `form_urlencoded` does, and it means a single mangled byte costs one
-    /// field its value rather than costing the user their form.
+    /// Percent-decoding produces bytes whatever the body was, so the encoding
+    /// matters at the decode. The decode is lossy. An invalid sequence becomes
+    /// `U+FFFD`, and the crate does not reject the whole submission. That is
+    /// what `form_urlencoded` does, and it means one broken byte costs one
+    /// field its value in place of costing the user their form.
     pub fn parse_bytes(encoded: &[u8]) -> Self {
         let encoded = encoded.strip_prefix(b"?").unwrap_or(encoded);
         Self {
@@ -90,8 +91,8 @@ impl Values {
         }
     }
 
-    /// Collect from any iterator of key/value pairs, e.g. the output of a
-    /// framework's own body parser.
+    /// Collect from any iterator of key and value pairs, such as the output of
+    /// a framework's own body parser.
     pub fn from_pairs<I, K, V>(pairs: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -106,7 +107,7 @@ impl Values {
         }
     }
 
-    /// Append a value, keeping any value already stored under the same name.
+    /// Add a value, and keep any value already stored under the same name.
     pub fn push(&mut self, name: impl Into<String>, value: impl Into<String>) {
         self.pairs.push((name.into(), value.into()));
     }
@@ -134,7 +135,7 @@ impl Values {
             .map(|(_, v)| v.as_str())
     }
 
-    /// Whether the name appears at all — distinct from being submitted empty.
+    /// Whether the name appears at all. This differs from an empty submission.
     pub fn contains(&self, name: &str) -> bool {
         self.pairs.iter().any(|(k, _)| k == name)
     }
@@ -151,7 +152,7 @@ impl Values {
         self.pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
-    /// Re-encode as `application/x-www-form-urlencoded`.
+    /// Encode again as `application/x-www-form-urlencoded`.
     pub fn to_urlencoded(&self) -> String {
         let mut ser = form_urlencoded::Serializer::new(String::new());
         for (k, v) in &self.pairs {
@@ -170,11 +171,11 @@ impl<K: Into<String>, V: Into<String>> FromIterator<(K, V)> for Values {
 impl Values {
     /// The values of each name, in the order the names first appear.
     ///
-    /// The grouping serialisation needs, and the one thing this type's own
-    /// shape does not hand over: a name that repeats is several pairs here, and
-    /// one entry there.
-    // Linear lookup rather than a map: a form has a handful of fields, and this
-    // is what keeps the names in submission order without sorting them.
+    /// This is the grouping that serialization needs, and the one thing the
+    /// shape of this type does not give. A name that repeats is several pairs
+    /// here, and one entry there.
+    // A linear lookup, not a map. A form has a handful of fields, and this
+    // keeps the names in submission order without a sort.
     fn grouped(&self) -> Vec<(&str, Vec<&str>)> {
         let mut grouped: Vec<(&str, Vec<&str>)> = Vec::new();
         for (name, value) in &self.pairs {
@@ -188,22 +189,21 @@ impl Values {
 }
 
 impl Serialize for Values {
-    /// Serialised as an object of `name` → value, where a name submitted more
-    /// than once carries the list of its values:
+    /// Serializes as an object of `name` to value. A name submitted more than
+    /// once carries the list of its values:
     /// `{"email": "a@b.com", "tag": ["x", "y"]}`.
     ///
-    /// The names keep the order they were submitted in, and so do the values
-    /// under each name — but a repeated name is written once, where its *first*
-    /// value stood, so a round trip through JSON groups repeats together. That
-    /// is the one thing an object cannot say, and no form reads anything into
-    /// the distance between two checkboxes of the same group.
+    /// The names keep the order the client submitted them in, and so do the
+    /// values under each name. A repeated name appears once, where its *first*
+    /// value stood, so a round trip through JSON puts the repeats together.
+    /// That is the one thing an object cannot say, and no form reads anything
+    /// into the distance between two checkboxes of the same group.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let grouped = self.grouped();
         let mut map = serializer.serialize_map(Some(grouped.len()))?;
         for (name, values) in grouped {
-            // A single value is a string, not a list of one: what a client sent
-            // is what it gets back, and `{"email": ["a@b.com"]}` is not what
-            // anybody wrote.
+            // A single value is a string, not a list of one. A client gets back
+            // what it sent, and nobody wrote `{"email": ["a@b.com"]}`.
             match values.as_slice() {
                 [only] => map.serialize_entry(name, only)?,
                 many => map.serialize_entry(name, many)?,
@@ -214,18 +214,18 @@ impl Serialize for Values {
 }
 
 impl<'de> Deserialize<'de> for Values {
-    /// Deserialised from either shape a submission is written in: an object of
-    /// `name` → value, or the list of `[name, value]` pairs that keeps every
-    /// repeat exactly where it was.
+    /// Deserializes from either shape a submission takes. One is an object of
+    /// `name` to value. The other is a list of `[name, value]` pairs, which
+    /// keeps every repeat exactly where it was.
     ///
-    /// A value may be a string, a number or a boolean — a form field is a
-    /// string whatever a JSON client typed it as, so `{"age": 36}` and
-    /// `{"age": "36"}` are the same submission. A list is a name submitted
-    /// repeatedly, as a checkbox group submits.
+    /// A value may be a string, a number or a boolean. A form field is a string
+    /// whatever type a JSON client used, so `{"age": 36}` and `{"age": "36"}`
+    /// are the same submission. A list is a name submitted more than once, as a
+    /// checkbox group submits it.
     ///
-    /// `null` is *no* value rather than an empty one, so it leaves the name out
-    /// entirely — which is what an absent field means, defaults and all. A
-    /// client clearing a field sends `""`, exactly as the browser does.
+    /// `null` is *no* value, not an empty one, so it leaves the name out. That
+    /// is what an absent field means, defaults included. To clear a field, a
+    /// client sends `""`, exactly as the browser does.
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         deserializer.deserialize_any(ValuesVisitor)
     }
@@ -259,8 +259,8 @@ impl<'de> Visitor<'de> for ValuesVisitor {
     }
 }
 
-/// What one name carries in a deserialised object: one value, or the several a
-/// repeated name submits.
+/// What one name carries in a deserialized object: one value, or the several
+/// that a repeated name submits.
 enum Submitted {
     One(Scalar),
     Many(Vec<Scalar>),
@@ -274,7 +274,7 @@ impl Submitted {
             Submitted::Many(many) => {
                 for Scalar(value) in many {
                     if let Some(value) = value {
-                        // Cloned per value, since each repeat is its own pair.
+                        // Cloned per value, because each repeat is its own pair.
                         values.push(name.clone(), value);
                     }
                 }
@@ -291,9 +291,9 @@ impl<'de> Deserialize<'de> for Submitted {
 
 struct SubmittedVisitor;
 
-/// Everything a lone value may be, handed straight to [`ScalarVisitor`]. Only
-/// the list case is this visitor's own — a name carrying one value and a name
-/// carrying several differ nowhere else.
+/// Everything a lone value may be, passed straight to [`ScalarVisitor`]. Only
+/// the list case belongs to this visitor. A name with one value and a name with
+/// several differ nowhere else.
 macro_rules! visit_scalar {
     ($($method:ident($($arg:ident: $ty:ty)?)),* $(,)?) => {$(
         fn $method<E: serde::de::Error>(self $(, $arg: $ty)?) -> Result<Submitted, E> {
@@ -339,9 +339,9 @@ impl<'de> Visitor<'de> for SubmittedVisitor {
     }
 }
 
-/// One submitted value, as whatever JSON type the client wrote it as. `None` is
-/// `null`: a name with nothing under it, which is a name that was not
-/// submitted.
+/// One submitted value, in whatever JSON type the client used. `None` is
+/// `null`: a name with nothing under it, which is a name the client did not
+/// submit.
 struct Scalar(Option<String>);
 
 impl<'de> Deserialize<'de> for Scalar {
@@ -388,7 +388,7 @@ impl<'de> Visitor<'de> for ScalarVisitor {
     }
 
     fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Scalar, E> {
-        // The two words a checkbox's own `FormValue` reads back.
+        // The two words the `FormValue` of a checkbox reads back.
         Ok(Scalar(Some(
             if value { "true" } else { "false" }.to_owned(),
         )))
@@ -406,8 +406,8 @@ impl<'de> Visitor<'de> for ScalarVisitor {
         deserializer.deserialize_any(self)
     }
 
-    /// A nested object is where a form's flat namespace has to be said out
-    /// loud: `billing_street` is one field, not a `street` inside a `billing`.
+    /// A nested object is where the crate has to state the flat namespace of a
+    /// form. `billing_street` is one field, not a `street` inside a `billing`.
     fn visit_map<A: MapAccess<'de>>(self, _map: A) -> Result<Scalar, A::Error> {
         Err(serde::de::Error::invalid_type(
             Unexpected::Map,
@@ -420,7 +420,7 @@ impl<'de> Visitor<'de> for ScalarVisitor {
 
 /// Whether a submitted value counts as "not filled in".
 ///
-/// The browser only checks for the empty string, but a whitespace-only answer
+/// The browser checks only for the empty string. But a whitespace-only answer
 /// to a required question is never what the caller wanted.
 pub(crate) fn is_blank(value: &str) -> bool {
     value.trim().is_empty()

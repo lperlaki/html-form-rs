@@ -1,32 +1,31 @@
-//! One form wrapping another: `WithCsrf<T>` gives any form a hidden token.
+//! One form inside another: `WithCsrf<T>` gives any form a hidden token.
 //!
 //! Four things meet here:
 //!
-//! * a **generic form** — `WithCsrf<T>` flattens `T`, so the token is the only
-//!   field it adds and the wrapped form's names are untouched;
-//! * a **context** — `#[form(context = Session)]` says what the caller hands in
-//!   at the moment it renders or parses, which is how the token reaches the two
-//!   functions below without a thread-local in sight;
-//! * a **generated default** — `default = issued_token` names a function, run
-//!   once per render, rather than a value written into the spec;
-//! * a **custom validation** — `validate = belongs_to_session` re-checks the
-//!   token that comes back, which is not something the markup could have asked
-//!   the browser to do.
+//! * a **generic form**. `WithCsrf<T>` flattens `T`, so the token is the only
+//!   field it adds, and the wrapped form's names stay as they were.
+//! * a **context**. `#[form(context = Session)]` says what the caller passes in
+//!   at the moment it renders or parses. That is how the token reaches the two
+//!   functions below with no thread-local in sight.
+//! * a **generated default**. `default = issued_token` names a function the
+//!   crate runs once per render, not a value written into the spec.
+//! * a **custom validation**. `validate = belongs_to_session` checks the token
+//!   that comes back. The markup could not ask the browser to do that.
 //!
 //! Run with: `cargo run --example csrf`
 
 use html_form::{Form, Outcome, Provides, Text};
 
-/// Stand-in for a session, which a real application reaches through a cookie.
+/// A stand-in for a session, which a real application reaches through a cookie.
 /// Whatever a handler already has can be a context: a database handle, the
-/// user's locale, the clock.
+/// user's locale, or the clock.
 struct Session {
     csrf: String,
 }
 
-/// `Signup` below was written without a context and should not have to gain one
-/// to be wrapped, so `Session` says what it hands a sub-form that asks for
-/// nothing: nothing.
+/// Somebody wrote `Signup` below without a context, and it should not have to
+/// gain one to go inside a wrapper. `Session` therefore says what it gives a
+/// sub-form that asks for nothing: nothing.
 impl Provides<()> for Session {
     fn provide(&self) -> &() {
         &()
@@ -36,11 +35,11 @@ impl Provides<()> for Session {
 /// Any form, plus the hidden field that says the submission came from a page we
 /// served.
 ///
-/// The derive works out that `T` has to be a `Form` from the flatten, and
-/// that a `Session` has to be able to supply whatever context `T` asks for, so
-/// the struct needs no bound written on it. What the flatten splices in is `T`'s
-/// *fields* — its `action`, `method` and submit label belong to its own `<form>`
-/// element, so anything the wrapper should render has to be declared here.
+/// From the flatten, the derive works out that `T` has to be a `Form`, and that
+/// a `Session` has to supply whatever context `T` asks for. The struct
+/// therefore needs no bound written on it. The flatten brings in the *fields*
+/// of `T`. Its `action`, `method` and submit label belong to its own `<form>`
+/// element, so declare here anything the wrapper should render.
 #[derive(Form, Debug)]
 #[form(method = "post", context = Session)]
 struct WithCsrf<T> {
@@ -55,8 +54,8 @@ struct WithCsrf<T> {
     inner: T,
 }
 
-/// The form being protected — it knows nothing about any of this, and asks for
-/// no context of its own.
+/// The form the wrapper protects. It knows nothing about any of this, and it
+/// asks for no context of its own.
 #[derive(Form, Debug)]
 struct Signup {
     #[field(type = "email", label = "Email address")]
@@ -66,20 +65,20 @@ struct Signup {
     password: String,
 }
 
-/// The token this session is showing. `default = issued_token` calls this once
-/// per render, with the context the render was given.
+/// The token this session shows. `default = issued_token` calls this once per
+/// render, with the context the render received.
 fn issued_token(session: &Session) -> String {
     session.csrf.clone()
 }
 
 /// The check the markup cannot express: the token that came back has to be the
-/// one this session was issued.
+/// one this session issued.
 ///
-/// Returning a [`Text::key`] rather than a message means the rejection is
-/// translated with everything else on the page, and that the error carries
+/// This returns a [`Text::key`] in place of a message. The page therefore
+/// translates the rejection with everything else, and the error carries
 /// `form.csrf.rejected` as its code for a caller that would rather match on it.
-// A field validator is handed the field's own Rust type, so a `String` field
-// means `&String` here however much a `&str` would do. The context follows it.
+// A field validator receives the field's own Rust type, so a `String` field
+// means `&String` here, however well a `&str` would do. The context comes next.
 #[allow(clippy::ptr_arg)]
 fn belongs_to_session(submitted: &String, session: &Session) -> Result<(), Text> {
     match constant_time_eq(&session.csrf, submitted) {
@@ -88,8 +87,8 @@ fn belongs_to_session(submitted: &String, session: &Session) -> Result<(), Text>
     }
 }
 
-/// Stands in for a real generator: draw from a CSPRNG (`getrandom`, or your
-/// session library's own token) rather than from the clock.
+/// A stand-in for a real generator. Draw from a CSPRNG, such as `getrandom` or
+/// your session library's own token, and not from the clock.
 fn mint_token() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -100,7 +99,7 @@ fn mint_token() -> String {
     format!("{nanos:032x}")
 }
 
-/// Comparison that does not give away where two tokens first differ.
+/// A comparison that does not reveal where two tokens first differ.
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     a.len() == b.len() && a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
@@ -109,10 +108,10 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 // ─── What that adds up to ─────────────────────────────────────────────────────
 
 fn main() {
-    // What a handler would have already, and hands to every call below.
+    // What a handler already has, and passes to every call below.
     let session = Session { csrf: mint_token() };
 
-    // Rendering: one hidden input, then the wrapped form's own fields.
+    // The render: one hidden input, then the wrapped form's own fields.
     let view = WithCsrf::<Signup>::render_with_context(&session);
     println!("{}\n", view.to_html());
 
@@ -124,7 +123,7 @@ fn main() {
 
     let credentials = "email=ada@example.com&password=correct-horse-battery";
 
-    // A submission carrying the token back is accepted, and `T` comes out of it
+    // A submission that carries the token back passes, and `T` comes out of it
     // as the form it always was.
     let Outcome::Valid(form) = WithCsrf::<Signup>::submit_urlencoded_with_context(
         &format!("csrf_token={token}&{credentials}"),
@@ -134,8 +133,8 @@ fn main() {
     };
     assert_eq!(form.inner.email, "ada@example.com");
 
-    // Somebody else's token is rejected by the validator, and the message is
-    // the key it returned.
+    // The validator rejects somebody else's token, and the message is the key
+    // it returned.
     let Outcome::Invalid { errors, view } = WithCsrf::<Signup>::submit_urlencoded_with_context(
         &format!("csrf_token=deadbeef&{credentials}"),
         &session,
@@ -146,25 +145,25 @@ fn main() {
         errors.field("csrf_token").next().unwrap().code(),
         Some("form.csrf.rejected")
     );
-    // The re-render carries a token that works, rather than echoing the one
-    // that just failed — otherwise the user's retry would fail identically.
+    // The re-render carries a token that works. It does not send back the one
+    // that just failed, which would make the user's retry fail the same way.
     assert_eq!(
         view.field("csrf_token").unwrap().value.as_deref(),
         Some(&*token)
     );
-    // What the user typed is still there, as it is after any other rejection.
+    // What the user typed is still there, as after any other rejection.
     assert_eq!(
         view.field("email").unwrap().value.as_deref(),
         Some("ada@example.com")
     );
 
-    // Leaving the field out entirely fails as well. A generated default is a
-    // render-time thing only: if it stood in while parsing, a submission with no
-    // token at all would arrive carrying a freshly minted, valid one.
+    // Leaving the field out fails too. A generated default belongs to render
+    // time alone. If it stood in while parsing, a submission with no token
+    // would arrive with a fresh and valid one.
     let errors =
         WithCsrf::<Signup>::from_urlencoded_with_context(credentials, &session).unwrap_err();
     assert!(errors.has_field("csrf_token"));
 
-    // `FormErrors` prints as `field: message`, which is enough for a log line.
+    // `FormErrors` prints as `field: message`, which suits a log line.
     println!("{errors}");
 }

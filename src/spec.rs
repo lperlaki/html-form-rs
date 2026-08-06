@@ -1,33 +1,34 @@
 //! The declarative description of a form: what the derive macro produces and
 //! what both the renderer and the parser read.
 //!
-//! A [`FormSpec`] is built entirely from `const` data, so `#[derive(Form)]`
-//! emits it as the associated constant [`Form::SPEC`](crate::Form::SPEC)
-//! and hands out a `&'static` reference to memory the compiler laid out — no
-//! allocation, no lazy initialisation, and nothing to run at render time.
-//! [`Control`] and everything inside it is `Copy`, which is what makes the merge
-//! the derive performs a plain `const fn`.
+//! `const` data builds all of a [`FormSpec`]. `#[derive(Form)]` therefore emits
+//! it as the associated constant [`Form::SPEC`](crate::Form::SPEC) and gives
+//! out a `&'static` reference to memory the compiler laid out. There is no
+//! allocation, no lazy setup, and nothing to run at render time. [`Control`]
+//! and everything inside it is `Copy`, which makes the merge the derive
+//! performs a plain `const fn`.
 //!
-//! Every string here is `&'static str` or a `'static` [`Cow`], which is what
-//! lets the render format borrow the lot rather than copy it — see
+//! Every string here is a `&'static str` or a `'static` [`Cow`], which lets the
+//! render format borrow all of it in place of copying it. See
 //! [`FormView`](crate::FormView).
 //!
-//! Every string a person reads — a label, help text, a legend — is a [`Text`],
-//! which is either literal text or an i18n key. The crate never resolves a key
-//! itself; see [`FormView::localize`](crate::FormView::localize).
+//! Every string a person reads is a [`Text`], such as a label, help text or a
+//! legend. A [`Text`] is either literal text or an i18n key. The crate never
+//! resolves a key itself. See [`FormView::localize`](crate::FormView::localize).
 //!
 //! # Where an attribute lives
 //!
-//! [`Control`] carries the attributes that change **how a value is validated**,
-//! plus the handful that exactly one control accepts (`rows`/`cols`, `accept`,
-//! the choice list). Nothing else can name them, so `minlength` on a date or
-//! `accept` on a `<select>` are not states this type can be in.
+//! [`Control`] carries the attributes that change **how the crate validates a
+//! value**. It also carries the few that exactly one control accepts:
+//! `rows`/`cols`, `accept`, and the choice list. Nothing else can name them, so
+//! this type cannot hold `minlength` on a date or `accept` on a `<select>`.
 //!
-//! [`FieldSpec`] carries identity and presentation — the label, the help text,
-//! `readonly`, `placeholder` — which nearly every control shares.
+//! [`FieldSpec`] carries identity and presentation, such as the label, the help
+//! text, `readonly` and `placeholder`. Nearly every control shares those.
 //!
-//! Anything this crate has no opinion about — `data-*`, `hx-*`, `aria-*` — goes
-//! into the [`Attr`] list both of them carry, and is written out verbatim.
+//! Anything this crate has no opinion about, such as `data-*`, `hx-*` and
+//! `aria-*`, goes into the [`Attr`] list both of them carry. The crate writes
+//! that list out as given.
 
 use std::borrow::Cow;
 
@@ -35,11 +36,12 @@ use serde::{Serialize, Serializer};
 
 use crate::FieldKind;
 
-/// A custom attribute, rendered onto the `<form>` or the control as written.
+/// A custom attribute. The crate renders it onto the `<form>` or the control
+/// as written.
 ///
-/// This is the escape hatch for markup the crate knows nothing about. It never
-/// takes part in validation, and the built-in renderer emits it after every
-/// attribute the crate generates itself.
+/// It carries the markup the crate knows nothing about. It never takes part in
+/// validation, and the built-in renderer emits it after every attribute the
+/// crate generates itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Attr {
     pub name: &'static str,
@@ -64,24 +66,24 @@ impl Attr {
 
 /// A string a person reads: literal text, or a key for an i18n backend.
 ///
-/// In an attribute the two are told apart by how they are written — `label =
-/// "Email address"` is text, `label = t("signup.email.label")` is a key. Which
-/// one it is survives all the way into the render format, where the key is
-/// exposed alongside the string so a template can resolve it, or
-/// [`FormView::localize`](crate::FormView::localize) can.
+/// In an attribute, how you write the value tells the two apart. `label =
+/// "Email address"` is text, and `label = t("signup.email.label")` is a key.
+/// The difference reaches the render format, which shows the key next to the
+/// string. A template can then resolve the key, and so can
+/// [`FormView::localize`](crate::FormView::localize).
 ///
-/// A key that no backend recognises stays put: the view shows the key itself,
+/// A key that no backend knows stays in place. The view shows the key itself,
 /// which is a visible bug rather than a silently blank label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Text {
-    /// The literal text, or the i18n key — [`Text::is_key`] says which.
+    /// The literal text, or the i18n key. [`Text::is_key`] says which.
     pub content: Cow<'static, str>,
     /// Whether [`Text::content`] is a key to look up rather than text to show.
     pub is_key: bool,
 }
 
 impl Text {
-    /// Literal text, usable in `const` position.
+    /// Literal text, for a `const` position.
     pub const fn literal(text: &'static str) -> Self {
         Self {
             content: Cow::Borrowed(text),
@@ -89,7 +91,7 @@ impl Text {
         }
     }
 
-    /// An i18n key, usable in `const` position.
+    /// An i18n key, for a `const` position.
     pub const fn key(key: &'static str) -> Self {
         Self {
             content: Cow::Borrowed(key),
@@ -150,10 +152,10 @@ impl From<Cow<'static, str>> for Text {
 }
 
 impl Serialize for Text {
-    /// Serialised as the string it holds, so a template renders something
-    /// whether or not the key has been resolved — the same bargain
-    /// [`FormView`](crate::FormView) strikes, where the key travels in a
-    /// companion field rather than in place of the text.
+    /// Serializes as the string it holds, so a template renders text whether or
+    /// not something has resolved the key. [`FormView`](crate::FormView) makes
+    /// the same trade: the key travels in a companion field, not in place of
+    /// the text.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.content)
     }
@@ -165,7 +167,8 @@ pub struct Choice {
     pub value: Cow<'static, str>,
     pub label: Text,
     pub disabled: bool,
-    /// When set, the choice is rendered inside an `<optgroup>` with this label.
+    /// When set, the crate renders the choice inside an `<optgroup>` with this
+    /// label.
     pub group: Option<Text>,
 }
 
@@ -177,7 +180,7 @@ impl Choice {
         group: None,
     };
 
-    /// A choice known at compile time, usable in `const` position.
+    /// A choice known at compile time, for a `const` position.
     pub const fn new(value: &'static str, label: &'static str) -> Self {
         Self {
             value: Cow::Borrowed(value),
@@ -187,7 +190,7 @@ impl Choice {
         }
     }
 
-    /// A choice whose label is an i18n key, usable in `const` position.
+    /// A choice whose label is an i18n key, for a `const` position.
     pub const fn keyed(value: &'static str, label_key: &'static str) -> Self {
         Self {
             value: Cow::Borrowed(value),
@@ -197,7 +200,7 @@ impl Choice {
         }
     }
 
-    /// A choice built at runtime — options loaded from a database, say.
+    /// A choice built at runtime, such as an option that comes from a database.
     pub fn owned(value: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             value: Cow::Owned(value.into()),
@@ -220,15 +223,16 @@ impl Choice {
 
 // ─── Controls ─────────────────────────────────────────────────────────────────
 
-/// `min` / `max` / `step`, shared by the numeric and the date/time controls.
+/// `min`, `max` and `step`, shared by the numeric and the date and time
+/// controls.
 ///
-/// Kept as strings rather than numbers so that an `i128` or `u64` bound
-/// survives exactly, and so that a date bound needs no calendar type.
+/// The crate keeps them as strings, not numbers. An `i128` or `u64` bound
+/// therefore survives exactly, and a date bound needs no calendar type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
     pub min: Option<&'static str>,
     pub max: Option<&'static str>,
-    /// `"any"` disables the step check.
+    /// `"any"` turns the step check off.
     pub step: Option<&'static str>,
 }
 
@@ -239,7 +243,7 @@ impl Bounds {
         step: None,
     };
 
-    /// Whether anything is set at all.
+    /// Whether any of the three is set.
     pub const fn is_empty(&self) -> bool {
         self.min.is_none() && self.max.is_none() && self.step.is_none()
     }
@@ -251,10 +255,10 @@ impl Default for Bounds {
     }
 }
 
-/// Which flavour of free-text `<input>` a [`Control::Text`] is.
+/// Which kind of free-text `<input>` a [`Control::Text`] is.
 ///
-/// The variants differ in the format check applied on the server, which is why
-/// they are one enum rather than five controls.
+/// The variants differ in the format check the server makes. That is why they
+/// are one enum and not five controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextFormat {
     Text,
@@ -263,17 +267,17 @@ pub enum TextFormat {
     Search,
     Url,
     /// `multiple` accepts a comma-separated list of addresses, as HTML does.
-    /// No other text control has a meaning for `multiple`.
+    /// `multiple` means nothing on any other text control.
     Email {
         multiple: bool,
     },
 }
 
-/// `<input>` carrying free text.
+/// An `<input>` that carries free text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextControl {
     pub format: TextFormat,
-    /// An (unanchored) regular expression the whole value must match.
+    /// An unanchored regular expression that the whole value must match.
     pub pattern: Option<&'static str>,
     /// In Unicode scalar values, as the HTML spec counts them.
     pub minlength: Option<usize>,
@@ -289,7 +293,7 @@ impl TextControl {
     };
 }
 
-/// `<textarea>`, which takes lengths but — unlike an `<input>` — no `pattern`.
+/// A `<textarea>`. It takes lengths, but no `pattern`, unlike an `<input>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextareaControl {
     pub minlength: Option<usize>,
@@ -314,8 +318,8 @@ pub enum NumberFormat {
     Range,
 }
 
-/// `<input type="number">` or `<input type="range">`: `min`/`max`/`step` compare
-/// numerically.
+/// An `<input type="number">` or an `<input type="range">`. The crate compares
+/// `min`, `max` and `step` as numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumberControl {
     pub format: NumberFormat,
@@ -344,8 +348,8 @@ pub enum TemporalFormat {
     Week,
 }
 
-/// A date or time `<input>`: `min`/`max` compare lexicographically, which for
-/// these formats *is* chronological order.
+/// A date or time `<input>`. The crate compares `min` and `max` as strings,
+/// which for these formats *is* the order in time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TemporalControl {
     pub format: TemporalFormat,
@@ -365,22 +369,23 @@ impl TemporalControl {
 pub enum ChoiceStyle {
     Select,
     Radio,
-    /// One checkbox per option, all sharing the field's name. Multi-valued by
-    /// construction, so it is the usable alternative to `<select multiple>`.
+    /// One checkbox per option, all sharing the field's name. It carries many
+    /// values by design, so it is the usable alternative to
+    /// `<select multiple>`.
     Checkbox,
 }
 
 /// A control whose value has to be one of a declared set.
 ///
-/// An empty list means the options are supplied at render time, through
-/// [`FieldView::set_choices`](crate::FieldView::set_choices); nothing is
-/// rejected in that case, because the spec does not know what is allowed.
+/// An empty list means the options arrive at render time, through
+/// [`FieldView::set_choices`](crate::FieldView::set_choices). The crate then
+/// rejects nothing, because the spec does not know what it may allow.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChooseControl {
     pub style: ChoiceStyle,
-    /// `<select multiple>`. A radio group is single-valued by definition and a
-    /// checkbox group multi-valued by definition, so for those two the style
-    /// decides this rather than the field.
+    /// `<select multiple>`. A radio group always carries one value, and a
+    /// checkbox group always carries many. For those two the style decides
+    /// this, not the field.
     pub multiple: bool,
     pub choices: &'static [Choice],
 }
@@ -393,11 +398,11 @@ impl ChooseControl {
     };
 }
 
-/// `<input type="file">`. Nothing here is re-checked on the server: the crate
-/// never sees the bytes.
+/// An `<input type="file">`. The server checks nothing here again, because the
+/// crate never sees the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileControl {
-    /// Comma-separated MIME types / extensions, e.g. `"image/*,.pdf"`.
+    /// Comma-separated MIME types or extensions, such as `"image/*,.pdf"`.
     pub accept: Option<&'static str>,
     pub multiple: bool,
 }
@@ -409,8 +414,8 @@ impl FileControl {
     };
 }
 
-/// Which control a field renders as, together with every attribute that
-/// control — and only that control — accepts.
+/// Which control a field renders as, with every attribute that control, and
+/// only that control, accepts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Control {
     Text(TextControl),
@@ -432,7 +437,7 @@ impl Control {
     /// A `<select>` with no options declared yet.
     pub const SELECT: Self = Control::Choose(ChooseControl::DEFAULT);
 
-    /// The flat discriminant the render format uses.
+    /// The flat discriminant that the render format uses.
     pub const fn kind(&self) -> FieldKind {
         match self {
             Control::Text(text) => match text.format {
@@ -490,7 +495,7 @@ impl Control {
         }
     }
 
-    /// The `min`/`max`/`step` triple, for the two controls that have one.
+    /// The `min`, `max` and `step` triple, for the two controls that have one.
     pub const fn bounds(&self) -> Option<&Bounds> {
         match self {
             Control::Number(number) => Some(&number.bounds),
@@ -533,7 +538,7 @@ impl Control {
         }
     }
 
-    /// The declared options, empty for everything that has none.
+    /// The declared options. It is empty for every control that has none.
     pub const fn choices(&self) -> &'static [Choice] {
         match self {
             Control::Choose(choose) => choose.choices,
@@ -541,13 +546,13 @@ impl Control {
         }
     }
 
-    /// Whether a submitted value has to appear in [`Control::choices`].
+    /// Whether a submitted value has to be in [`Control::choices`].
     pub const fn restricts_choices(&self) -> bool {
         !self.choices().is_empty()
     }
 
-    /// Whether the control submits nothing when the user leaves it alone, so
-    /// that an absent value means "unchecked" rather than "missing".
+    /// Whether the control submits nothing when the user leaves it alone. An
+    /// absent value then means "unchecked", not "missing".
     pub const fn is_checkable(&self) -> bool {
         matches!(
             self,
@@ -562,29 +567,31 @@ impl Control {
 
 // ─── Fields and forms ─────────────────────────────────────────────────────────
 
-/// Everything known statically about a single field.
+/// Everything the crate knows about a single field at compile time.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldSpec {
     /// The submitted name, *relative* to any enclosing flatten prefix.
     pub name: &'static str,
-    /// Visible label. `None` renders no `<label>`.
+    /// The visible label. `None` renders no `<label>`.
     pub label: Option<Text>,
     /// The control, and the attributes only it accepts.
     pub control: Control,
-    /// A value must be present and non-empty.
+    /// The value must be present and not empty.
     pub required: bool,
-    /// Pre-filled value for a blank form. Also used when the field is entirely
-    /// absent from a submission (but *not* when it is submitted empty, so that
-    /// clearing a field keeps working).
+    /// The value a blank form starts with. It also applies when the submission
+    /// leaves the field out. It does *not* apply when the submission sends the
+    /// field empty, so that a user can still clear a field.
     ///
-    /// This is the *literal* default, the one a spec can hold. The other kind —
-    /// `#[field(default = path)]`, a value the form produces afresh for every
-    /// render — cannot live in a `const`, and is generated instead by
-    /// [`Form::generate_defaults`](crate::Form::generate_defaults), which
-    /// is also the only thing that may take the render's context.
+    /// This is the *literal* default, the one a spec can hold. The other kind
+    /// is `#[field(default = path)]`, a value the form produces anew for every
+    /// render. That kind cannot live in a `const`, so
+    /// [`Form::generate_defaults`](crate::Form::generate_defaults) produces it
+    /// instead. That call is also the only one that may take the render's
+    /// context.
     pub default: Option<&'static str>,
     pub placeholder: Option<Text>,
-    /// Help text rendered next to the control and wired up via `aria-describedby`.
+    /// Help text. The crate renders it next to the control and points
+    /// `aria-describedby` at it.
     pub help: Option<Text>,
     pub autocomplete: Option<&'static str>,
     /// Overrides the generated `id`.
@@ -593,8 +600,8 @@ pub struct FieldSpec {
     pub disabled: bool,
     pub readonly: bool,
     pub autofocus: bool,
-    /// Attributes the crate has no opinion about, rendered onto the control
-    /// verbatim. Declared with `#[field(attr(...))]`.
+    /// Attributes the crate has no opinion about. The crate renders them onto
+    /// the control as written. Declare them with `#[field(attr(...))]`.
     pub attrs: &'static [Attr],
 }
 
@@ -616,9 +623,9 @@ impl FieldSpec {
         attrs: &[],
     };
 
-    /// The `id` used for the control, defaulting to the (prefixed) field name.
-    // Not `&str`: the point is to hand back the name itself when it is already
-    // a usable id, which needs the borrow the `Cow` is carrying.
+    /// The `id` of the control. It defaults to the prefixed field name.
+    // Not `&str`. The point is to give back the name itself when the name is
+    // already a usable id, which needs the borrow the `Cow` carries.
     #[allow(clippy::ptr_arg)]
     pub fn id_for(&self, full_name: &Cow<'static, str>) -> Cow<'static, str> {
         match self.id {
@@ -628,10 +635,10 @@ impl FieldSpec {
     }
 }
 
-/// Turn a field path such as `billing.street` into something usable as a DOM id.
+/// Turn a field path such as `billing.street` into a usable DOM id.
 ///
-/// A name that is already a usable id — which every name written as a Rust
-/// identifier is — is handed back untouched rather than rebuilt.
+/// A name that is already a usable id comes back untouched, not rebuilt. Every
+/// name written as a Rust identifier is already usable.
 #[allow(clippy::ptr_arg)] // See `id_for`.
 pub(crate) fn sanitize_id(name: &Cow<'static, str>) -> Cow<'static, str> {
     fn is_id_char(ch: char) -> bool {
@@ -648,25 +655,26 @@ pub(crate) fn sanitize_id(name: &Cow<'static, str>) -> Cow<'static, str> {
     )
 }
 
-/// A sub-form spliced into an enclosing form.
+/// A sub-form put inside an enclosing form.
 ///
-/// Produced by `#[field(flatten)]`. The sub-form's spec is referenced directly:
+/// `#[field(flatten)]` produces it. It names the sub-form's spec directly.
 /// [`Form::SPEC`](crate::Form::SPEC) is an associated *constant*, so the
-/// reference is resolved while the enclosing spec is const-evaluated rather
-/// than by a call at render time.
+/// compiler resolves the reference while it const-evaluates the enclosing spec.
+/// No call happens at render time.
 #[derive(Debug, Clone)]
 pub struct Flattened {
-    /// Prepended to every field name of the sub-form. Empty for a plain flatten;
-    /// set it to embed the same sub-form more than once.
+    /// The crate puts this in front of every field name of the sub-form. It is
+    /// empty for a plain flatten. Set it to use the same sub-form more than
+    /// once.
     pub prefix: &'static str,
-    /// A legend rendered above the group by the built-in renderer.
+    /// A legend. The built-in renderer puts it above the group.
     pub legend: Option<Text>,
     pub spec: &'static FormSpec,
 }
 
 /// One item in a form's field list.
-// The variants differ in size, but boxing the large one would put the spec out
-// of reach of `const` construction, which is the whole point.
+// The variants differ in size. Boxing the large one would put the spec out of
+// reach of `const` construction, which is the whole point.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Entry {
@@ -674,7 +682,7 @@ pub enum Entry {
     Flatten(Flattened),
 }
 
-/// How a form is submitted.
+/// How the browser submits a form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormMethod {
     Get,
@@ -682,7 +690,7 @@ pub enum FormMethod {
     Dialog,
 }
 
-/// The `enctype` a submission is encoded with.
+/// The `enctype` that encodes a submission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormEncType {
     UrlEncoded,
@@ -700,15 +708,15 @@ pub struct FormSpec {
     pub enctype: Option<FormEncType>,
     pub novalidate: bool,
     pub class: Option<&'static str>,
-    /// Caption of the submit button emitted by the built-in renderer.
+    /// The caption of the submit button the built-in renderer emits.
     pub submit_label: Option<Text>,
-    /// Attributes the crate has no opinion about, rendered onto the `<form>`
-    /// verbatim. Declared with `#[form(attr(...))]`.
+    /// Attributes the crate has no opinion about. The crate renders them onto
+    /// the `<form>` as written. Declare them with `#[form(attr(...))]`.
     pub attrs: &'static [Attr],
     pub entries: &'static [Entry],
 }
 
-/// Guards against a form that (directly or indirectly) flattens itself.
+/// Guards against a form that flattens itself, directly or through another.
 const MAX_FLATTEN_DEPTH: usize = 32;
 
 impl FormSpec {
@@ -728,8 +736,8 @@ impl FormSpec {
     /// The entry at `index`, which the derive knows to be a plain field.
     ///
     /// # Panics
-    /// If the index is out of range or names a flattened sub-form. Generated
-    /// code never does this.
+    /// If the index is out of range, or if it names a flattened sub-form.
+    /// Generated code never does this.
     pub fn field_at(&self, index: usize) -> &FieldSpec {
         match self.entries.get(index) {
             Some(Entry::Field(f)) => f,
@@ -740,7 +748,7 @@ impl FormSpec {
     /// The entry at `index`, which the derive knows to be a flattened sub-form.
     ///
     /// # Panics
-    /// If the index is out of range or names a plain field.
+    /// If the index is out of range, or if it names a plain field.
     pub fn flatten_at(&self, index: usize) -> &Flattened {
         match self.entries.get(index) {
             Some(Entry::Flatten(f)) => f,
@@ -749,17 +757,17 @@ impl FormSpec {
     }
 
     /// Visit every field of this form and of any flattened sub-form, in render
-    /// order, with names resolved against the accumulated prefixes.
+    /// order, and resolve each name against the prefixes collected so far.
     ///
-    /// This is what the renderer walks. Nothing is allocated for a form that
-    /// flattens nothing — a resolved name *is* the name in the spec, borrowed —
-    /// and only a field reached through a non-empty prefix has its name built.
+    /// This is what the renderer walks. A form that flattens nothing allocates
+    /// nothing, because a resolved name *is* the borrowed name in the spec.
+    /// Only a field reached through a non-empty prefix needs a new name.
     pub fn walk(&self, mut visit: impl FnMut(ResolvedField)) {
         self.walk_in("", None, 0, &mut visit);
     }
 
-    // `dyn FnMut` rather than a second generic parameter: the recursion would
-    // otherwise instantiate one copy of this function per nesting depth.
+    // `dyn FnMut`, not a second generic parameter. The recursion would
+    // otherwise build one copy of this function per nesting depth.
     fn walk_in(
         &self,
         prefix: &str,
@@ -789,14 +797,14 @@ impl FormSpec {
     }
 
     /// Every field of this form and of any flattened sub-form, in render order,
-    /// collected. [`FormSpec::walk`] is the same thing without the `Vec`.
+    /// in one `Vec`. [`FormSpec::walk`] does the same without the `Vec`.
     pub fn fields(&self) -> Vec<ResolvedField> {
         let mut out = Vec::new();
         self.walk(|field| out.push(field));
         out
     }
 
-    /// Look up a resolved field by its full (prefixed) name.
+    /// Find a resolved field by its full, prefixed name.
     pub fn field(&self, full_name: &str) -> Option<ResolvedField> {
         let mut found = None;
         self.walk(|field| {
@@ -808,8 +816,8 @@ impl FormSpec {
     }
 }
 
-/// `prefix` and `name` joined, borrowing `name` outright when there is no
-/// prefix to prepend — which is every field of a form that flattens nothing.
+/// `prefix` and `name` joined. With no prefix to add, this borrows `name`
+/// outright, which covers every field of a form that flattens nothing.
 pub(crate) fn join(prefix: &str, name: &'static str) -> Cow<'static, str> {
     if prefix.is_empty() {
         return Cow::Borrowed(name);
@@ -820,14 +828,14 @@ pub(crate) fn join(prefix: &str, name: &'static str) -> Cow<'static, str> {
     Cow::Owned(joined)
 }
 
-/// A field together with the full name it is submitted under.
+/// A field with the full name the browser submits it under.
 #[derive(Debug, Clone)]
 pub struct ResolvedField {
-    /// Fully-qualified submitted name, including any flatten prefixes. A
-    /// [`Cow`] because a prefix has to be concatenated onto the name in the
-    /// spec, but only when there is one.
+    /// The fully qualified submitted name, with every flatten prefix. It is a
+    /// [`Cow`] because a prefix has to join the name in the spec, and only when
+    /// a prefix exists.
     pub name: Cow<'static, str>,
     pub spec: &'static FieldSpec,
-    /// The legend of the innermost flattened group this field came from.
+    /// The legend of the innermost flattened group that holds this field.
     pub group: Option<&'static Text>,
 }

@@ -1,10 +1,9 @@
-//! The parsing machinery shared by hand-written and derived [`Form`] impls.
+//! The parsing machinery that hand-written and derived [`Form`] impls share.
 //!
-//! [`ParseCtx`] threads four things through a parse: the raw submission, the
-//! context the caller handed in, the flatten prefix currently in scope, and the
-//! growing error list. Nothing in here ever short-circuits — a failed field
-//! records its error and returns `None`, and the parse carries on to the next
-//! field.
+//! [`ParseCtx`] carries four things through a parse. They are the raw
+//! submission, the context the caller passed in, the flatten prefix in scope,
+//! and the growing error list. Nothing here stops early. A failed field records
+//! its error and returns `None`, and the parse goes on to the next field.
 
 use std::borrow::Cow;
 
@@ -18,41 +17,41 @@ use crate::values::{Values, is_blank};
 
 /// What arrived for one field.
 enum Raw<'a> {
-    /// The name did not appear in the submission at all.
+    /// The name did not appear in the submission.
     Absent,
-    /// The name appeared, but with an empty (or whitespace-only) value.
+    /// The name appeared, but with an empty or whitespace-only value.
     Blank,
     Present(&'a str),
 }
 
-/// Read a field's single raw value, falling back to its declared default when
-/// the name is absent entirely.
+/// Read a field's single raw value. Use its declared default when the name is
+/// absent.
 ///
-/// A name that *is* present but empty never falls back, so that clearing a
-/// field keeps working even when the field has a default.
+/// A name that *is* present but empty never uses the default, so a user can
+/// still clear a field that has one.
 ///
-/// Only the *literal* default is a fallback. A generated one — `default =
-/// some_fn` — belongs to rendering alone: standing it in here would let a form
-/// answer its own question, and a submission that left the CSRF token out would
-/// arrive carrying a freshly minted one.
+/// Only the *literal* default is a fallback. A generated one, `default =
+/// some_fn`, belongs to rendering alone. Using it here would let a form answer
+/// its own question. A submission that left the CSRF token out would then
+/// arrive with a fresh one.
 fn read<'r>(values: &'r Values, spec: &'r FieldSpec, full_name: &str) -> Raw<'r> {
     match values.get(full_name) {
         Some(value) if !is_blank(value) => Raw::Present(value),
         Some(_) => Raw::Blank,
         None => match spec.default {
-            // A checkbox default describes the blank form only: an absent
-            // checkbox means "unchecked", never "fall back to checked".
+            // A checkbox default describes the blank form only. An absent
+            // checkbox means "unchecked", never "use the checked default".
             Some(default) if !spec.control.is_checkable() => Raw::Present(default),
             _ => Raw::Absent,
         },
     }
 }
 
-/// State carried through one parse of one submission.
+/// The state that one parse of one submission carries.
 ///
-/// `C` is the form's [`Context`](crate::Form::Context) — whatever its own
-/// functions were promised they would be handed. A form that declares none
-/// parses with `C = ()`, which is what the parameter defaults to.
+/// `C` is the form's [`Context`](crate::Form::Context), whatever the form's own
+/// functions expect to receive. A form that declares none parses with `C = ()`,
+/// which is the default for the parameter.
 pub struct ParseCtx<'a, C = ()> {
     values: &'a Values,
     context: &'a C,
@@ -70,25 +69,25 @@ impl<'a, C> ParseCtx<'a, C> {
         }
     }
 
-    /// The raw submission being parsed.
+    /// The raw submission this parse reads.
     pub fn values(&self) -> &'a Values {
         self.values
     }
 
-    /// What the caller handed in for this parse.
+    /// What the caller passed in for this parse.
     pub fn context(&self) -> &'a C {
         self.context
     }
 
-    /// The flatten prefix currently in scope.
+    /// The flatten prefix in scope.
     pub fn prefix(&self) -> &str {
         &self.prefix
     }
 
-    /// A field's name qualified by the current prefix.
+    /// A field's name, qualified by the current prefix.
     ///
-    /// Outside a flatten there is no prefix to prepend, so the name in the spec
-    /// is handed back as it stands.
+    /// Outside a flatten there is no prefix to add, so this gives back the name
+    /// in the spec as it stands.
     pub fn full_name(&self, name: &'static str) -> Cow<'static, str> {
         if self.prefix.is_empty() {
             return Cow::Borrowed(name);
@@ -99,7 +98,7 @@ impl<'a, C> ParseCtx<'a, C> {
         Cow::Owned(full)
     }
 
-    /// Errors found so far.
+    /// The errors this parse has found so far.
     pub fn errors(&self) -> &FormErrors {
         &self.errors
     }
@@ -108,13 +107,13 @@ impl<'a, C> ParseCtx<'a, C> {
         &mut self.errors
     }
 
-    /// Consume the context, keeping the errors.
+    /// Consume the context and keep the errors.
     pub fn into_errors(self) -> FormErrors {
         self.errors
     }
 
-    /// Record an error against a field of the form currently being parsed.
-    /// The name is qualified with the active prefix.
+    /// Record an error against a field of the form this parse is reading. The
+    /// name gets the active prefix.
     pub fn push_error(&mut self, name: &'static str, error: FieldError) {
         let full = self.full_name(name);
         self.errors.push(full, error);
@@ -125,23 +124,23 @@ impl<'a, C> ParseCtx<'a, C> {
         self.errors.push_form(error);
     }
 
-    /// Fold a whole [`FormErrors`] in, qualifying its field names with the
-    /// active prefix. This is what a `#[form(validate = ...)]` function's
-    /// errors go through.
+    /// Add a whole [`FormErrors`], and put the active prefix on each of its
+    /// field names. The errors of a `#[form(validate = ...)]` function come in
+    /// this way.
     pub fn merge_errors(&mut self, errors: FormErrors) {
-        // Lent out and put back, rather than copied, so that a sub-form's
-        // errors cost nothing to qualify.
+        // Lent out and put back, not copied, so a sub-form's errors cost
+        // nothing to qualify.
         let prefix = std::mem::take(&mut self.prefix);
         self.errors.merge_prefixed(&prefix, errors);
         self.prefix = prefix;
     }
 
-    /// Parse a required-by-default scalar field.
+    /// Parse a scalar field, which is required by default.
     ///
     /// A blank value for a field that is *not* required still has to produce
-    /// some `T`; if the type cannot represent "nothing" (as `String` can, but
-    /// `u32` cannot) the field is reported as required. Model genuinely
-    /// optional fields as `Option<T>`.
+    /// some `T`. If the type cannot hold "nothing", the crate reports the field
+    /// as required. A `String` can hold nothing, and a `u32` cannot. Write a
+    /// truly optional field as an `Option<T>`.
     pub fn field<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<T> {
         let full = self.full_name(spec.name);
         match read(self.values, spec, &full) {
@@ -162,7 +161,8 @@ impl<'a, C> ParseCtx<'a, C> {
         }
     }
 
-    /// Parse an `Option<T>` field: blank and absent both mean `None`.
+    /// Parse an `Option<T>` field. A blank value and an absent one both mean
+    /// `None`.
     pub fn optional<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<Option<T>> {
         let full = self.full_name(spec.name);
         match read(self.values, spec, &full) {
@@ -178,12 +178,12 @@ impl<'a, C> ParseCtx<'a, C> {
 
     /// Parse a `Vec<T>` field from every value submitted under the name.
     ///
-    /// Blank entries are dropped, which is what an unselected `<select multiple>`
-    /// and the hidden empty option of a checkbox group produce.
+    /// This drops blank entries. An unselected `<select multiple>` and the
+    /// hidden empty option of a checkbox group both produce one.
     pub fn many<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<Vec<T>> {
         let full = self.full_name(spec.name);
-        // The submission outlives the parse, so the values can be walked as
-        // they are converted rather than collected first.
+        // The submission outlives the parse, so this walks the values as it
+        // converts them, in place of collecting them first.
         let values = self.values;
         let mut out = Vec::new();
         let mut ok = true;
@@ -204,10 +204,10 @@ impl<'a, C> ParseCtx<'a, C> {
         ok.then_some(out)
     }
 
-    /// Parse a `bool` field with checkbox semantics: absent means `false`.
+    /// Parse a `bool` field the way a checkbox works: absent means `false`.
     ///
-    /// A *required* checkbox has to be checked — the HTML rule, useful for
-    /// "I accept the terms".
+    /// A user must check a *required* checkbox. That is the HTML rule, and it
+    /// is useful for "I accept the terms".
     pub fn flag(&mut self, spec: &FieldSpec) -> Option<bool> {
         let full = self.full_name(spec.name);
         let checked = match self.values.get(&full) {
@@ -227,15 +227,15 @@ impl<'a, C> ParseCtx<'a, C> {
         Some(checked)
     }
 
-    /// Parse a flattened sub-form, with its prefix pushed for the duration.
+    /// Parse a flattened sub-form, with its prefix in scope for the duration.
     ///
-    /// The sub-form is parsed with the context this one is carrying, or with
-    /// whatever that context [`Provides`] in its place — which is how a
-    /// context-free sub-form is flattened into a form that has one.
+    /// The sub-form parses with the context this one carries, or with whatever
+    /// that context [`Provides`] in its place. That is how a context-free
+    /// sub-form goes into a form that has a context.
     ///
-    /// The prefix and the errors are lent to the sub-parse and taken back, so
-    /// nesting costs no allocation of its own and the errors of both halves end
-    /// up in one list.
+    /// This lends the prefix and the errors to the sub-parse and takes them
+    /// back. Nesting therefore allocates nothing of its own, and the errors of
+    /// both halves reach one list.
     pub fn nested<T: Form>(&mut self, flattened: &Flattened) -> Option<T>
     where
         C: Provides<T::Context>,
@@ -259,8 +259,8 @@ impl<'a, C> ParseCtx<'a, C> {
 
     /// Run a `#[field(validate = ...)]` function against a parsed value.
     ///
-    /// The function may take the value alone or the value and the context, and
-    /// may return a `bool` or any `Result` whose error becomes a message — see
+    /// The function may take the value alone, or the value and the context. It
+    /// may return a `bool`, or any `Result` whose error becomes a message. See
     /// [`FieldValidator`] and [`FieldValidation`](crate::FieldValidation).
     pub fn check_custom<T, M>(
         &mut self,
@@ -274,11 +274,12 @@ impl<'a, C> ParseCtx<'a, C> {
         }
     }
 
-    /// Run a `#[form(validate = ...)]` function against the assembled struct.
+    /// Run a `#[form(validate = ...)]` function against the whole struct.
     ///
-    /// As well as a `bool`, the function may return anything convertible to
+    /// Besides a `bool`, the function may return anything that converts into
     /// [`FormErrors`]: a message, a `(field, message)` pair, or a full error
-    /// set — see [`FormValidator`] and [`FormValidation`](crate::FormValidation).
+    /// set. See [`FormValidator`] and
+    /// [`FormValidation`](crate::FormValidation).
     pub fn check_form<T, M>(&mut self, value: &T, validator: impl FormValidator<T, C, M>) {
         if let Some(errors) = validator.check(value, self.context) {
             self.merge_errors(errors);
@@ -288,13 +289,12 @@ impl<'a, C> ParseCtx<'a, C> {
     /// Validate one raw value against the spec, then convert it, then let the
     /// type say what the spec could not.
     ///
-    /// The first two always run: a value that is both malformed *and* out of
-    /// range reports the constraint violation, which says more than "not a
-    /// number". The third —
-    /// [`FormValue::validate_form_value`] — needs a converted value to look at,
-    /// so it runs only once there is one.
-    // `full` is a `&Cow` rather than a `&str` because an error takes a copy of
-    // it, and copying a name that is already `'static` should cost nothing.
+    /// The first two always run. A value that is both malformed *and* out of
+    /// range reports the broken constraint, which says more than "not a
+    /// number". The third step, [`FormValue::validate_form_value`], needs a
+    /// converted value to look at, so it runs only once one exists.
+    // `full` is a `&Cow`, not a `&str`, because an error takes a copy of it,
+    // and copying a name that is already `'static` should cost nothing.
     #[allow(clippy::ptr_arg)]
     fn convert<T: FormValue>(
         &mut self,
@@ -326,7 +326,7 @@ impl<'a, C> ParseCtx<'a, C> {
     }
 }
 
-/// Helpers the derive macro calls into. Not part of the public API.
+/// Helpers the derive macro calls. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
     use std::borrow::Cow;
@@ -344,33 +344,32 @@ pub mod __private {
     use crate::value::FormValue;
     use crate::values::Values;
 
-    /// A value converted by its own [`FromStr`] and [`Display`] rather than by a
-    /// [`FormValue`](crate::FormValue) impl — what `#[field(from_str)]` wraps a
-    /// field's type in for the duration of the parse.
+    /// A value converted by its own [`FromStr`] and [`Display`], not by a
+    /// [`FormValue`](crate::FormValue) impl. `#[field(from_str)]` wraps a
+    /// field's type in this for the length of the parse.
     ///
-    /// It is a wrapper rather than a second parse path because everything a
-    /// field goes through — the constraints in the spec, the error collecting,
-    /// `Option<T>` and `Vec<T>` — should not have to be written twice for the
-    /// sake of one conversion. The derive unwraps it the moment the value is
-    /// parsed, so nothing downstream, a `validate` function included, ever sees
-    /// it.
+    /// It is a wrapper, not a second parse path, because one conversion should
+    /// not make the crate write everything a field goes through twice. That is
+    /// the constraints in the spec, the error collecting, `Option<T>` and
+    /// `Vec<T>`. The derive unwraps it as soon as the value parses, so nothing
+    /// later ever sees it, a `validate` function included.
     pub struct Str<T>(pub T);
 
     impl<T: FromStr + Display> FormValue for Str<T> {
-        /// A plain text input: a foreign type has no `CONTROL` to be asked for
-        /// one, so the field says what it renders as, or takes this.
+        /// A plain text input. A foreign type has no `CONTROL` to give one, so
+        /// the field says what it renders as, or it takes this.
         const CONTROL: Control = Control::TEXT;
 
-        /// Surrounding whitespace is dropped first, as it is for the numbers
-        /// this crate parses itself — the types worth reaching for this over
-        /// are dates, ids and decimals, where a pasted value with a space at
-        /// the end is a user's slip rather than their answer.
+        /// This drops the whitespace around the value first, as it does for
+        /// the numbers this crate parses itself. The types worth using this
+        /// for are dates, ids and decimals. There, a pasted value with a space
+        /// at the end is a user's slip, not their answer.
         ///
-        /// What the `FromStr` said went wrong is deliberately not the message:
-        /// a parse error is written for whoever wrote the call, and "Enter
-        /// invalid digit found in string." is not a sentence to show anybody.
-        /// A field that can say better says it with a `type`, whose format
-        /// check runs first and describes what it wanted.
+        /// The message deliberately leaves out what the `FromStr` said. A parse
+        /// error speaks to whoever wrote the call, and "Enter invalid digit
+        /// found in string." is not a sentence to show anybody. A field that
+        /// can say more says it with a `type`, whose format check runs first
+        /// and describes what it wanted.
         fn parse_form_value(raw: &str) -> Result<Self, ValueError> {
             match raw.trim().parse() {
                 Ok(value) => Ok(Str(value)),
@@ -384,12 +383,12 @@ pub mod __private {
     }
 
     /// Record what a `#[field(default = path)]` function produced for one
-    /// render, under the field's fully-qualified name.
+    /// render, under the field's fully qualified name.
     ///
-    /// The function may take the context or ignore it, and may return whichever
-    /// string type suits it — [`DefaultSource`] is what reconciles the two, so
-    /// that the derive, which cannot see a signature, emits the same call
-    /// either way.
+    /// The function may take the context or ignore it, and it may return
+    /// whichever string type suits it. [`DefaultSource`] joins the two, so the
+    /// derive emits the same call either way. The derive cannot see a
+    /// signature.
     pub fn generate_default<C, M>(
         values: &mut Values,
         prefix: &str,
@@ -400,14 +399,15 @@ pub mod __private {
         values.push(join(prefix, name), source.generate(context));
     }
 
-    /// The defaults of a flattened sub-form, under the prefix the flatten adds
-    /// — the rendering half of [`ParseCtx::nested`](super::ParseCtx::nested),
-    /// and where the same rules live: the sub-form is handed whatever this
-    /// form's context [`Provides`] in place of its own.
+    /// The defaults of a flattened sub-form, under the prefix the flatten adds.
+    /// This is the rendering half of
+    /// [`ParseCtx::nested`](super::ParseCtx::nested), and it follows the same
+    /// rules. The sub-form receives whatever this form's context [`Provides`]
+    /// in place of its own.
     ///
-    /// A sub-form that generates nothing is not walked, and its prefix is never
-    /// built: the const decides that per instantiation, so a form that has no
-    /// generated default anywhere in it compiles this down to nothing.
+    /// A sub-form that generates nothing gets no walk, and the crate never
+    /// builds its prefix. The const decides that per instantiation, so a form
+    /// with no generated default anywhere compiles this down to nothing.
     pub fn nested_defaults<T: Form, C: Provides<T::Context>>(
         values: &mut Values,
         prefix: &str,
@@ -419,11 +419,11 @@ pub mod __private {
         }
     }
 
-    /// A field's default: the one written on the field, or — where the field
-    /// says nothing — the one its type carries.
+    /// A field's default: the one written on the field, or, where the field
+    /// says nothing, the one its type carries.
     ///
-    /// The same bargain [`control`] strikes for the control, and made in the
-    /// same place, because the macro cannot see what
+    /// [`control`] makes the same trade for the control, in the same place. The
+    /// macro cannot see what
     /// [`FormValue::DEFAULT`](crate::FormValue::DEFAULT) is either.
     pub const fn or_default(
         explicit: Option<&'static str>,
@@ -435,10 +435,10 @@ pub mod __private {
     /// Run a `#[value(validate = ...)]` function over a value of the type that
     /// declared it.
     ///
-    /// Unlike a field's validator this takes no context — a `FormValue` belongs
-    /// to no form, so there is none to reach — but it returns everything
+    /// This takes no context, unlike a field's validator. A `FormValue` belongs
+    /// to no form, so there is no context to reach. It still returns everything
     /// [`FieldValidation`] accepts, so a type's check says as much as a field's
-    /// can.
+    /// check can.
     pub fn check_value<T, V: FieldValidation>(
         value: &T,
         validator: impl Fn(&T) -> V,
@@ -452,10 +452,10 @@ pub mod __private {
     /// The `#[field(...)]` attributes that belong to a control rather than to
     /// the field as a whole.
     ///
-    /// The derive collects them without knowing which control it is decorating
-    /// — that can come from the field's Rust type, which a macro cannot inspect
-    /// — so [`control`] is what finally decides where each one lands, and
-    /// rejects the ones that have nowhere to go.
+    /// The derive collects them without knowing which control they decorate.
+    /// The control can come from the field's Rust type, which a macro cannot
+    /// inspect. [`control`] therefore decides where each one goes, and rejects
+    /// the ones with nowhere to go.
     pub struct Overrides {
         pub pattern: Option<&'static str>,
         pub minlength: Option<usize>,
@@ -484,11 +484,11 @@ pub mod __private {
         };
     }
 
-    /// Assemble a field's control out of what its type implies, what
+    /// Build a field's control out of what its type implies, what
     /// `type = "..."` named, the options it declared, and its attributes.
     ///
-    /// Evaluated in `const` position, so every `assert!` here is a compile
-    /// error at the point the form is declared.
+    /// This runs in `const` position, so every `assert!` here is a compile
+    /// error where the form is declared.
     pub const fn control(
         implied: Control,
         explicit: Option<Control>,
@@ -498,20 +498,20 @@ pub mod __private {
         apply(base(implied, explicit, choices), o)
     }
 
-    /// Which control this is, before any attribute is placed in it.
+    /// Which control this is, before any attribute goes into it.
     const fn base(
         implied: Control,
         explicit: Option<Control>,
         choices: Option<&'static [Choice]>,
     ) -> Control {
-        // Declaring options is enough to mean "this is a chooser", whatever the
-        // Rust type would otherwise have said.
+        // Declared options alone mean "this is a chooser", whatever the Rust
+        // type would otherwise say.
         if let Some(choices) = choices {
             return Control::Choose(ChooseControl {
                 style: match explicit {
                     Some(Control::Choose(c)) => c.style,
-                    // `type = "checkbox"` alongside options means one box per
-                    // option, not the lone boolean control.
+                    // `type = "checkbox"` next to options means one box per
+                    // option, not the single boolean control.
                     Some(Control::Checkbox) => ChoiceStyle::Checkbox,
                     _ => ChoiceStyle::Select,
                 },
@@ -520,22 +520,22 @@ pub mod __private {
             });
         }
         match (explicit, implied) {
-            // `type = "radio"` on a `FormChoice` enum restyles the control but
-            // must not throw away the variants it is choosing between.
+            // `type = "radio"` on a `FormChoice` enum changes the style of the
+            // control. It must keep the variants the control chooses between.
             (Some(Control::Choose(e)), Control::Choose(i)) => Control::Choose(ChooseControl {
                 style: e.style,
                 multiple: i.multiple,
                 choices: i.choices,
             }),
-            // `type = "checkbox"` on something already choosing between
-            // variants is a checkbox *group*, not a lone boolean box.
+            // `type = "checkbox"` on something that already chooses between
+            // variants is a checkbox *group*, not a single boolean box.
             (Some(Control::Checkbox), Control::Choose(i)) => Control::Choose(ChooseControl {
                 style: ChoiceStyle::Checkbox,
                 multiple: i.multiple,
                 choices: i.choices,
             }),
-            // Likewise `type = "range"` on a `u32` keeps the bounds the integer
-            // type implies.
+            // In the same way, `type = "range"` on a `u32` keeps the bounds the
+            // integer type implies.
             (Some(Control::Number(e)), Control::Number(i)) => Control::Number(NumberControl {
                 format: e.format,
                 bounds: i.bounds,
@@ -603,8 +603,8 @@ pub mod __private {
                 Control::Choose(ChooseControl {
                     multiple: match choose.style {
                         ChoiceStyle::Select => o.multiple,
-                        // A radio group is single-valued however the field is
-                        // typed, and a checkbox group multi-valued.
+                        // A radio group carries one value whatever the field
+                        // type is, and a checkbox group carries many.
                         ChoiceStyle::Radio => false,
                         ChoiceStyle::Checkbox => true,
                     },
@@ -640,8 +640,8 @@ pub mod __private {
         }
     }
 
-    // `assert!` messages in a `const fn` have to be literals, so each attribute
-    // group gets its own guard rather than one formatted complaint.
+    // An `assert!` message in a `const fn` has to be a literal, so each
+    // attribute group gets its own guard in place of one formatted message.
 
     const fn deny_pattern(o: &Overrides) {
         assert!(

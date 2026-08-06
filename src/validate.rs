@@ -1,32 +1,30 @@
-//! Server-side re-checking of the HTML validation attributes, and the shapes a
-//! `validate = ...` function is allowed to return.
+//! The server-side re-check of the HTML validation attributes, and the shapes a
+//! `validate = ...` function may return.
 //!
-//! Everything the markup asks the browser to enforce is enforced again here,
+//! This module checks again everything the markup asks the browser to enforce,
 //! because a submission can come from anywhere. What the markup *cannot* ask
-//! for is a `validate = ...` function, whose return value reaches the parse
+//! for is a `validate = ...` function. Its return value reaches the parse
 //! through [`FieldValidation`] or [`FormValidation`].
 
 use crate::context::{WithContext, WithoutContext};
 use crate::error::{ErrorKind, FieldError, FormErrors};
 use crate::spec::{Bounds, Control, FieldSpec, TemporalFormat, TextFormat};
 
-/// Check one non-blank submitted value against a field's constraints.
+/// Check one submitted value that is not blank against a field's constraints.
 ///
-/// Returns every violation, not just the first. Which checks even exist is
-/// decided by the [`Control`]: there is no arm in which a `<select>` has a
-/// `pattern` or a date has a `minlength`, because those are not states the
-/// spec can be in.
+/// It returns every failure, not the first alone. The [`Control`] decides which
+/// checks exist at all. No arm gives a `<select>` a `pattern` or a date a
+/// `minlength`, because the spec cannot hold those.
 pub fn check(spec: &FieldSpec, raw: &str) -> Vec<FieldError> {
     let mut errors = Vec::new();
 
     match &spec.control {
         Control::Text(text) => {
-            // The control's own type is a constraint too: `type="email"` is a
-            // promise the browser keeps and a submission from anywhere else
-            // need not. A value of the wrong shape entirely makes the
-            // finer-grained checks redundant — something that is not an address
-            // will usually also fail the `pattern` written to narrow which
-            // addresses count.
+            // The control's own type is a constraint too. `type="email"` is a
+            // promise the browser keeps, and a submission from anywhere else
+            // need not keep it. A value of the wrong shape makes the finer
+            // checks pointless. Something that is not an address will usually
+            // also fail the `pattern` that narrows which addresses count.
             if let Some(expected) = text.format.check(raw) {
                 return vec![invalid(expected)];
             }
@@ -52,11 +50,11 @@ pub fn check(spec: &FieldSpec, raw: &str) -> Vec<FieldError> {
         }
         Control::Color => {
             if !format::is_color(raw) {
-                return vec![invalid("a colour as #rrggbb")];
+                return vec![invalid("a color as #rrggbb")];
             }
         }
-        // A checkbox's value is checked by `bool`'s `FormValue` impl, a file's
-        // bytes never reach this crate, and a hidden field carries whatever the
+        // The `FormValue` impl of `bool` checks a checkbox value. The bytes of
+        // a file never reach this crate. A hidden field carries whatever the
         // form put there.
         Control::Checkbox | Control::File(_) | Control::Hidden => {}
     }
@@ -80,8 +78,8 @@ fn check_pattern(pattern: Option<&'static str>, raw: &str, errors: &mut Vec<Fiel
     }
 }
 
-/// HTML counts length in UTF-16 code units; counting scalar values is close
-/// enough and never surprises a caller writing plain text.
+/// HTML counts length in UTF-16 code units. A count of scalar values is close
+/// enough, and it never surprises a caller who writes plain text.
 fn check_length(
     minlength: Option<usize>,
     maxlength: Option<usize>,
@@ -101,10 +99,10 @@ fn check_length(
     }
 }
 
-/// `min` / `max` / `step` for `number` and `range`, compared numerically.
+/// `min`, `max` and `step` for `number` and `range`, compared as numbers.
 ///
-/// A value that is not a number at all is left alone: the field's Rust type
-/// rejects it with a better message than any bound could.
+/// This leaves a value that is not a number alone. The field's Rust type
+/// rejects it with a better message than any bound could give.
 fn check_numeric(bounds: &Bounds, raw: &str, errors: &mut Vec<FieldError>) {
     if bounds.is_empty() {
         return;
@@ -134,12 +132,12 @@ fn check_numeric(bounds: &Bounds, raw: &str, errors: &mut Vec<FieldError>) {
     }
 }
 
-/// `min` / `max` for the date and time controls.
+/// `min` and `max` for the date and time controls.
 ///
-/// The value has already been checked against its format, and for every format
-/// HTML uses, lexicographic order *is* chronological order — so a string
-/// comparison is the whole job. `step` is rendered for the browser but has no
-/// server-side meaning without a calendar.
+/// The crate has already checked the value against its format. For every format
+/// HTML uses, string order *is* the order in time, so a string comparison is
+/// the whole job. The crate renders `step` for the browser, but `step` means
+/// nothing on the server without a calendar.
 fn check_chronological(bounds: &Bounds, raw: &str, errors: &mut Vec<FieldError>) {
     if let Some(min) = bounds.min
         && raw < min
@@ -153,7 +151,7 @@ fn check_chronological(bounds: &Bounds, raw: &str, errors: &mut Vec<FieldError>)
     }
 }
 
-/// `step="any"` (and a non-positive step) disables the check.
+/// `step="any"`, and a step of zero or less, turn the check off.
 fn parse_step(step: &str) -> Option<f64> {
     if step.eq_ignore_ascii_case("any") {
         return None;
@@ -167,19 +165,19 @@ fn parse_step(step: &str) -> Option<f64> {
 fn on_step(value: f64, base: f64, step: f64) -> bool {
     let steps = (value - base) / step;
     let nearest = steps.round();
-    // Relative tolerance: 0.1 + 0.2 must still count as being on a 0.1 grid.
+    // A relative tolerance: 0.1 + 0.2 must still sit on a 0.1 grid.
     (steps - nearest).abs() <= 1e-9 * steps.abs().max(1.0)
 }
 
 /// Whether the whole value matches an HTML `pattern`.
 ///
-/// Without the `pattern` feature the attribute is still rendered — and so still
-/// enforced by the browser — but not re-checked here.
+/// Without the `pattern` feature, the crate still renders the attribute, so the
+/// browser still enforces it. This module then checks nothing.
 #[cfg(feature = "pattern")]
 fn matches_pattern(pattern: &str, value: &str) -> bool {
     match compiled(pattern) {
-        // An un-compilable pattern must not reject everything the user types;
-        // the browser remains the only enforcement in that case.
+        // A pattern that does not compile must not reject everything the user
+        // types. The browser is then the only place that enforces it.
         None => true,
         Some(re) => re.is_match(value),
     }
@@ -213,10 +211,10 @@ fn compiled(pattern: &str) -> Option<std::sync::Arc<regex_lite::Regex>> {
 }
 
 impl TextFormat {
-    /// What this format expected, if `raw` is not in that shape.
+    /// What this format expected, if `raw` does not have that shape.
     ///
-    /// `Text`, `Password`, `Tel` and `Search` accept anything: HTML asks the
-    /// browser for nothing more, so neither does the server.
+    /// `Text`, `Password`, `Tel` and `Search` accept anything. HTML asks the
+    /// browser for nothing more, so the server asks for nothing more either.
     fn check(self, raw: &str) -> Option<&'static str> {
         match self {
             TextFormat::Text | TextFormat::Password | TextFormat::Tel | TextFormat::Search => None,
@@ -259,16 +257,16 @@ impl TemporalFormat {
 
 /// The format checks a control's type implies.
 ///
-/// Deliberately dependency-free and no stricter than the HTML specification:
-/// the aim is to reject what a browser would have refused to submit, not to
-/// decide whether an address can receive mail.
+/// These use no dependency, and they are no stricter than the HTML
+/// specification. The aim is to reject what a browser would refuse to submit,
+/// not to decide whether an address can receive mail.
 ///
-/// Numeric controls are left out on purpose — the field's Rust type already
-/// rejects what it cannot represent, with a better message than a generic
-/// "that is not a number".
+/// The numeric controls are missing on purpose. The field's Rust type already
+/// rejects what it cannot hold, and it says more than a general "that is not a
+/// number".
 mod format {
-    /// The HTML "valid email address" production, which is intentionally more
-    /// permissive than RFC 5322.
+    /// The HTML "valid email address" production, which accepts more than
+    /// RFC 5322 does, on purpose.
     pub fn is_email(value: &str) -> bool {
         const LOCAL_PUNCTUATION: &str = ".!#$%&'*+/=?^_`{|}~-";
         let Some((local, domain)) = value.split_once('@') else {
@@ -280,8 +278,8 @@ mod format {
         let local_ok = local
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || LOCAL_PUNCTUATION.contains(c));
-        // A second `@` lands in the domain, where it is not an allowed label
-        // character, so it is rejected by the label check below.
+        // A second `@` lands in the domain, where it is not a legal label
+        // character. The label check below therefore rejects it.
         local_ok && domain.split('.').all(is_domain_label)
     }
 
@@ -346,8 +344,7 @@ mod format {
             return false;
         };
         match digits(day, 2) {
-            // A calendar check, so that 2026-02-31 is rejected like the browser
-            // would reject it.
+            // A calendar check, so this rejects 2026-02-31 as a browser does.
             Some(day) => day >= 1 && day <= days_in_month(year, month),
             None => false,
         }
@@ -388,7 +385,7 @@ mod format {
     }
 
     pub fn is_datetime_local(value: &str) -> bool {
-        // The HTML spec allows a space in place of the `T`.
+        // The HTML specification allows a space in place of the `T`.
         let Some((date, time)) = value.split_once(['T', ' ']) else {
             return false;
         };
@@ -408,8 +405,8 @@ mod format {
         }
     }
 
-    /// ISO 8601 long years (53 weeks) start on a Thursday, or on a Wednesday in
-    /// a leap year.
+    /// An ISO 8601 long year has 53 weeks. It starts on a Thursday, or on a
+    /// Wednesday in a leap year.
     fn weeks_in_year(year: u32) -> u32 {
         let jan_1 = day_of_week(year, 1, 1);
         if jan_1 == 4 || (is_leap(year) && jan_1 == 3) {
@@ -419,7 +416,7 @@ mod format {
         }
     }
 
-    /// Zeller-style day of week, 0 = Sunday.
+    /// The day of the week, Zeller style, where 0 is Sunday.
     fn day_of_week(year: u32, month: u32, day: u32) -> u32 {
         const OFFSETS: [u32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
         let year = if month < 3 { year - 1 } else { year };
@@ -434,7 +431,7 @@ mod format {
     }
 }
 
-/// The error produced for a required field that arrived missing or blank.
+/// The error for a required field that arrived missing or blank.
 pub fn required_error(_spec: &FieldSpec) -> FieldError {
     FieldError::new(ErrorKind::Required)
 }
@@ -444,14 +441,14 @@ pub fn required_error(_spec: &FieldSpec) -> FieldError {
 /// What a `#[field(validate = ...)]` function may return.
 ///
 /// Whichever shape the function has, the check runs against the field's own
-/// Rust type — `Option<T>` and `Vec<T>` included — and only after the value
-/// has survived the constraints in the spec.
+/// Rust type, `Option<T>` and `Vec<T>` included. It runs only after the value
+/// passes the constraints in the spec.
 ///
 /// | Return type | Rejects when | Message |
 /// |---|---|---|
 /// | `bool` | `false` | the built-in one for [`ErrorKind::Custom`] |
 /// | `Result<(), &'static str \| String \| Cow>` | `Err` | the text returned |
-/// | `Result<(), Text>` | `Err` | the text — or the i18n key — returned |
+/// | `Result<(), Text>` | `Err` | the text, or the i18n key, returned |
 /// | `Result<(), FieldError>` | `Err` | whatever the error carries |
 ///
 /// ```
@@ -459,7 +456,7 @@ pub fn required_error(_spec: &FieldSpec) -> FieldError {
 ///
 /// #[derive(Form, Debug)]
 /// struct Signup {
-///     // The shortest form: a predicate, and the built-in message.
+///     // The shortest form: a predicate, with the built-in message.
 ///     #[field(validate = is_even)]
 ///     seats: u32,
 ///     // A key, which the error carries as its message *and* as its code.
@@ -483,13 +480,13 @@ pub fn required_error(_spec: &FieldSpec) -> FieldError {
 /// assert_eq!(errors.field("username").next().unwrap().code(), Some("signup.username.reserved"));
 /// ```
 pub trait FieldValidation {
-    /// The error to attach to the field, or `None` when the value passed.
+    /// The error to put on the field, or `None` when the value passed.
     fn into_field_error(self) -> Option<FieldError>;
 }
 
 impl FieldValidation for bool {
-    /// A predicate says only whether the value is acceptable, so a rejection
-    /// carries the built-in message and no code.
+    /// A predicate says only whether the value is acceptable. A rejection
+    /// therefore carries the built-in message and no code.
     fn into_field_error(self) -> Option<FieldError> {
         (!self).then(|| FieldError::new(ErrorKind::Custom { code: None }))
     }
@@ -503,9 +500,9 @@ impl<E: Into<FieldError>> FieldValidation for Result<(), E> {
 
 /// What a `#[form(validate = ...)]` function may return.
 ///
-/// The same shapes as [`FieldValidation`], plus the ones that name a field:
-/// a `(field, message)` pair, or a whole [`FormErrors`] built by the function
-/// itself. A message that names no field belongs to the form as a whole.
+/// It takes the same shapes as [`FieldValidation`], plus the ones that name a
+/// field: a `(field, message)` pair, or a whole [`FormErrors`] the function
+/// built itself. A message that names no field belongs to the whole form.
 ///
 /// ```
 /// use html_form::{Form, FormErrors};
@@ -521,7 +518,7 @@ impl<E: Into<FieldError>> FieldValidation for Result<(), E> {
 ///     if form.password == form.confirm {
 ///         Ok(())
 ///     } else {
-///         // Attached to the field that can be corrected, not to the form.
+///         // Attach it to the field the user can correct, not to the form.
 ///         Err(("confirm", "The two passwords do not match.").into())
 ///     }
 /// }
@@ -530,7 +527,7 @@ impl<E: Into<FieldError>> FieldValidation for Result<(), E> {
 /// assert!(errors.has_field("confirm"));
 /// ```
 pub trait FormValidation {
-    /// The errors to fold into the parse, or `None` when the form passed.
+    /// The errors to add to the parse, or `None` when the form passed.
     fn into_form_errors(self) -> Option<FormErrors>;
 }
 
@@ -550,17 +547,18 @@ impl<E: Into<FormErrors>> FormValidation for Result<(), E> {
 
 /// What `#[field(validate = ...)]` may name.
 ///
-/// [`FieldValidation`] says what a validator may *return*; this says what it may
-/// *take*. Either arity will do, and which one was written is read off the
-/// function itself:
+/// [`FieldValidation`] says what a validator may *return*. This says what it
+/// may *take*. Either arity works, and the crate reads which one you wrote off
+/// the function itself:
 ///
-/// | Signature | Called with |
+/// | Signature | The crate calls it with |
 /// |---|---|
 /// | `fn(&T) -> impl FieldValidation` | the field's value |
 /// | `fn(&T, &Context) -> impl FieldValidation` | the value and the context |
 ///
-/// `T` is the field's own Rust type, `Option<T>` and `Vec<T>` included, so a
-/// validator can check emptiness or cardinality as well as the value.
+/// `T` is the field's own Rust type, `Option<T>` and `Vec<T>` included. A
+/// validator can therefore check whether a field is empty, and how many values
+/// it holds, as well as the value itself.
 ///
 /// ```
 /// use html_form::{Form, Text};
@@ -570,7 +568,7 @@ impl<E: Into<FormErrors>> FormValidation for Result<(), E> {
 /// #[derive(Form, Debug)]
 /// #[form(context = Db)]
 /// struct Signup {
-///     // Takes the context: only the database knows what is left.
+///     // Takes the context, because only the database knows what is free.
 ///     #[field(validate = is_available)]
 ///     username: String,
 ///     // Takes only the value, as it always could.
@@ -594,7 +592,7 @@ impl<E: Into<FormErrors>> FormValidation for Result<(), E> {
 /// assert!(errors.has_field("username") && errors.has_field("seats"));
 /// ```
 pub trait FieldValidator<T, C, M> {
-    /// The error to attach to the field, or `None` when the value passed.
+    /// The error to put on the field, or `None` when the value passed.
     fn check(&self, value: &T, context: &C) -> Option<FieldError>;
 }
 
@@ -618,15 +616,15 @@ where
     }
 }
 
-/// What `#[form(validate = ...)]` may name: [`FieldValidator`] for the whole
-/// assembled struct, returning anything [`FormValidation`] accepts.
+/// What `#[form(validate = ...)]` may name: a [`FieldValidator`] for the whole
+/// struct, which returns anything [`FormValidation`] accepts.
 ///
-/// | Signature | Called with |
+/// | Signature | The crate calls it with |
 /// |---|---|
 /// | `fn(&Self) -> impl FormValidation` | the parsed form |
 /// | `fn(&Self, &Context) -> impl FormValidation` | the form and the context |
 pub trait FormValidator<T, C, M> {
-    /// The errors to fold into the parse, or `None` when the form passed.
+    /// The errors to add to the parse, or `None` when the form passed.
     fn check(&self, value: &T, context: &C) -> Option<FormErrors>;
 }
 

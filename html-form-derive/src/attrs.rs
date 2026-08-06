@@ -1,4 +1,4 @@
-//! Parsing of `#[form(...)]`, `#[field(...)]`, `#[option(...)]` and
+//! How the crate parses `#[form(...)]`, `#[field(...)]`, `#[option(...)]` and
 //! `#[choice(...)]`.
 
 use proc_macro2::{Span, TokenStream};
@@ -7,25 +7,24 @@ use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{Attribute, Error, Ident, Lit, LitStr, Path, Result, Token, token};
 
-/// A string a person reads: written either as plain text or as `t("key")`,
+/// A string a person reads. You write it either as plain text or as `t("key")`,
 /// which names an entry in whatever i18n backend the application uses.
 ///
-/// `t("…")` is spelled with parentheses rather than the prefix form `t"…"`
-/// because a prefixed string literal is a *lexer* error in Rust 2021 and later:
-/// the tokens never reach a proc macro at all.
+/// `t("…")` uses parentheses, not the prefix form `t"…"`. A prefixed string
+/// literal is a *lexer* error in Rust 2021 and later, so the tokens never reach
+/// a proc macro.
 pub struct TextAttr {
     pub content: String,
-    /// Whether `content` is an i18n key rather than the text itself.
+    /// Whether `content` is an i18n key and not the text itself.
     pub is_key: bool,
 }
 
 impl TextAttr {
     /// The `Text` const this becomes.
     ///
-    /// Written as a struct literal rather than as `Text::literal(…)`: a choice
-    /// list is an `&[Choice]` rvalue that has to be promoted to a `'static`,
-    /// and a call — even to a `const fn` — is not something the compiler will
-    /// promote.
+    /// This is a struct literal, not a `Text::literal(…)` call. A choice list
+    /// is an `&[Choice]` rvalue that the compiler has to promote to `'static`.
+    /// The compiler will not promote a call, not even a call to a `const fn`.
     pub fn tokens(&self) -> TokenStream {
         let content = &self.content;
         let is_key = self.is_key;
@@ -35,8 +34,8 @@ impl TextAttr {
         })
     }
 
-    /// True for the empty *literal*, which is how "render nothing here" is
-    /// written. An empty key is rejected at parse time, so it never gets here.
+    /// True for the empty *literal*, which is how you write "render nothing
+    /// here". The parser rejects an empty key, so one never reaches this.
     pub fn is_blank(&self) -> bool {
         !self.is_key && self.content.is_empty()
     }
@@ -77,8 +76,8 @@ impl Parse for TextAttr {
     }
 }
 
-/// Anything usable as an attribute value, flattened to the string that ends up
-/// in the generated HTML. `min = 18` and `min = "18"` mean the same thing.
+/// Anything you can use as an attribute value, flattened to the string that
+/// reaches the generated HTML. `min = 18` and `min = "18"` mean the same thing.
 pub fn lit_to_string(lit: &Lit) -> Result<String> {
     Ok(match lit {
         Lit::Str(v) => v.value(),
@@ -95,8 +94,8 @@ pub fn lit_to_string(lit: &Lit) -> Result<String> {
     })
 }
 
-/// One entry of an `attr(...)` list: something the crate itself has no opinion
-/// about, written onto the element exactly as given.
+/// One entry of an `attr(...)` list: something the crate has no opinion about.
+/// The crate writes it onto the element exactly as you gave it.
 pub struct CustomAttr {
     pub name: String,
     /// `None` for a bare boolean attribute.
@@ -107,7 +106,7 @@ pub struct CustomAttr {
 impl Parse for CustomAttr {
     fn parse(input: ParseStream) -> Result<Self> {
         // A dashed name is not an ident, so `"hx-post" = "/x"` is the general
-        // form; a bare word is accepted for the names that happen to be idents.
+        // form. A bare word works for a name that is already an ident.
         let (name, span) = if input.peek(LitStr) {
             let lit: LitStr = input.parse()?;
             (lit.value(), lit.span())
@@ -136,7 +135,7 @@ impl CustomAttr {
     }
 }
 
-/// A name the built-in renderer already writes, and the key that sets it —
+/// A name the built-in renderer already writes, and the key that sets it. It is
 /// `None` where the crate derives the attribute and nothing can name it.
 type Reserved = (&'static str, Option<&'static str>);
 
@@ -180,10 +179,10 @@ const FIELD_RESERVED: &[Reserved] = &[
     ("aria-describedby", None),
 ];
 
-/// Parse one `attr(...)` group, appending to what earlier groups collected.
+/// Parse one `attr(...)` group and add to what earlier groups collected.
 ///
-/// `owner` is the attribute the group was written in, so a rejected name can
-/// point at the dedicated key that does the same job.
+/// `owner` is the attribute that holds the group, so a rejected name can point
+/// at the dedicated key that does the same job.
 fn parse_custom_attrs(
     meta: &syn::meta::ParseNestedMeta<'_>,
     owner: &str,
@@ -205,8 +204,8 @@ fn parse_custom_attrs(
     Ok(())
 }
 
-/// Reject a name that would not survive being written into markup, and one the
-/// crate already writes itself.
+/// Reject a name that markup could not carry, and a name the crate already
+/// writes itself.
 fn check_attr_name(attr: &CustomAttr, owner: &str, reserved: &[Reserved]) -> Result<()> {
     if attr.name.is_empty() {
         return Err(Error::new(attr.span, "an attribute name cannot be empty"));
@@ -253,10 +252,10 @@ pub struct FormAttrs {
     pub submit: Option<TextAttr>,
     pub novalidate: bool,
     pub validate: Option<Path>,
-    /// `context = Type`: what this form's own functions are handed. `None`
-    /// means `()`.
+    /// `context = Type`: what this form's own functions receive. `None` means
+    /// `()`.
     pub context: Option<syn::Type>,
-    /// `attr(...)` entries, in the order they were written.
+    /// `attr(...)` entries, in the order you wrote them.
     pub custom: Vec<CustomAttr>,
 }
 
@@ -333,7 +332,7 @@ impl Parse for OptionAttr {
             if input.is_empty() {
                 break;
             }
-            // The label may be given positionally, as `#[option("de", "Germany")]`.
+            // The label may come by position, as `#[option("de", "Germany")]`.
             if input.peek(LitStr) || (input.peek(Ident) && input.peek2(token::Paren)) {
                 out.label = Some(input.parse()?);
                 continue;
@@ -364,18 +363,17 @@ impl Parse for OptionAttr {
     }
 }
 
-/// What a control is, and what it accepts — the keys `#[field(...)]` and
-/// `#[value(...)]` have in common.
+/// What a control is, and what it accepts. These are the keys that
+/// `#[field(...)]` and `#[value(...)]` share.
 ///
 /// They are one struct because they are one question: which control this is,
-/// and what it constrains. A field asks it about itself; a type asks it about
-/// every field it will ever be. Both hand the answer to the same
-/// `__private::control`, which is where an attribute finds its place or fails
-/// to.
+/// and what it constrains. A field asks that about itself. A type asks it about
+/// every field it will ever be. Both pass the answer to the same
+/// `__private::control`, where an attribute finds its place or fails to.
 #[derive(Default)]
 pub struct Constraints {
-    /// `type = "email"`, with its span, so an unknown one is reported where it
-    /// was written.
+    /// `type = "email"`, with its span, so the compiler reports an unknown type
+    /// where you wrote it.
     pub kind: Option<(String, Span)>,
     pub multiple: Option<bool>,
     pub pattern: Option<String>,
@@ -391,13 +389,13 @@ pub struct Constraints {
 }
 
 impl Constraints {
-    /// The keys, named once so that neither attribute's "unknown key" message
-    /// can drift from what it actually accepts.
+    /// The keys, named once, so the "unknown key" message of each attribute
+    /// always matches what that attribute accepts.
     pub const KEYS: &'static str = "type, multiple, pattern, minlength, maxlength, min, max, step, accept, rows, cols, \
          choices";
 
-    /// Take `key` if it is one of these, and say whether it was — leaving the
-    /// caller to handle the keys that are its own.
+    /// Take `key` if it is one of these, and say whether it was. The caller
+    /// handles the keys that belong to it.
     pub fn parse(&mut self, key: &str, meta: &syn::meta::ParseNestedMeta<'_>) -> Result<bool> {
         match key {
             "type" | "kind" => {
@@ -432,8 +430,8 @@ pub struct FieldAttrs {
     pub label: Option<TextAttr>,
     pub required: Option<bool>,
     pub default: Option<String>,
-    /// `default = path`: a function called once per render, rather than a value
-    /// written into the spec.
+    /// `default = path`: a function the crate calls once per render, not a
+    /// value written into the spec.
     pub default_fn: Option<Path>,
     pub placeholder: Option<TextAttr>,
     pub help: Option<TextAttr>,
@@ -444,17 +442,17 @@ pub struct FieldAttrs {
     pub readonly: bool,
     pub autofocus: bool,
     pub validate: Option<Path>,
-    /// `from_str`: convert this field with the type's own `FromStr`/`Display`
-    /// rather than with a `FormValue` impl it does not have.
+    /// `from_str`: convert this field with the type's own `FromStr` and
+    /// `Display`, because it has no `FormValue` impl.
     pub from_str: bool,
     pub flatten: bool,
     pub prefix: Option<String>,
     pub legend: Option<TextAttr>,
     pub skip: bool,
     pub options: Vec<OptionAttr>,
-    /// What the field's control is, and what it accepts.
+    /// Which control the field is, and what it accepts.
     pub constraints: Constraints,
-    /// `attr(...)` entries, in the order they were written.
+    /// `attr(...)` entries, in the order you wrote them.
     pub custom: Vec<CustomAttr>,
 }
 
@@ -478,8 +476,8 @@ impl FieldAttrs {
             }
 
             attr.parse_nested_meta(|meta| {
-                // `type` is a keyword, which `parse_nested_meta` accepts in a
-                // path but `get_ident` still reports by name.
+                // `type` is a keyword. `parse_nested_meta` accepts it in a
+                // path, and `get_ident` still reports it by name.
                 let key = meta
                     .path
                     .get_ident()
@@ -493,7 +491,7 @@ impl FieldAttrs {
                     "label" => out.label = Some(meta.value()?.parse()?),
                     "required" => out.required = Some(parse_flag(&meta)?),
                     "optional" => out.required = Some(!parse_flag(&meta)?),
-                    // A literal is the value itself; anything else names a
+                    // A literal is the value itself. Anything else names a
                     // function that produces one at render time.
                     "default" => {
                         let value = meta.value()?;
@@ -552,17 +550,17 @@ impl FieldAttrs {
 
 /// `#[value(...)]` on a `#[derive(FormValue)]` type.
 ///
-/// The subset of `#[field(...)]` that describes a *value* rather than its place
-/// in a form: which control it is and what it constrains, what it defaults to,
-/// and the check it makes of itself. A label or a placeholder is the field's,
-/// not the type's — the same type is a "Work email" on one form and a
-/// "Recipient" on the next.
+/// The part of `#[field(...)]` that describes a *value*, not its place in a
+/// form. It says which control the value is, what it constrains, what it
+/// defaults to, and the check it makes of itself. A label or a placeholder
+/// belongs to the field, not to the type. The same type is a "Work email" on
+/// one form and a "Recipient" on the next.
 #[derive(Default)]
 pub struct ValueAttrs {
     pub default: Option<String>,
     pub validate: Option<Path>,
-    /// `from_str`: the type converts itself with its own `FromStr`/`Display`,
-    /// rather than through the one value it wraps.
+    /// `from_str`: the type converts itself with its own `FromStr` and
+    /// `Display`, not through the one value it wraps.
     pub from_str: bool,
     pub constraints: Constraints,
 }
@@ -581,9 +579,9 @@ impl ValueAttrs {
                     return Ok(());
                 }
                 match key.as_str() {
-                    // Only a literal: a type's default is an associated const,
-                    // and a const cannot call a function. A default that has to
-                    // be produced per render belongs to the field, which is
+                    // A literal only. A type's default is an associated const,
+                    // and a const cannot call a function. A default the crate
+                    // has to produce per render belongs to the field, which is
                     // where the context that produces it reaches.
                     "default" => {
                         let value = meta.value()?;
@@ -613,7 +611,7 @@ impl ValueAttrs {
     }
 }
 
-/// A bare word (`required`) or an explicit `required = false`.
+/// A bare word, such as `required`, or an explicit `required = false`.
 fn parse_flag(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<bool> {
     if meta.input.peek(Token![=]) {
         Ok(meta.value()?.parse::<syn::LitBool>()?.value())
@@ -662,7 +660,7 @@ impl ChoiceAttrs {
 
 // ─── Token helpers ────────────────────────────────────────────────────────────
 
-/// `Option<&'static str>` — `Copy`, so it can be merged in a `const fn`.
+/// `Option<&'static str>`. It is `Copy`, so a `const fn` can merge it.
 pub fn opt_str(value: &Option<String>) -> TokenStream {
     match value {
         Some(value) => quote!(::core::option::Option::Some(#value)),

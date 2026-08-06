@@ -1,4 +1,4 @@
-//! `#[derive(FormChoice)]` — a fieldless enum becomes a `<select>`.
+//! `#[derive(FormChoice)]`. A fieldless enum becomes a `<select>`.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -46,8 +46,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             .value
             .clone()
             .unwrap_or_else(|| kebab_case(&variant_ident.to_string()));
-        // An explicit label may be an i18n key; the one derived from the
-        // variant's own name is necessarily literal text.
+        // A label you write may be an i18n key. A label derived from the
+        // variant's own name is always literal text.
         let label = match &attrs.label {
             Some(label) => label.tokens(),
             None => {

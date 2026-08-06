@@ -1,12 +1,13 @@
 //! The built-in HTML renderer: a [`FormView`] written out as markup.
 //!
-//! Enabled by the `html` feature, which is on by default. Turning it off drops
-//! [`FormView::to_html`], [`FieldView::to_html`], the `Display` impls and
-//! [`escape`], and leaves the view as what it always was — a flat, serialisable
-//! description a template engine renders. Nothing else in the crate depends on
-//! this module: parsing, validation and [`FormView`] itself are unaffected.
+//! The `html` feature turns it on, and that feature is on by default. Turn it
+//! off and you lose [`FormView::to_html`], [`FieldView::to_html`], the
+//! `Display` impls and [`escape`]. The view stays what it always was: a flat,
+//! serializable description that a template engine renders. Nothing else in the
+//! crate depends on this module. Parsing, validation and [`FormView`] itself do
+//! not change.
 //!
-//! The markup is plain and unstyled; every element carries a `html-form__*`
+//! The markup is plain and unstyled. Every element carries a `html-form__*`
 //! class to hook CSS onto.
 
 use std::borrow::Cow;
@@ -16,11 +17,11 @@ use crate::kind::FieldKind;
 use crate::view::{AttrView, FieldView, FormView};
 
 impl FormView {
-    /// Render the complete `<form>` element.
+    /// Render the whole `<form>` element.
     ///
-    /// The markup is plain and unstyled; every element carries a `html-form__*`
-    /// class to hook CSS onto. Reach for a template engine and the serialised
-    /// view when you need control over the markup itself.
+    /// The markup is plain and unstyled. Every element carries a `html-form__*`
+    /// class to hook CSS onto. Use a template engine and the serialized view
+    /// when you need control over the markup itself.
     pub fn to_html(&self) -> String {
         let mut out = String::with_capacity(1024);
         out.push_str("<form");
@@ -49,8 +50,8 @@ impl FormView {
             out.push_str("  </ul>\n");
         }
 
-        // Consecutive fields carrying the same group legend are wrapped in one
-        // <fieldset>, which is how a flattened sub-form keeps its identity.
+        // One <fieldset> wraps the fields that follow each other under the same
+        // group legend. That is how a flattened sub-form keeps its identity.
         let mut open_group: Option<&str> = None;
         for field in &self.fields {
             let group = field.group.as_deref();
@@ -85,7 +86,7 @@ impl fmt::Display for FormView {
 }
 
 impl FieldView {
-    /// Render just the control, without label, help text or errors.
+    /// Render only the control, with no label, help text or errors.
     pub fn control_html(&self) -> String {
         let mut out = String::with_capacity(self.html_size());
         self.write_control(&mut out);
@@ -99,8 +100,8 @@ impl FieldView {
         out
     }
 
-    /// Roughly what this field's markup will come to, so the buffer it is
-    /// written into does not have to grow its way there.
+    /// About how long this field's markup will be, so the buffer it goes into
+    /// does not have to grow step by step.
     fn html_size(&self) -> usize {
         256 + self.choices.len() * 96 + self.errors.len() * 64
     }
@@ -121,8 +122,8 @@ impl FieldView {
         escape_into(out, &self.name);
         out.push_str("\">\n");
 
-        // A checkbox (or a lone radio) is labelled after the box; a group is
-        // captioned before its options.
+        // The label of a checkbox, or of a lone radio, comes after the box. The
+        // caption of a group comes before its options.
         let label_after = self.kind == FieldKind::Checkbox
             || (matches!(self.kind, FieldKind::Radio | FieldKind::CheckboxGroup)
                 && self.choices.is_empty());
@@ -161,8 +162,8 @@ impl FieldView {
 
     fn write_label(&self, out: &mut String) {
         let Some(label) = &self.label else { return };
-        // A group labels each option; the group itself gets a plain caption
-        // rather than a `for=` that points at only its first control.
+        // A group labels each option. The group itself gets a plain caption,
+        // not a `for=` that points at its first control alone.
         if matches!(self.kind, FieldKind::Radio | FieldKind::CheckboxGroup)
             && !self.choices.is_empty()
         {
@@ -196,14 +197,14 @@ impl FieldView {
         }
     }
 
-    /// Attributes shared by every control.
+    /// The attributes every control shares.
     fn write_common(&self, out: &mut String, id: &str) {
         attr(out, "name", &self.name);
         attr(out, "id", id);
-        // A hidden control is barred from browser validation, and on a checkbox
-        // group `required` would mean "tick *this* box" rather than "tick one
-        // of them" — the group carries `aria-required` instead. The server
-        // requires both regardless.
+        // The browser does not validate a hidden control. On a checkbox group,
+        // `required` would mean "tick *this* box", not "tick one of them", so
+        // the group carries `aria-required` instead. The server requires both
+        // either way.
         flag(
             out,
             "required",
@@ -220,8 +221,8 @@ impl FieldView {
         if let Some(describedby) = self.described_by() {
             attr(out, "aria-describedby", &describedby);
         }
-        // Last, so that a custom attribute can never displace one the crate
-        // generated: a repeated attribute is the first one, everywhere.
+        // Last, so a custom attribute can never displace one the crate
+        // generated. Everywhere, a repeated attribute keeps its first value.
         write_attrs(out, &self.attrs);
     }
 
@@ -244,8 +245,8 @@ impl FieldView {
             FieldKind::Checkbox | FieldKind::CheckboxGroup | FieldKind::Radio
         ) {
             flag(out, "checked", self.checked);
-            // A checkbox with no value submits "on"; both are understood when
-            // the value comes back.
+            // A checkbox with no value submits "on". The crate understands both
+            // when the value comes back.
             if matches!(self.kind, FieldKind::Radio | FieldKind::CheckboxGroup) {
                 attr_opt(out, "value", self.value.as_deref());
             }
@@ -276,8 +277,8 @@ impl FieldView {
         flag(out, "multiple", self.multiple);
         out.push_str(">\n");
 
-        // A single-valued, non-required select needs an empty option so the
-        // user can express "nothing".
+        // A select that takes one value and is not required needs an empty
+        // option, so the user can say "nothing".
         if !self.multiple && !self.required {
             out.push_str("      <option value=\"\"");
             flag(out, "selected", self.values.is_empty());
@@ -340,7 +341,7 @@ impl FieldView {
             attr(out, "aria-labelledby", &self.label_id);
         }
         // The browser cannot enforce "at least one" over a checkbox group, so
-        // this only announces the requirement; the server enforces it.
+        // this only announces the requirement. The server enforces it.
         if self.required {
             attr(out, "aria-required", "true");
         }
@@ -383,21 +384,21 @@ fn attr_opt(out: &mut String, name: &str, value: Option<&str>) {
     }
 }
 
-/// A numeric attribute, written straight into the output rather than through a
-/// `String` of its own.
+/// A numeric attribute. This writes it straight into the output, and not
+/// through a `String` of its own.
 fn attr_num(out: &mut String, name: &str, value: Option<impl fmt::Display>) {
     if let Some(value) = value {
         out.push(' ');
         out.push_str(name);
         out.push_str("=\"");
-        // Writing to a `String` cannot fail, and a number never needs escaping.
+        // A write to a `String` cannot fail, and a number never needs escaping.
         let _ = write!(out, "{value}");
         out.push('"');
     }
 }
 
-/// The `id` of the *n*-th option of a radio or checkbox group: one buffer,
-/// rewound for each option, rather than one `String` per option.
+/// The `id` of the *n*-th option of a radio or checkbox group. This uses one
+/// buffer and rewinds it for each option, in place of one `String` per option.
 struct ChoiceId {
     buffer: String,
     base: usize,
@@ -436,8 +437,8 @@ fn flag(out: &mut String, name: &str, on: bool) {
     }
 }
 
-/// The entity `byte` has to be written as, if any. Every character that needs
-/// escaping is ASCII, so this can look one byte at a time.
+/// The entity to write `byte` as, if there is one. Every character that needs
+/// escaping is ASCII, so this can read one byte at a time.
 const fn entity(byte: u8) -> Option<&'static str> {
     match byte {
         b'&' => Some("&amp;"),
@@ -449,9 +450,9 @@ const fn entity(byte: u8) -> Option<&'static str> {
     }
 }
 
-/// Escape text for use in element content or a double-quoted attribute.
+/// Escape text for element content or for a double-quoted attribute.
 ///
-/// Text with nothing to escape — which is most text — is handed back as it is.
+/// Text with nothing to escape comes back as it is. That is most text.
 pub fn escape(text: &str) -> Cow<'_, str> {
     match text.bytes().position(|byte| entity(byte).is_some()) {
         None => Cow::Borrowed(text),
@@ -464,8 +465,8 @@ pub fn escape(text: &str) -> Cow<'_, str> {
     }
 }
 
-/// Append `text`, escaped, copying the stretches between entities in one go
-/// rather than a character at a time.
+/// Add `text`, escaped. This copies each stretch between two entities in one
+/// go, not a character at a time.
 fn escape_into(out: &mut String, text: &str) {
     let mut plain = 0;
     for (at, byte) in text.bytes().enumerate() {

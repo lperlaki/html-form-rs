@@ -1,11 +1,11 @@
-//! The kind of control a field is rendered as.
+//! The kind of control a field renders as.
 
 use serde::{Deserialize, Serialize};
 
-/// Which HTML control a field maps to.
+/// Which HTML control a field becomes.
 ///
-/// Most variants are `<input type="...">`; [`FieldKind::Textarea`] and
-/// [`FieldKind::Select`] are their own elements.
+/// Most variants are an `<input type="...">`. [`FieldKind::Textarea`] and
+/// [`FieldKind::Select`] are elements of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FieldKind {
@@ -18,7 +18,7 @@ pub enum FieldKind {
     Number,
     Range,
     Checkbox,
-    /// A set of checkboxes sharing one name — the multi-valued counterpart of
+    /// A set of checkboxes that share one name. It is the many-valued twin of
     /// [`FieldKind::Radio`].
     CheckboxGroup,
     Radio,
@@ -35,7 +35,8 @@ pub enum FieldKind {
 }
 
 impl FieldKind {
-    /// The value of the `type` attribute, or `None` for `<textarea>` / `<select>`.
+    /// The value of the `type` attribute. A `<textarea>` and a `<select>` get
+    /// `None`.
     pub const fn input_type(self) -> Option<&'static str> {
         use FieldKind::*;
         Some(match self {
@@ -61,7 +62,7 @@ impl FieldKind {
         })
     }
 
-    /// The tag name used to render this control.
+    /// The tag name this control renders as.
     pub const fn element(self) -> &'static str {
         match self {
             FieldKind::Textarea => "textarea",
