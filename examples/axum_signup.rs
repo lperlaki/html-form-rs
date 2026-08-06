@@ -33,11 +33,15 @@ struct Signup {
     )]
     password: String,
 
-    #[field(label = "Age", min = 18, max = 120)]
+    #[field(label = "Age", min = 18, max = 120, validate=valid)]
     age: Option<u32>,
 
     #[field(label = "Subscribe to the newsletter", default = true)]
     newsletter: bool,
+}
+
+fn valid(val: &Option<u32>) -> bool {
+    matches!(val, Some(v) if v % 3 == 0)
 }
 
 #[tokio::main]
