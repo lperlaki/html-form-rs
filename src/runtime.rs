@@ -329,6 +329,9 @@ pub mod __private {
             return Control::Choose(ChooseControl {
                 style: match explicit {
                     Some(Control::Choose(c)) => c.style,
+                    // `type = "checkbox"` alongside options means one box per
+                    // option, not the lone boolean control.
+                    Some(Control::Checkbox) => ChoiceStyle::Checkbox,
                     _ => ChoiceStyle::Select,
                 },
                 multiple: false,
@@ -340,6 +343,13 @@ pub mod __private {
             // must not throw away the variants it is choosing between.
             (Some(Control::Choose(e)), Control::Choose(i)) => Control::Choose(ChooseControl {
                 style: e.style,
+                multiple: i.multiple,
+                choices: i.choices,
+            }),
+            // `type = "checkbox"` on something already choosing between
+            // variants is a checkbox *group*, not a lone boolean box.
+            (Some(Control::Checkbox), Control::Choose(i)) => Control::Choose(ChooseControl {
+                style: ChoiceStyle::Checkbox,
                 multiple: i.multiple,
                 choices: i.choices,
             }),
@@ -410,8 +420,13 @@ pub mod __private {
                 deny_accept(&o);
                 deny_size(&o);
                 Control::Choose(ChooseControl {
-                    // A radio group is single-valued however the field is typed.
-                    multiple: o.multiple && matches!(choose.style, ChoiceStyle::Select),
+                    multiple: match choose.style {
+                        ChoiceStyle::Select => o.multiple,
+                        // A radio group is single-valued however the field is
+                        // typed, and a checkbox group multi-valued.
+                        ChoiceStyle::Radio => false,
+                        ChoiceStyle::Checkbox => true,
+                    },
                     ..choose
                 })
             }

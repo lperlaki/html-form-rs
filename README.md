@@ -325,6 +325,7 @@ at render time, alongside `set_choices`.
 | `bool` | `checkbox` — absent means `false` | no |
 | `Option<T>` | as `T` | no |
 | `Vec<T>` | as `T`; every value submitted under the name is collected, and `multiple` is rendered on the controls that accept one (`select`, `email`, `file`) | no |
+| `Vec<T>` + `type = "checkbox"` | one checkbox per option, sharing the name | no |
 | `#[derive(FormChoice)] enum` | `select` with the variants as options | yes |
 | your own type | whatever its `FormValue` impl says | yes |
 
@@ -384,7 +385,7 @@ accepts — nothing else can name them.
 | `Textarea` | `minlength`, `maxlength`, `rows`, `cols` — no `pattern`, which `<textarea>` genuinely lacks |
 | `Number` | `format` (`number`/`range`) and `Bounds` (`min`/`max`/`step`, compared numerically) |
 | `Temporal` | `format` (`date`, `time`, `datetime-local`, `month`, `week`) and `Bounds`, compared chronologically |
-| `Choose` | `style` (`select`/`radio`), `multiple`, the choice list |
+| `Choose` | `style` (`select`/`radio`/`checkbox`), `multiple`, the choice list |
 | `File` | `accept`, `multiple` |
 | `Checkbox`, `Color`, `Hidden` | nothing |
 
@@ -398,6 +399,34 @@ but the type is not discarded: `#[field(type = "range", max = 10)]` on a `u32`
 keeps the `min = "0"` and `step = "1"` the integer implies, and
 `#[field(type = "radio")]` on a `FormChoice` enum restyles the control without
 losing its variants.
+
+## Choosing between options
+
+A set of options renders three ways, and the style decides how many values the
+field can carry:
+
+| `type` | Markup | Values |
+|---|---|---|
+| `select` (default) | `<select>`, with `multiple` when the field is a `Vec` | one, or many |
+| `radio` | one `<input type="radio">` per option | always one |
+| `checkbox` | one `<input type="checkbox">` per option | always many |
+
+`type = "checkbox"` means the lone boolean box on a `bool`, and a checkbox
+*group* on anything that is already choosing between options — a `FormChoice`
+enum, or a field with `choices` / `#[option(...)]`:
+
+```rust
+#[field(type = "checkbox", label = "Notify me about")]
+notify: Vec<Topic>,
+```
+
+A checkbox group is the usable alternative to `<select multiple>`. Two things
+follow from HTML rather than from this crate:
+
+- It is multi-valued whatever the field is typed as, so pair it with a `Vec`.
+- `required` on a checkbox means "tick *this* box", not "tick one of them", so
+  the group renders `aria-required` instead and the requirement is enforced on
+  the server.
 
 ## Server-side validation
 
@@ -414,7 +443,8 @@ server, because a submission can come from anywhere:
 - the control's own type — `email`, `url`, `color` and the date/time formats are
   format-checked, and dates are checked against the calendar, so `2026-02-31` is
   rejected
-- `<select>` and radio values must be one of the declared choices
+- `<select>`, radio and checkbox-group values must be one of the declared
+  choices — every submitted value, for the multi-valued ones
 
 ## Editing an existing record
 

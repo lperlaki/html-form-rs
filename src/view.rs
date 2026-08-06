@@ -122,7 +122,7 @@ pub struct FieldView {
     pub class: Option<String>,
     /// Attributes the crate has no opinion about, in declaration order.
     pub attrs: Vec<AttrView>,
-    /// Options of a `<select>` or radio group.
+    /// Options of a `<select>`, radio group or checkbox group.
     pub choices: Vec<ChoiceView>,
     /// Messages to show under the control.
     pub errors: Vec<String>,
@@ -135,7 +135,7 @@ pub struct FieldView {
     pub error_id: String,
     /// Id of the element carrying this field's help text.
     pub help_id: String,
-    /// Id of the caption naming a radio group.
+    /// Id of the caption naming a radio or checkbox group.
     pub label_id: String,
 }
 
@@ -159,7 +159,7 @@ impl AttrView {
     }
 }
 
-/// One option of a `<select>` or radio group.
+/// One option of a `<select>`, radio group or checkbox group.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChoiceView {
     pub value: String,
@@ -433,12 +433,13 @@ impl FieldView {
         let checked = if control.is_checkable() {
             match values {
                 // A standalone radio is checked when its own value came back;
-                // a radio *group* tracks selection per choice instead.
+                // a radio or checkbox *group* tracks selection per choice
+                // instead.
                 Some(values) => match (kind, values.get(full_name)) {
-                    (FieldKind::Radio, Some(submitted)) => {
+                    (FieldKind::Radio | FieldKind::CheckboxGroup, Some(submitted)) => {
                         spec.default.is_none_or(|own| own == submitted)
                     }
-                    (FieldKind::Radio, None) => false,
+                    (FieldKind::Radio | FieldKind::CheckboxGroup, None) => false,
                     (_, Some(raw)) => {
                         <bool as crate::value::FormValue>::parse_form_value(raw).unwrap_or(true)
                     }
@@ -647,10 +648,11 @@ impl FieldView {
         escape_into(out, &self.name);
         out.push_str("\">\n");
 
-        // A checkbox (or a lone radio) is labelled after the box; a radio group
-        // is captioned before its options.
+        // A checkbox (or a lone radio) is labelled after the box; a group is
+        // captioned before its options.
         let label_after = self.kind == FieldKind::Checkbox
-            || (self.kind == FieldKind::Radio && self.choices.is_empty());
+            || (matches!(self.kind, FieldKind::Radio | FieldKind::CheckboxGroup)
+                && self.choices.is_empty());
         if !label_after {
             self.write_label(out);
         }
@@ -686,9 +688,11 @@ impl FieldView {
 
     fn write_label(&self, out: &mut String) {
         let Some(label) = &self.label else { return };
-        // A radio group labels each option; the group itself gets a plain
-        // caption rather than a `for=` that points at only the first radio.
-        if self.kind == FieldKind::Radio && !self.choices.is_empty() {
+        // A group labels each option; the group itself gets a plain caption
+        // rather than a `for=` that points at only its first control.
+        if matches!(self.kind, FieldKind::Radio | FieldKind::CheckboxGroup)
+            && !self.choices.is_empty()
+        {
             out.push_str("    <span class=\"web-form__label\" id=\"");
             escape_into(out, &self.label_id);
             out.push_str("\">");
@@ -714,6 +718,7 @@ impl FieldView {
             FieldKind::Textarea => self.write_textarea(out),
             FieldKind::Select => self.write_select(out),
             FieldKind::Radio if !self.choices.is_empty() => self.write_radio_group(out),
+            FieldKind::CheckboxGroup if !self.choices.is_empty() => self.write_checkbox_group(out),
             _ => self.write_input(out),
         }
     }
@@ -722,12 +727,14 @@ impl FieldView {
     fn write_common(&self, out: &mut String, id: &str) {
         attr(out, "name", &self.name);
         attr(out, "id", id);
-        // A hidden control is barred from browser validation; the server still
-        // requires it.
+        // A hidden control is barred from browser validation, and on a checkbox
+        // group `required` would mean "tick *this* box" rather than "tick one
+        // of them" — the group carries `aria-required` instead. The server
+        // requires both regardless.
         flag(
             out,
             "required",
-            self.required && self.kind != FieldKind::Hidden,
+            self.required && !matches!(self.kind, FieldKind::Hidden | FieldKind::CheckboxGroup),
         );
         flag(out, "disabled", self.disabled);
         flag(out, "readonly", self.readonly);
@@ -763,11 +770,14 @@ impl FieldView {
         }
         flag(out, "multiple", self.multiple);
 
-        if matches!(self.kind, FieldKind::Checkbox | FieldKind::Radio) {
+        if matches!(
+            self.kind,
+            FieldKind::Checkbox | FieldKind::CheckboxGroup | FieldKind::Radio
+        ) {
             flag(out, "checked", self.checked);
             // A checkbox with no value submits "on"; both are understood when
             // the value comes back.
-            if self.kind == FieldKind::Radio {
+            if matches!(self.kind, FieldKind::Radio | FieldKind::CheckboxGroup) {
                 attr_opt(out, "value", self.value.as_deref());
             }
         } else if self.kind != FieldKind::File {
@@ -851,6 +861,31 @@ impl FieldView {
         for (index, choice) in self.choices.iter().enumerate() {
             let id = format!("{}-{index}", self.id);
             out.push_str("      <label class=\"web-form__radio\"><input type=\"radio\"");
+            self.write_common(out, &id);
+            attr(out, "value", &choice.value);
+            flag(out, "checked", choice.selected);
+            flag(out, "disabled", choice.disabled);
+            out.push('>');
+            escape_into(out, &choice.label);
+            out.push_str("</label>\n");
+        }
+        out.push_str("    </div>");
+    }
+
+    fn write_checkbox_group(&self, out: &mut String) {
+        out.push_str("<div class=\"web-form__checkboxes\" role=\"group\"");
+        if self.label.is_some() {
+            attr(out, "aria-labelledby", &self.label_id);
+        }
+        // The browser cannot enforce "at least one" over a checkbox group, so
+        // this only announces the requirement; the server enforces it.
+        if self.required {
+            attr(out, "aria-required", "true");
+        }
+        out.push_str(">\n");
+        for (index, choice) in self.choices.iter().enumerate() {
+            let id = format!("{}-{index}", self.id);
+            out.push_str("      <label class=\"web-form__checkbox\"><input type=\"checkbox\"");
             self.write_common(out, &id);
             attr(out, "value", &choice.value);
             flag(out, "checked", choice.selected);

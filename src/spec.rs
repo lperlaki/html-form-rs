@@ -132,7 +132,7 @@ impl From<String> for Text {
     }
 }
 
-/// One selectable value of a `<select>` or a radio group.
+/// One selectable value of a `<select>`, a radio group or a checkbox group.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
     pub value: Cow<'static, str>,
@@ -332,11 +332,15 @@ impl TemporalControl {
     };
 }
 
-/// Whether a fixed set of options renders as a menu or as radio buttons.
+/// Whether a fixed set of options renders as a menu, as radio buttons, or as
+/// checkboxes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChoiceStyle {
     Select,
     Radio,
+    /// One checkbox per option, all sharing the field's name. Multi-valued by
+    /// construction, so it is the usable alternative to `<select multiple>`.
+    Checkbox,
 }
 
 /// A control whose value has to be one of a declared set.
@@ -347,7 +351,9 @@ pub enum ChoiceStyle {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChooseControl {
     pub style: ChoiceStyle,
-    /// `<select multiple>`. A radio group is single-valued by definition.
+    /// `<select multiple>`. A radio group is single-valued by definition and a
+    /// checkbox group multi-valued by definition, so for those two the style
+    /// decides this rather than the field.
     pub multiple: bool,
     pub choices: &'static [Choice],
 }
@@ -425,6 +431,7 @@ impl Control {
             Control::Choose(choose) => match choose.style {
                 ChoiceStyle::Select => FieldKind::Select,
                 ChoiceStyle::Radio => FieldKind::Radio,
+                ChoiceStyle::Checkbox => FieldKind::CheckboxGroup,
             },
             Control::Checkbox => FieldKind::Checkbox,
             Control::Color => FieldKind::Color,
@@ -519,7 +526,7 @@ impl Control {
             self,
             Control::Checkbox
                 | Control::Choose(ChooseControl {
-                    style: ChoiceStyle::Radio,
+                    style: ChoiceStyle::Radio | ChoiceStyle::Checkbox,
                     ..
                 })
         )

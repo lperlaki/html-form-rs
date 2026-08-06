@@ -33,6 +33,9 @@ struct Subscription {
     #[option("monthly", "Monthly")]
     #[option("yearly", "Yearly")]
     period: String,
+
+    #[field(type = "checkbox", label = "Notify me about")]
+    notify: Vec<Plan>,
 }
 
 #[test]
@@ -114,6 +117,76 @@ fn a_selected_radio_survives_a_failed_submission() {
             .selected
     );
     assert!(view.to_html().contains(r#"value="yearly" checked"#));
+}
+
+#[test]
+fn a_checkbox_group_is_one_box_per_option() {
+    let view = Subscription::render();
+    let notify = view.field("notify").unwrap();
+
+    assert_eq!(notify.kind, FieldKind::CheckboxGroup);
+    assert_eq!(notify.choices.len(), 3);
+    // A checkbox group is multi-valued whatever the field is typed as.
+    assert!(notify.multiple);
+
+    let html = view.to_html();
+    assert!(html.contains(r#"<input type="checkbox" name="notify" id="notify-0""#));
+    assert!(html.contains(r#"id="notify-2" value="self-hosted" disabled>"#));
+    // Captioned like a radio group rather than labelled through the first box.
+    assert!(html.contains(r#"<span class="web-form__label" id="notify-label">Notify me about"#));
+    assert!(html.contains(r#"role="group" aria-labelledby="notify-label""#));
+    assert!(html.find("notify-label").unwrap() < html.find(r#"role="group""#).unwrap());
+}
+
+#[test]
+fn a_checkbox_group_collects_every_box_ticked() {
+    let form =
+        Subscription::from_urlencoded("plan=free&period=yearly&notify=pro&notify=free").unwrap();
+    assert_eq!(form.notify, [Plan::Pro, Plan::Free]);
+
+    // An absent group means "nothing ticked", not "fall back to the default".
+    let form = Subscription::from_urlencoded("plan=free&period=yearly").unwrap();
+    assert!(form.notify.is_empty());
+}
+
+#[test]
+fn ticked_boxes_survive_a_failed_submission() {
+    let view = Subscription::submit_urlencoded("plan=nope&period=yearly&notify=pro")
+        .view()
+        .unwrap();
+
+    let ticked: Vec<&str> = view
+        .field("notify")
+        .unwrap()
+        .choices
+        .iter()
+        .filter(|c| c.selected)
+        .map(|c| c.value.as_str())
+        .collect();
+    assert_eq!(ticked, ["pro"]);
+    assert!(view.to_html().contains(r#"value="pro" checked"#));
+}
+
+#[derive(WebForm, Debug)]
+struct Interests {
+    #[field(type = "checkbox", required, label = "Topics")]
+    #[option("news", "News")]
+    #[option("offers", "Offers")]
+    topics: Vec<String>,
+}
+
+#[test]
+fn a_required_checkbox_group_is_enforced_by_the_server_not_the_browser() {
+    let html = Interests::render().to_html();
+
+    // `required` on a checkbox would mean "tick *this* box", which is not what
+    // a required group asks for.
+    assert!(!html.contains(" required"));
+    assert!(html.contains(r#"role="group" aria-labelledby="topics-label" aria-required="true""#));
+
+    assert!(Interests::from_urlencoded("").is_err());
+    let form = Interests::from_urlencoded("topics=news").unwrap();
+    assert_eq!(form.topics, ["news"]);
 }
 
 #[test]
@@ -238,4 +311,10 @@ fn errors_only_the_database_knows_about_can_be_added_afterwards() {
         view.to_html()
             .contains("<li>That room is already booked.</li>")
     );
+}
+
+#[test]
+fn dump() {
+    println!("{}", Subscription::render().to_html());
+    println!("{}", Interests::render().to_html());
 }

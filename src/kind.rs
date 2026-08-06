@@ -18,6 +18,9 @@ pub enum FieldKind {
     Number,
     Range,
     Checkbox,
+    /// A set of checkboxes sharing one name — the multi-valued counterpart of
+    /// [`FieldKind::Radio`].
+    CheckboxGroup,
     Radio,
     Date,
     Time,
@@ -44,7 +47,7 @@ impl FieldKind {
             Search => "search",
             Number => "number",
             Range => "range",
-            Checkbox => "checkbox",
+            Checkbox | CheckboxGroup => "checkbox",
             Radio => "radio",
             Date => "date",
             Time => "time",
