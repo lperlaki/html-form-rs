@@ -180,6 +180,10 @@ Plain, unstyled markup with `web-form__*` class hooks, correct `for`/`id`
 pairing, `aria-invalid` and `aria-describedby` wired to the help text and error
 list, `<fieldset>`s for flattened groups, and `<optgroup>`s for grouped choices.
 
+This is the `html` feature, on by default. Rendering through a template engine
+instead? Turn it off — `to_html`, the `Display` impls and `escape` go with it,
+and nothing else changes.
+
 ### MiniJinja
 
 `FormView` is `Serialize`, so it drops straight into a context:

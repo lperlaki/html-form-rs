@@ -250,6 +250,11 @@
 //! context, and its fields are public, so an Askama template can walk it
 //! directly. See `examples/minijinja_render.rs`.
 //!
+//! The built-in renderer — [`FormView::to_html`], [`FieldView::to_html`], the
+//! `Display` impls and [`escape`] — is the `html` feature, on by default. A
+//! crate that renders through a template engine can turn it off; everything
+//! else, [`FormView`] included, is unaffected.
+//!
 //! # Framework integration
 //!
 //! Nothing here is tied to an HTTP stack: [`Values::from_pairs`] takes whatever
@@ -293,6 +298,8 @@
 #[cfg(feature = "axum")]
 mod axum;
 mod error;
+#[cfg(feature = "html")]
+mod html;
 mod kind;
 mod runtime;
 mod spec;
@@ -304,6 +311,8 @@ mod view;
 #[cfg(feature = "axum")]
 pub use axum::FormRejection;
 pub use error::{ErrorKind, FieldError, FormErrors, ValueError};
+#[cfg(feature = "html")]
+pub use html::escape;
 pub use kind::FieldKind;
 pub use runtime::ParseCtx;
 pub use spec::{
@@ -314,7 +323,7 @@ pub use spec::{
 pub use validate::{FieldValidation, FormValidation};
 pub use value::FormValue;
 pub use values::Values;
-pub use view::{AttrView, ChoiceView, FieldView, FormView, escape};
+pub use view::{AttrView, ChoiceView, FieldView, FormView};
 
 #[doc(hidden)]
 pub use runtime::__private;

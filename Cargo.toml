@@ -18,9 +18,13 @@ bytes = { version = "1.12.1", optional = true }
 http = { version = "1.5.0", optional = true }
 
 [features]
-default = ["derive", "pattern"]
+default = ["derive", "pattern", "html"]
 # `#[derive(WebForm)]` / `#[derive(FormChoice)]`
 derive = ["dep:web-form-derive"]
+# The built-in renderer: `FormView::to_html`, `FieldView::to_html`, the
+# `Display` impls and `escape`. Without it a view is still what a template
+# engine renders from, and nothing else in the crate changes.
+html = []
 # `pattern = "..."` constraints are checked server-side with a regex engine.
 # Without this feature `pattern` is still rendered into the HTML, but only
 # enforced by the browser.
@@ -36,7 +40,7 @@ tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
 
 [[example]]
 name = "axum_signup"
-required-features = ["axum"]
+required-features = ["axum", "html"]
 
 [package.metadata.docs.rs]
 all-features = true
