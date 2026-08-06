@@ -53,3 +53,6 @@ required-features = ["axum", "html"]
 
 [package.metadata.docs.rs]
 all-features = true
+# Turns on `doc_cfg`, so each item says which feature gates it. The gate is
+# read off the `#[cfg]` already there, so no item has to repeat it.
+rustdoc-args = ["--cfg", "docsrs"]

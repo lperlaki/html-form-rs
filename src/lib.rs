@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! Declarative HTML forms.
 //!
 //! <div class="warning">
