@@ -103,6 +103,109 @@
 //! assert!(errors.has_field("username") && errors.has_field("confirm"));
 //! ```
 //!
+//! # A type that carries its own rules
+//!
+//! A check the whole application makes of a value does not belong to one field
+//! of one form. `#[derive(FormValue)]` puts it on the type instead: the wrapped
+//! type does the converting, and `#[value(...)]` says what the wrapper adds —
+//! the control, the constraints, the default, and the check no markup could
+//! make. A form that uses the type then says only where it goes.
+//!
+//! ```
+//! use web_form::{Text, WebForm};
+//!
+//! #[derive(web_form::FormValue, Debug)]
+//! #[value(type = "email", maxlength = 254, validate = is_company_address)]
+//! struct WorkEmail(String);
+//!
+//! fn is_company_address(email: &WorkEmail) -> Result<(), Text> {
+//!     match email.0.ends_with("@example.com") {
+//!         true => Ok(()),
+//!         false => Err(Text::key("invite.email.outside")),
+//!     }
+//! }
+//!
+//! #[derive(WebForm, Debug)]
+//! struct Invite {
+//!     #[field(label = "Who should we invite?")]
+//!     colleague: WorkEmail,
+//! }
+//!
+//! // The control, and everything it constrains, came from the type.
+//! let view = Invite::render();
+//! let field = view.field("colleague").unwrap();
+//! assert_eq!(field.kind, web_form::FieldKind::Email);
+//! assert_eq!(field.maxlength, Some(254));
+//!
+//! // So did the check, which runs on every form that uses the type.
+//! let errors = Invite::from_urlencoded("colleague=ada@example.org").unwrap_err();
+//! assert_eq!(
+//!     errors.field("colleague").next().unwrap().code(),
+//!     Some("invite.email.outside")
+//! );
+//! ```
+//!
+//! What a field writes wins over what the type said, exactly as an attribute
+//! wins over the control a Rust type implies. What the type will not carry is
+//! anything describing the *field* — a label, a placeholder — since the same
+//! type is a "Work email" on one form and a "Recipient" on the next. See
+//! [`FormValue`] for the trait, and the derive for every `#[value(...)]` key.
+//!
+//! # A type from a crate that has never heard of this one
+//!
+//! `#[field(from_str)]` converts a field with the type's own [`FromStr`] and
+//! [`Display`], so a `Uuid`, a `NaiveDate` or a `Decimal` is a field with no
+//! impl written and no newtype wrapped around it.
+//!
+//! ```
+//! use web_form::WebForm;
+//! # use std::fmt;
+//! # use std::str::FromStr;
+//! # #[derive(Debug, PartialEq)]
+//! # struct Date(String);
+//! # impl FromStr for Date {
+//! #     type Err = &'static str;
+//! #     fn from_str(raw: &str) -> Result<Self, Self::Err> { Ok(Date(raw.to_owned())) }
+//! # }
+//! # impl fmt::Display for Date {
+//! #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+//! # }
+//!
+//! #[derive(WebForm, Debug)]
+//! struct Booking {
+//!     #[field(from_str, type = "date", min = "2026-01-01")]
+//!     day: Date,
+//! }
+//!
+//! let booking = Booking::from_urlencoded("day=2026-08-06").unwrap();
+//! assert_eq!(booking.day, Date("2026-08-06".to_owned()));
+//!
+//! // Everything the spec could check is checked first, and says more than a
+//! // conversion could: this is the date control's own format check.
+//! let errors = Booking::from_urlencoded("day=whenever").unwrap_err();
+//! assert_eq!(
+//!     errors.field("day").next().unwrap().message.as_str(),
+//!     "Enter a date as YYYY-MM-DD."
+//! );
+//! ```
+//!
+//! It applies to the field's own type, `Option<T>` and `Vec<T>` included, and
+//! changes nothing else: a `validate` function still sees the type the field
+//! was written as, and `Display` writes the value back out for an edit form.
+//! What it cannot do is imply a control — a foreign type has no `CONTROL` to be
+//! asked for one — so the field renders as text until `type = "..."` says
+//! otherwise, and a value that will not parse is reported as the generic "Enter
+//! a valid value.", a `FromStr` error being written for whoever wrote the call
+//! rather than for whoever filled in the form.
+//!
+//! For a type you own, `#[derive(FormValue)]` with `#[value(from_str)]` says it
+//! once, on the type, instead of at every field that mentions it — and, since
+//! converting itself asks nothing of its shape, that is also how a several-field
+//! struct or an enum becomes one value.
+//!
+//! [`FromStr`]: std::str::FromStr
+//! [`Display`]: std::fmt::Display
+//!
 //! # Localisation
 //!
 //! Any string a person reads — a label, help text, a placeholder, a legend, an
@@ -398,6 +501,29 @@
 //! is additionally an axum 0.8 extractor — see `FormRejection` and
 //! `examples/axum_signup.rs`.
 //!
+//! Nor is it tied to a submission being a form. [`Values`] is `Serialize` and
+//! `Deserialize`, so a JSON body is a submission too — the same struct, the
+//! same checks, the same errors, which already serialise for a client that
+//! sent JSON in the first place.
+//!
+//! ```
+//! # use web_form::{Values, WebForm};
+//! # #[derive(WebForm)]
+//! # struct Signup {
+//! #     #[field(type = "email")]
+//! #     email: String,
+//! #     age: Option<u32>,
+//! # }
+//! let values: Values = serde_json::from_str(r#"{"email": "ada@example.com", "age": 36}"#)?;
+//! let signup = Signup::from_values(&values)?;
+//! assert_eq!(signup.age, Some(36));
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! A number or a boolean is read as the string a form would have submitted, a
+//! list is a name submitted repeatedly, and `null` is a name not submitted at
+//! all.
+//!
 //! # The two descriptions of a form
 //!
 //! [`FormSpec`] is the static one: what the derive emits, and what both the
@@ -473,11 +599,12 @@ pub use view::{AttrView, ChoiceView, FieldView, FormView};
 pub use runtime::__private;
 
 #[cfg(feature = "derive")]
-pub use web_form_derive::{FormChoice, WebForm};
+pub use web_form_derive::{FormChoice, FormValue, WebForm};
 
 /// Everything needed to declare and use a form.
 pub mod prelude {
-    // `WebForm` names both the trait and, with the `derive` feature, the macro.
+    // `WebForm` and `FormValue` each name both the trait and, with the `derive`
+    // feature, the macro — one `use` brings whichever of the two is meant.
     #[cfg(feature = "derive")]
     pub use crate::{Choice, FormChoice};
     pub use crate::{FieldKind, FormErrors, FormValue, FormView, Outcome, Values, WebForm};

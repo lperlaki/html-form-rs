@@ -305,6 +305,7 @@ built.
 | `disabled`, `readonly`, `autofocus`, `multiple` | Flags |
 | `choices = SOME_CONST` | A `&'static [Choice]` |
 | `validate = path::to::fn` | Per-field check: `fn(&FieldType) -> Result<(), E>`, or `fn(&FieldType, &Context) -> Result<(), E>` |
+| `from_str` | Convert with the type's own `FromStr`/`Display` instead of a `FormValue` impl |
 | `attr("data-role" = "input")` | Anything the crate has no opinion about, rendered verbatim |
 | `flatten` (+ `prefix`, `legend`) | Splice another form in |
 | `skip` | Not part of the form; filled with `Default::default()` |
@@ -360,6 +361,8 @@ at render time, alongside `set_choices`.
 | `Vec<T>` | as `T`; every value submitted under the name is collected, and `multiple` is rendered on the controls that accept one (`select`, `email`, `file`) | no |
 | `Vec<T>` + `type = "checkbox"` | one checkbox per option, sharing the name | no |
 | `#[derive(FormChoice)] enum` | `select` with the variants as options | yes |
+| `#[derive(FormValue)] struct Wrapper(T)` | as `T`, plus whatever `#[value(...)]` adds | yes |
+| any `FromStr + Display` type, with `#[field(from_str)]` | `text`, until `type = "…"` says otherwise | yes |
 | your own type | whatever its `FormValue` impl says | yes |
 
 A fieldless enum becomes a `<select>`:
@@ -378,7 +381,100 @@ enum Plan {
 A value outside the declared options is rejected with `ErrorKind::NotAChoice` —
 `<select>` is a constraint, not a suggestion.
 
-Anything else implements `FormValue`:
+### A type that carries its own rules
+
+A check the whole application makes of a value does not belong to one field of
+one form. `#[derive(FormValue)]` puts it on the type: the wrapped type does the
+converting — it is already a `FormValue` — and `#[value(...)]` says what the
+wrapper adds.
+
+```rust
+#[derive(FormValue)]
+#[value(type = "email", maxlength = 254, validate = is_company_address)]
+struct WorkEmail(String);
+
+fn is_company_address(email: &WorkEmail) -> Result<(), Text> {
+    match email.0.ends_with("@example.com") {
+        true => Ok(()),
+        false => Err(Text::key("invite.email.outside")),
+    }
+}
+
+#[derive(WebForm)]
+struct Invite {
+    #[field(label = "Who should we invite?")]
+    colleague: WorkEmail,          // the control, the length, the check: all the type's
+}
+```
+
+| `#[value(...)]` | |
+|---|---|
+| `type = "email"` | The control every field of this type renders as; the wrapped type's otherwise |
+| `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept`, `rows`, `cols`, `multiple` | Constraints the type carries, enforced in the browser *and* on the server |
+| `choices = SOME_CONST` | A `&'static [Choice]` the value has to be one of |
+| `default = "…"` | What a blank form shows for a field of this type |
+| `validate = path::to::fn` | The type's own check: `fn(&Self) -> bool`, or `-> Result<(), E>` — the same shapes `#[field(validate = ...)]` takes, i18n key and all |
+| `from_str` | Convert with the type's own `FromStr`/`Display` rather than through the value it wraps |
+
+A field may still override the control and the default, exactly as an attribute
+overrides the control a Rust type implies; the check is the type's own and
+always runs, alongside any the field declares. What `#[value(...)]` will not
+take is anything describing the *field* — a label, a placeholder — since the
+same type is a "Work email" on one form and a "Recipient" on the next. Nor does
+a validator take a context: a `FormValue` belongs to no form, so a check that
+needs one belongs on the field.
+
+It is derived for a struct with exactly one field, named or not, because a form
+control submits one string. A struct with several is a form of its own — derive
+`WebForm` and splice it in with `#[field(flatten)]` — unless it converts itself,
+which is the next section.
+
+### A type from a crate that has never heard of this one
+
+`#[field(from_str)]` converts a field with the type's own `FromStr` and
+`Display`. Nothing else is asked of it, so a `Uuid`, a `NaiveDate` or a
+`Decimal` is a field with no impl written and no newtype wrapped around it:
+
+```rust
+#[derive(WebForm)]
+struct Booking {
+    #[field(from_str, type = "date", min = "2026-01-01")]
+    day: NaiveDate,
+
+    #[field(from_str)]
+    reference: Uuid,
+
+    #[field(from_str)]
+    guests: Vec<Uuid>,          // and `Option<T>`, and `Vec<T>`
+}
+```
+
+Everything else about the field is unchanged: the constraints in the spec are
+checked first, a `validate` function is handed the type the field was written
+as, and `Display` writes the value back out for an edit form.
+
+Two things it cannot do, both answered the same way. It has no control to imply
+— a foreign type has no `CONTROL` to be asked for one — so the field is text
+until `type = "…"` says otherwise. And a value that will not parse is reported
+as "Enter a valid value.", because a `FromStr` error is written for whoever
+wrote the call, not for whoever filled in the form. Give the field the `type` or
+the `pattern` it really has: that check runs first, and describes what it
+wanted.
+
+For a type you own, say it once on the type instead of at every field that
+mentions it — and, since converting itself asks nothing of a type's shape, this
+is also how a several-field struct or an enum becomes one value:
+
+```rust
+#[derive(FormValue)]
+#[value(from_str, pattern = r"\d+\.\d+\.\d+", default = "1.0.0")]
+struct Version { major: u32, minor: u32, patch: u32 }
+```
+
+### By hand
+
+The trait is small enough to write out, and the two conversions are all it
+requires:
 
 ```rust
 impl FormValue for Slug {
@@ -393,6 +489,9 @@ impl FormValue for Slug {
     }
 }
 ```
+
+`DEFAULT` and `validate_form_value` are what the derive fills in, and default to
+"none" and "nothing to add".
 
 `CONTROL` is one constant, not five: the control a type renders as *and* the
 constraints it implies travel together, so `u32` says
@@ -578,7 +677,7 @@ let view = article.render_filled();
 
 | Feature | Default | What it does |
 |---|---|---|
-| `derive` | on | `#[derive(WebForm)]`, `#[derive(FormChoice)]` |
+| `derive` | on | `#[derive(WebForm)]`, `#[derive(FormValue)]`, `#[derive(FormChoice)]` |
 | `pattern` | on | Server-side `pattern` checking via `regex-lite`. Without it, `pattern` is still rendered and enforced by the browser |
 | `axum` | off | `Outcome<T>` is an axum 0.8 extractor |
 
@@ -591,6 +690,35 @@ anything a framework's body parser produces:
 let values = Values::from_pairs(parsed_body);
 match Signup::submit(&values) { /* … */ }
 ```
+
+### JSON
+
+Nor does a submission have to be a form. `Values` is `Serialize` and
+`Deserialize`, so a JSON body is one too — the same struct, the same checks, and
+errors that already serialise for the client that sent JSON in the first place:
+
+```rust
+let values: Values = serde_json::from_str(body)?;
+match Signup::submit(&values) {
+    Outcome::Valid(signup) => Json(create_account(signup)).into_response(),
+    Outcome::Invalid { errors, .. } => (StatusCode::UNPROCESSABLE_ENTITY, Json(errors)).into_response(),
+}
+```
+
+An object is a submission, and so is a list of `[name, value]` pairs:
+
+| JSON | Read as |
+|---|---|
+| `{"email": "a@b.com"}` | one field |
+| `{"age": 36}`, `{"newsletter": true}` | the string a form would have submitted — a field is a string whatever a client typed it as |
+| `{"tag": ["x", "y"]}` | a name submitted repeatedly, as a checkbox group submits |
+| `{"age": null}` | a name *not* submitted, so `Option` sees nothing and a default still applies. A client clearing a field sends `""`, as the browser does |
+| `[["tag", "x"], ["tag", "y"]]` | the same, keeping every repeat exactly where it was |
+| `{"billing": {"street": "…"}}` | rejected: a form submits a flat list of names, so flatten it and send `billing_street` |
+
+Serialising goes back the other way — a name with one value is a string, a name
+with several is a list — so `signup.to_values()` is a JSON body a client can
+send straight back.
 
 ### axum
 
@@ -638,4 +766,5 @@ and feed the text fields in through `Values::from_pairs`.
 | `src/context.rs` | `Provides`, and how a `default`/`validate` function of either arity reaches the context |
 | `src/validate.rs` | Server-side re-checking of every HTML constraint |
 | `src/value.rs` | `FormValue` — Rust types ↔ submitted strings |
+| `src/values.rs` | `Values` — a submission untyped, off the wire or out of JSON |
 | `web-form-derive/` | The derive macros |

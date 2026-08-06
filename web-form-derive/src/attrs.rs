@@ -364,14 +364,73 @@ impl Parse for OptionAttr {
     }
 }
 
+/// What a control is, and what it accepts — the keys `#[field(...)]` and
+/// `#[value(...)]` have in common.
+///
+/// They are one struct because they are one question: which control this is,
+/// and what it constrains. A field asks it about itself; a type asks it about
+/// every field it will ever be. Both hand the answer to the same
+/// `__private::control`, which is where an attribute finds its place or fails
+/// to.
+#[derive(Default)]
+pub struct Constraints {
+    /// `type = "email"`, with its span, so an unknown one is reported where it
+    /// was written.
+    pub kind: Option<(String, Span)>,
+    pub multiple: Option<bool>,
+    pub pattern: Option<String>,
+    pub minlength: Option<usize>,
+    pub maxlength: Option<usize>,
+    pub min: Option<String>,
+    pub max: Option<String>,
+    pub step: Option<String>,
+    pub accept: Option<String>,
+    pub rows: Option<u32>,
+    pub cols: Option<u32>,
+    pub choices: Option<Path>,
+}
+
+impl Constraints {
+    /// The keys, named once so that neither attribute's "unknown key" message
+    /// can drift from what it actually accepts.
+    pub const KEYS: &'static str = "type, multiple, pattern, minlength, maxlength, min, max, step, accept, rows, cols, \
+         choices";
+
+    /// Take `key` if it is one of these, and say whether it was — leaving the
+    /// caller to handle the keys that are its own.
+    pub fn parse(&mut self, key: &str, meta: &syn::meta::ParseNestedMeta<'_>) -> Result<bool> {
+        match key {
+            "type" | "kind" => {
+                let lit: LitStr = meta.value()?.parse()?;
+                self.kind = Some((lit.value(), lit.span()));
+            }
+            "multiple" => self.multiple = Some(parse_flag(meta)?),
+            "pattern" => self.pattern = Some(meta.value()?.parse::<LitStr>()?.value()),
+            "minlength" => {
+                self.minlength = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?)
+            }
+            "maxlength" => {
+                self.maxlength = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?)
+            }
+            "min" => self.min = Some(lit_to_string(&meta.value()?.parse()?)?),
+            "max" => self.max = Some(lit_to_string(&meta.value()?.parse()?)?),
+            "step" => self.step = Some(lit_to_string(&meta.value()?.parse()?)?),
+            "accept" => self.accept = Some(meta.value()?.parse::<LitStr>()?.value()),
+            "rows" => self.rows = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?),
+            "cols" => self.cols = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?),
+            "choices" => self.choices = Some(meta.value()?.parse()?),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
 /// `#[field(...)]` plus any `#[option(...)]` entries on one struct field.
 #[derive(Default)]
 pub struct FieldAttrs {
     pub name: Option<String>,
     pub label: Option<TextAttr>,
-    pub kind: Option<(String, proc_macro2::Span)>,
     pub required: Option<bool>,
-    pub multiple: Option<bool>,
     pub default: Option<String>,
     /// `default = path`: a function called once per render, rather than a value
     /// written into the spec.
@@ -384,22 +443,17 @@ pub struct FieldAttrs {
     pub disabled: bool,
     pub readonly: bool,
     pub autofocus: bool,
-    pub rows: Option<u32>,
-    pub cols: Option<u32>,
-    pub pattern: Option<String>,
-    pub minlength: Option<usize>,
-    pub maxlength: Option<usize>,
-    pub min: Option<String>,
-    pub max: Option<String>,
-    pub step: Option<String>,
-    pub accept: Option<String>,
-    pub choices: Option<Path>,
     pub validate: Option<Path>,
+    /// `from_str`: convert this field with the type's own `FromStr`/`Display`
+    /// rather than with a `FormValue` impl it does not have.
+    pub from_str: bool,
     pub flatten: bool,
     pub prefix: Option<String>,
     pub legend: Option<TextAttr>,
     pub skip: bool,
     pub options: Vec<OptionAttr>,
+    /// What the field's control is, and what it accepts.
+    pub constraints: Constraints,
     /// `attr(...)` entries, in the order they were written.
     pub custom: Vec<CustomAttr>,
 }
@@ -431,16 +485,14 @@ impl FieldAttrs {
                     .get_ident()
                     .map(Ident::to_string)
                     .unwrap_or_default();
+                if out.constraints.parse(&key, &meta)? {
+                    return Ok(());
+                }
                 match key.as_str() {
                     "name" => out.name = Some(meta.value()?.parse::<LitStr>()?.value()),
                     "label" => out.label = Some(meta.value()?.parse()?),
-                    "type" | "kind" => {
-                        let lit: LitStr = meta.value()?.parse()?;
-                        out.kind = Some((lit.value(), lit.span()));
-                    }
                     "required" => out.required = Some(parse_flag(&meta)?),
                     "optional" => out.required = Some(!parse_flag(&meta)?),
-                    "multiple" => out.multiple = Some(parse_flag(&meta)?),
                     // A literal is the value itself; anything else names a
                     // function that produces one at render time.
                     "default" => {
@@ -473,25 +525,8 @@ impl FieldAttrs {
                     "disabled" => out.disabled = parse_flag(&meta)?,
                     "readonly" => out.readonly = parse_flag(&meta)?,
                     "autofocus" => out.autofocus = parse_flag(&meta)?,
-                    "rows" => {
-                        out.rows = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?)
-                    }
-                    "cols" => {
-                        out.cols = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?)
-                    }
-                    "pattern" => out.pattern = Some(meta.value()?.parse::<LitStr>()?.value()),
-                    "minlength" => {
-                        out.minlength = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?)
-                    }
-                    "maxlength" => {
-                        out.maxlength = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?)
-                    }
-                    "min" => out.min = Some(lit_to_string(&meta.value()?.parse()?)?),
-                    "max" => out.max = Some(lit_to_string(&meta.value()?.parse()?)?),
-                    "step" => out.step = Some(lit_to_string(&meta.value()?.parse()?)?),
-                    "accept" => out.accept = Some(meta.value()?.parse::<LitStr>()?.value()),
-                    "choices" => out.choices = Some(meta.value()?.parse()?),
                     "validate" => out.validate = Some(meta.value()?.parse()?),
+                    "from_str" => out.from_str = parse_flag(&meta)?,
                     "flatten" => out.flatten = parse_flag(&meta)?,
                     "prefix" => out.prefix = Some(meta.value()?.parse::<LitStr>()?.value()),
                     "legend" => out.legend = Some(meta.value()?.parse()?),
@@ -500,10 +535,10 @@ impl FieldAttrs {
                     other => {
                         return Err(meta.error(format!(
                             "unknown `field` attribute `{other}`; expected one of: name, label, \
-                             type, required, optional, multiple, default, placeholder, help, \
-                             autocomplete, id, class, disabled, readonly, autofocus, rows, cols, \
-                             pattern, minlength, maxlength, min, max, step, accept, choices, \
-                             validate, flatten, prefix, legend, skip, attr"
+                             required, optional, default, placeholder, help, autocomplete, id, \
+                             class, disabled, readonly, autofocus, validate, from_str, flatten, \
+                             prefix, legend, skip, attr, {}",
+                            Constraints::KEYS
                         )));
                     }
                 }
@@ -511,6 +546,69 @@ impl FieldAttrs {
             })?;
         }
 
+        Ok(out)
+    }
+}
+
+/// `#[value(...)]` on a `#[derive(FormValue)]` type.
+///
+/// The subset of `#[field(...)]` that describes a *value* rather than its place
+/// in a form: which control it is and what it constrains, what it defaults to,
+/// and the check it makes of itself. A label or a placeholder is the field's,
+/// not the type's — the same type is a "Work email" on one form and a
+/// "Recipient" on the next.
+#[derive(Default)]
+pub struct ValueAttrs {
+    pub default: Option<String>,
+    pub validate: Option<Path>,
+    /// `from_str`: the type converts itself with its own `FromStr`/`Display`,
+    /// rather than through the one value it wraps.
+    pub from_str: bool,
+    pub constraints: Constraints,
+}
+
+impl ValueAttrs {
+    pub fn parse(attrs: &[Attribute]) -> Result<Self> {
+        let mut out = ValueAttrs::default();
+        for attr in attrs.iter().filter(|a| a.path().is_ident("value")) {
+            attr.parse_nested_meta(|meta| {
+                let key = meta
+                    .path
+                    .get_ident()
+                    .map(Ident::to_string)
+                    .unwrap_or_default();
+                if out.constraints.parse(&key, &meta)? {
+                    return Ok(());
+                }
+                match key.as_str() {
+                    // Only a literal: a type's default is an associated const,
+                    // and a const cannot call a function. A default that has to
+                    // be produced per render belongs to the field, which is
+                    // where the context that produces it reaches.
+                    "default" => {
+                        let value = meta.value()?;
+                        if !value.peek(Lit) {
+                            return Err(value.error(
+                                "a type's default is a `const`, so it has to be a literal; a \
+                                 default produced once per render is `#[field(default = path)]` \
+                                 on the field that needs one",
+                            ));
+                        }
+                        out.default = Some(lit_to_string(&value.parse()?)?);
+                    }
+                    "validate" => out.validate = Some(meta.value()?.parse()?),
+                    "from_str" => out.from_str = parse_flag(&meta)?,
+                    other => {
+                        return Err(meta.error(format!(
+                            "unknown `value` attribute `{other}`; expected one of: default, \
+                             validate, from_str, {}",
+                            Constraints::KEYS
+                        )));
+                    }
+                }
+                Ok(())
+            })?;
+        }
         Ok(out)
     }
 }

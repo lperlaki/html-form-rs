@@ -285,10 +285,14 @@ impl<'a, C> ParseCtx<'a, C> {
         }
     }
 
-    /// Validate one raw value against the spec, then convert it.
+    /// Validate one raw value against the spec, then convert it, then let the
+    /// type say what the spec could not.
     ///
-    /// Both steps always run: a value that is both malformed *and* out of range
-    /// reports the constraint violation, which says more than "not a number".
+    /// The first two always run: a value that is both malformed *and* out of
+    /// range reports the constraint violation, which says more than "not a
+    /// number". The third —
+    /// [`FormValue::validate_form_value`] — needs a converted value to look at,
+    /// so it runs only once there is one.
     // `full` is a `&Cow` rather than a `&str` because an error takes a copy of
     // it, and copying a name that is already `'static` should cost nothing.
     #[allow(clippy::ptr_arg)]
@@ -305,7 +309,13 @@ impl<'a, C> ParseCtx<'a, C> {
         }
 
         match T::parse_form_value(raw) {
-            Ok(value) => Some(value),
+            Ok(value) => match value.validate_form_value() {
+                Ok(()) => Some(value),
+                Err(error) => {
+                    self.errors.push(full.clone(), error);
+                    None
+                }
+            },
             Err(e) => {
                 if !had_violations {
                     self.errors.push(full.clone(), FieldError::from(e));
@@ -319,13 +329,59 @@ impl<'a, C> ParseCtx<'a, C> {
 /// Helpers the derive macro calls into. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
+    use std::borrow::Cow;
+    use std::fmt::Display;
+    use std::str::FromStr;
+
     use crate::WebForm;
     use crate::context::{DefaultSource, Provides};
+    use crate::error::{FieldError, ValueError};
     use crate::spec::{
         Bounds, Choice, ChoiceStyle, ChooseControl, Control, FileControl, NumberControl,
         TextControl, TextFormat, TextareaControl, join,
     };
+    use crate::validate::FieldValidation;
+    use crate::value::FormValue;
     use crate::values::Values;
+
+    /// A value converted by its own [`FromStr`] and [`Display`] rather than by a
+    /// [`FormValue`](crate::FormValue) impl — what `#[field(from_str)]` wraps a
+    /// field's type in for the duration of the parse.
+    ///
+    /// It is a wrapper rather than a second parse path because everything a
+    /// field goes through — the constraints in the spec, the error collecting,
+    /// `Option<T>` and `Vec<T>` — should not have to be written twice for the
+    /// sake of one conversion. The derive unwraps it the moment the value is
+    /// parsed, so nothing downstream, a `validate` function included, ever sees
+    /// it.
+    pub struct Str<T>(pub T);
+
+    impl<T: FromStr + Display> FormValue for Str<T> {
+        /// A plain text input: a foreign type has no `CONTROL` to be asked for
+        /// one, so the field says what it renders as, or takes this.
+        const CONTROL: Control = Control::TEXT;
+
+        /// Surrounding whitespace is dropped first, as it is for the numbers
+        /// this crate parses itself — the types worth reaching for this over
+        /// are dates, ids and decimals, where a pasted value with a space at
+        /// the end is a user's slip rather than their answer.
+        ///
+        /// What the `FromStr` said went wrong is deliberately not the message:
+        /// a parse error is written for whoever wrote the call, and "Enter
+        /// invalid digit found in string." is not a sentence to show anybody.
+        /// A field that can say better says it with a `type`, whose format
+        /// check runs first and describes what it wanted.
+        fn parse_form_value(raw: &str) -> Result<Self, ValueError> {
+            match raw.trim().parse() {
+                Ok(value) => Ok(Str(value)),
+                Err(_) => Err(ValueError::new("a valid value")),
+            }
+        }
+
+        fn to_form_value(&self) -> Cow<'_, str> {
+            Cow::Owned(self.0.to_string())
+        }
+    }
 
     /// Record what a `#[field(default = path)]` function produced for one
     /// render, under the field's fully-qualified name.
@@ -360,6 +416,36 @@ pub mod __private {
     ) {
         if T::GENERATES_DEFAULTS {
             T::generate_defaults(values, &join(prefix, nested), Provides::provide(context));
+        }
+    }
+
+    /// A field's default: the one written on the field, or — where the field
+    /// says nothing — the one its type carries.
+    ///
+    /// The same bargain [`control`] strikes for the control, and made in the
+    /// same place, because the macro cannot see what
+    /// [`FormValue::DEFAULT`](crate::FormValue::DEFAULT) is either.
+    pub const fn or_default(
+        explicit: Option<&'static str>,
+        implied: Option<&'static str>,
+    ) -> Option<&'static str> {
+        or_str(explicit, implied)
+    }
+
+    /// Run a `#[value(validate = ...)]` function over a value of the type that
+    /// declared it.
+    ///
+    /// Unlike a field's validator this takes no context — a `FormValue` belongs
+    /// to no form, so there is none to reach — but it returns everything
+    /// [`FieldValidation`] accepts, so a type's check says as much as a field's
+    /// can.
+    pub fn check_value<T, V: FieldValidation>(
+        value: &T,
+        validator: impl Fn(&T) -> V,
+    ) -> Result<(), FieldError> {
+        match validator(value).into_field_error() {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 

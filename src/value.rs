@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use crate::error::ValueError;
+use crate::error::{FieldError, ValueError};
 use crate::spec::{Bounds, Control, NumberControl};
 
 /// A type that can appear as the value of a single form control.
@@ -10,10 +10,18 @@ use crate::spec::{Bounds, Control, NumberControl};
 /// Implement it for your own scalars to use them as form fields; `Option<T>`,
 /// `Vec<T>` and `bool` are handled by the derive macro and need no impl.
 ///
-/// [`CONTROL`](FormValue::CONTROL) is the control the derive renders for this
-/// type unless `#[field(...)]` says otherwise, and it carries the type's own
-/// constraints with it — which is why an integer cannot promise a `step` and a
-/// text format at the same time.
+/// Everything a field of this type would otherwise have to repeat lives here,
+/// so that a form declaring one says only where it goes:
+///
+/// * [`CONTROL`](FormValue::CONTROL) — the control it renders as, carrying the
+///   constraints the type itself implies, which is why an integer cannot
+///   promise a `step` and a text format at the same time;
+/// * [`DEFAULT`](FormValue::DEFAULT) — what a blank form shows for it;
+/// * [`validate_form_value`](FormValue::validate_form_value) — the check the
+///   type makes of every value of it, wherever it is used.
+///
+/// A field may still override the first two; the check is the type's own and
+/// always runs.
 ///
 /// ```
 /// use std::borrow::Cow;
@@ -37,10 +45,45 @@ use crate::spec::{Bounds, Control, NumberControl};
 ///     }
 /// }
 /// ```
+///
+/// A type that wraps one that is already a `FormValue` needs none of it written
+/// out — `#[derive(FormValue)]` writes the conversion, and `#[value(...)]` says
+/// what the wrapper adds:
+///
+/// ```
+/// use web_form::{FormValue, WebForm};
+///
+/// #[derive(FormValue)]
+/// #[value(type = "email", maxlength = 254, validate = is_company_address)]
+/// struct WorkEmail(String);
+///
+/// fn is_company_address(email: &WorkEmail) -> bool {
+///     email.0.ends_with("@example.com")
+/// }
+///
+/// #[derive(WebForm)]
+/// struct Invite {
+///     // Nothing here repeats what the type already knows.
+///     colleague: WorkEmail,
+/// }
+///
+/// assert!(Invite::render().to_html().contains(r#"type="email""#));
+/// assert!(Invite::from_urlencoded("colleague=ada@example.com").is_ok());
+/// assert!(Invite::from_urlencoded("colleague=ada@example.org").is_err());
+/// ```
 pub trait FormValue: Sized {
     /// The control rendered for this type unless overridden, together with the
     /// constraints the type itself implies.
     const CONTROL: Control;
+
+    /// What a field of this type shows on a blank form, and falls back to when
+    /// the name is absent from a submission entirely.
+    ///
+    /// `#[field(default = "…")]` overrides it, exactly as it overrides
+    /// [`CONTROL`](FormValue::CONTROL); the rules are the ones in
+    /// [`FieldSpec::default`](crate::FieldSpec::default), since this *is* that
+    /// default once the spec is built.
+    const DEFAULT: Option<&'static str> = None;
 
     /// Convert one submitted string into the Rust value.
     fn parse_form_value(raw: &str) -> Result<Self, ValueError>;
@@ -48,6 +91,30 @@ pub trait FormValue: Sized {
     /// Render the value back into the string form a browser would submit, so
     /// an existing record can be shown in the form it came from.
     fn to_form_value(&self) -> Cow<'_, str>;
+
+    /// The check the *type* makes of a value, beyond deciding whether the
+    /// submitted string could be converted at all.
+    ///
+    /// Separate from [`parse_form_value`](FormValue::parse_form_value) because
+    /// the two answer different questions and say so differently: a conversion
+    /// that fails can only report what it *expected*, where a check that fails
+    /// returns a whole [`FieldError`] — a message, an i18n key, a
+    /// [code](crate::ErrorKind::Custom) a caller can match on. Splitting them
+    /// is also what lets a type be converted where no form is involved and
+    /// checked where one is.
+    ///
+    /// It is run once per submitted value, after the conversion and after the
+    /// constraints in the spec, and its error joins the rest of the pass rather
+    /// than ending it. A blank value for a field that is not required never
+    /// reaches it: not filling something in is not something a type gets a say
+    /// about.
+    ///
+    /// Nothing is handed to it but the value — a `FormValue` belongs to no
+    /// form, so there is no context to reach. A check that needs one belongs on
+    /// the field, as `#[field(validate = ...)]`.
+    fn validate_form_value(&self) -> Result<(), FieldError> {
+        Ok(())
+    }
 }
 
 impl FormValue for String {

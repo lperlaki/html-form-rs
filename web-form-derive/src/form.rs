@@ -4,7 +4,8 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Error, Fields, Ident, Result, Type};
 
-use crate::attrs::{CustomAttr, FieldAttrs, FormAttrs, opt_str, opt_text, opt_u32, opt_usize};
+use crate::attrs::{CustomAttr, FieldAttrs, FormAttrs, opt_str, opt_text};
+use crate::control::control_tokens;
 
 /// What a struct field maps to in a submission.
 enum Shape<'a> {
@@ -98,7 +99,14 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         let ty = &field.ty;
 
         if let Some(generic) = shape.value_type().filter(|ty| mentions(ty, &params)) {
-            bounds.push(syn::parse_quote!(#generic: ::web_form::FormValue));
+            // Which trait the field needs of its type is which conversion it
+            // was told to use.
+            bounds.push(match attrs.from_str {
+                true => {
+                    syn::parse_quote!(#generic: ::core::str::FromStr + ::core::fmt::Display)
+                }
+                false => syn::parse_quote!(#generic: ::web_form::FormValue),
+            });
         }
 
         if matches!(shape, Shape::Flatten) {
@@ -170,14 +178,38 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         entries.push(field_spec(field_ident, &attrs, &shape)?);
 
         let spec_ref = quote!(__spec.field_at(#index));
-        let read = match &shape {
-            Shape::Flag(_) => quote!(::web_form::ParseCtx::flag(__ctx, #spec_ref)),
-            Shape::Optional(inner) => {
-                quote!(::web_form::ParseCtx::optional::<#inner>(__ctx, #spec_ref))
+        // A `from_str` field is read as the adapter and unwrapped here and now,
+        // so that everything after this — a `validate` function, the struct
+        // being built — sees the type the caller wrote.
+        let value_ty = shape.value_type().map(|ty| value_type(&attrs, ty));
+        let read = match (&shape, attrs.from_str) {
+            (Shape::Flag(_), _) => quote!(::web_form::ParseCtx::flag(__ctx, #spec_ref)),
+            (Shape::Optional(_), false) => {
+                quote!(::web_form::ParseCtx::optional::<#value_ty>(__ctx, #spec_ref))
             }
-            Shape::Many(inner) => quote!(::web_form::ParseCtx::many::<#inner>(__ctx, #spec_ref)),
-            Shape::Scalar(inner) => quote!(::web_form::ParseCtx::field::<#inner>(__ctx, #spec_ref)),
-            Shape::Skip | Shape::Flatten => unreachable!("handled above"),
+            (Shape::Optional(_), true) => quote! {
+                ::web_form::ParseCtx::optional::<#value_ty>(__ctx, #spec_ref)
+                    .map(|__outer| __outer.map(|__wrapped| __wrapped.0))
+            },
+            (Shape::Many(_), false) => {
+                quote!(::web_form::ParseCtx::many::<#value_ty>(__ctx, #spec_ref))
+            }
+            (Shape::Many(_), true) => quote! {
+                ::web_form::ParseCtx::many::<#value_ty>(__ctx, #spec_ref).map(|__many| {
+                    __many
+                        .into_iter()
+                        .map(|__wrapped| __wrapped.0)
+                        .collect::<::std::vec::Vec<_>>()
+                })
+            },
+            (Shape::Scalar(_), false) => {
+                quote!(::web_form::ParseCtx::field::<#value_ty>(__ctx, #spec_ref))
+            }
+            (Shape::Scalar(_), true) => quote! {
+                ::web_form::ParseCtx::field::<#value_ty>(__ctx, #spec_ref)
+                    .map(|__wrapped| __wrapped.0)
+            },
+            (Shape::Skip | Shape::Flatten, _) => unreachable!("handled above"),
         };
 
         parse_steps.push(quote!(let #binding = #read;));
@@ -214,11 +246,13 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         }
 
         let push_value = |value: TokenStream| {
+            // The other half of the conversion the field was told to use.
+            let written = match attrs.from_str {
+                true => quote!(::std::string::ToString::to_string(#value)),
+                false => quote!(::web_form::FormValue::to_form_value(#value).into_owned()),
+            };
             quote! {
-                __values.push(
-                    ::std::format!("{}{}", __prefix, #name),
-                    ::web_form::FormValue::to_form_value(#value).into_owned(),
-                );
+                __values.push(::std::format!("{}{}", __prefix, #name), #written);
             }
         };
         fill_steps.push(match &shape {
@@ -343,6 +377,13 @@ fn shape_of<'a>(ident: &Ident, ty: &'a Type, attrs: &FieldAttrs) -> Result<Shape
         return Ok(Shape::Skip);
     }
     if attrs.flatten {
+        if attrs.from_str {
+            return Err(Error::new(
+                ident.span(),
+                "`from_str` converts one value, and `#[field(flatten)]` splices in a whole form; \
+                 a sub-form is parsed field by field, each with the conversion it declared",
+            ));
+        }
         return Ok(Shape::Flatten);
     }
     if attrs.prefix.is_some() {
@@ -358,27 +399,75 @@ fn shape_of<'a>(ident: &Ident, ty: &'a Type, attrs: &FieldAttrs) -> Result<Shape
         return Ok(Shape::Many(inner));
     }
     if is_ident(ty, "bool") {
+        if attrs.from_str {
+            return Err(Error::new(
+                ident.span(),
+                "`from_str` has nothing to add to a `bool`: a checkbox submits its own words, \
+                 and an unchecked one submits nothing at all, which `FromStr` has no way to read",
+            ));
+        }
         return Ok(Shape::Flag(ty));
     }
     Ok(Shape::Scalar(ty))
 }
 
+/// The type whose `FormValue` impl drives a field: the one it was written as,
+/// or — for `#[field(from_str)]` — the adapter that converts that one with its
+/// own `FromStr` and `Display`.
+///
+/// Everything else the field goes through reads the same either way, which is
+/// the point of routing the conversion through a type rather than through a
+/// second parse.
+fn value_type(attrs: &FieldAttrs, ty: &Type) -> TokenStream {
+    match attrs.from_str {
+        true => quote!(::web_form::__private::Str<#ty>),
+        false => quote!(#ty),
+    }
+}
+
 /// The `FieldSpec` const for one field.
 fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<TokenStream> {
     let name = attrs.name.clone().unwrap_or_else(|| ident.to_string());
-    let inner = shape.value_type();
+    // What the field's control and default are read off: the type it was
+    // written as, or the adapter standing in for it.
+    let inner = shape.value_type().map(|ty| value_type(attrs, ty));
 
     let required = attrs.required.unwrap_or(matches!(shape, Shape::Scalar(_)));
     let label = label_tokens(attrs, ident);
-    let default = opt_str(&attrs.default);
     let placeholder = opt_text(&attrs.placeholder);
     let help = opt_text(&attrs.help);
     let autocomplete = opt_str(&attrs.autocomplete);
     let id = opt_str(&attrs.id);
     let class = opt_str(&attrs.class);
     let (disabled, readonly, autofocus) = (attrs.disabled, attrs.readonly, attrs.autofocus);
-    let control = control_tokens(attrs, inner, shape)?;
     let custom = attrs.custom.iter().map(CustomAttr::tokens);
+
+    // What the field says, then what its type says. The merge is a `const fn`
+    // for the same reason the control's is: a type's own default is an
+    // associated const the macro cannot read.
+    let written = opt_str(&attrs.default);
+    let default = match &inner {
+        Some(ty) => quote! {
+            ::web_form::__private::or_default(
+                #written,
+                <#ty as ::web_form::FormValue>::DEFAULT,
+            )
+        },
+        None => written,
+    };
+
+    let implied = match &inner {
+        Some(ty) => quote!(<#ty as ::web_form::FormValue>::CONTROL),
+        None => quote!(::web_form::Control::TEXT),
+    };
+    // A `Vec<T>` field submits repeatedly by nature; whether that renders as a
+    // `multiple` attribute depends on the control.
+    let control = control_tokens(
+        &attrs.constraints,
+        &attrs.options,
+        implied,
+        matches!(shape, Shape::Many(_)),
+    )?;
 
     Ok(quote! {
         ::web_form::Entry::Field(::web_form::FieldSpec {
@@ -400,69 +489,6 @@ fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<To
     })
 }
 
-/// The field's [`Control`], assembled at const-eval time.
-///
-/// The macro cannot see what `<T as FormValue>::CONTROL` is, so it hands the
-/// three ingredients — the type's control, the one `type = "..."` names and the
-/// declared options — to `__private::control` along with every attribute that
-/// belongs *inside* a control. That function is where an attribute finds its
-/// place, or fails to.
-fn control_tokens(
-    attrs: &FieldAttrs,
-    inner: Option<&Type>,
-    shape: &Shape<'_>,
-) -> Result<TokenStream> {
-    let implied = match inner {
-        Some(ty) => quote!(<#ty as ::web_form::FormValue>::CONTROL),
-        None => quote!(::web_form::Control::TEXT),
-    };
-
-    let explicit = match &attrs.kind {
-        Some((name, span)) => {
-            let skeleton = control_skeleton(name, *span)?;
-            quote!(::core::option::Option::Some(#skeleton))
-        }
-        None => quote!(::core::option::Option::None),
-    };
-
-    let choices = choices_tokens(attrs)?;
-
-    // A `Vec<T>` field submits repeatedly by nature; whether that renders as a
-    // `multiple` attribute depends on the control, which only `__private`
-    // knows.
-    let multiple = attrs.multiple.unwrap_or(matches!(shape, Shape::Many(_)));
-
-    let pattern = opt_str(&attrs.pattern);
-    let minlength = opt_usize(&attrs.minlength);
-    let maxlength = opt_usize(&attrs.maxlength);
-    let min = opt_str(&attrs.min);
-    let max = opt_str(&attrs.max);
-    let step = opt_str(&attrs.step);
-    let accept = opt_str(&attrs.accept);
-    let rows = opt_u32(&attrs.rows);
-    let cols = opt_u32(&attrs.cols);
-
-    Ok(quote! {
-        ::web_form::__private::control(
-            #implied,
-            #explicit,
-            #choices,
-            ::web_form::__private::Overrides {
-                pattern: #pattern,
-                minlength: #minlength,
-                maxlength: #maxlength,
-                min: #min,
-                max: #max,
-                step: #step,
-                accept: #accept,
-                rows: #rows,
-                cols: #cols,
-                multiple: #multiple,
-            },
-        )
-    })
-}
-
 /// An explicit label, or one derived from the field name.
 ///
 /// `label = ""` means "render no label", which is what a hidden field wants.
@@ -474,7 +500,10 @@ fn label_tokens(attrs: &FieldAttrs, ident: &Ident) -> TokenStream {
             quote!(::core::option::Option::Some(#label))
         }
         None => {
-            if matches!(attrs.kind.as_ref().map(|(k, _)| k.as_str()), Some("hidden")) {
+            if matches!(
+                attrs.constraints.kind.as_ref().map(|(k, _)| k.as_str()),
+                Some("hidden")
+            ) {
                 return quote!(::core::option::Option::None);
             }
             // A label nobody wrote is derived from the field name, so it is
@@ -493,141 +522,6 @@ fn humanize(ident: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => spaced,
     }
-}
-
-/// The empty control that `type = "..."` names, with no attribute placed in it
-/// yet.
-fn control_skeleton(name: &str, span: Span) -> Result<TokenStream> {
-    let text = |format: &str| {
-        let format = Ident::new(format, span);
-        quote!(::web_form::Control::Text(::web_form::TextControl {
-            format: ::web_form::TextFormat::#format,
-            ..::web_form::TextControl::DEFAULT
-        }))
-    };
-    let number = |format: &str| {
-        let format = Ident::new(format, span);
-        quote!(::web_form::Control::Number(::web_form::NumberControl {
-            format: ::web_form::NumberFormat::#format,
-            ..::web_form::NumberControl::DEFAULT
-        }))
-    };
-    let temporal = |format: &str| {
-        let format = Ident::new(format, span);
-        quote!(::web_form::Control::Temporal(::web_form::TemporalControl {
-            format: ::web_form::TemporalFormat::#format,
-            ..::web_form::TemporalControl::DEFAULT
-        }))
-    };
-    let choose = |style: &str| {
-        let style = Ident::new(style, span);
-        quote!(::web_form::Control::Choose(::web_form::ChooseControl {
-            style: ::web_form::ChoiceStyle::#style,
-            ..::web_form::ChooseControl::DEFAULT
-        }))
-    };
-
-    Ok(match name {
-        "text" => text("Text"),
-        "password" => text("Password"),
-        "tel" => text("Tel"),
-        "search" => text("Search"),
-        "url" => text("Url"),
-        "email" => quote!(::web_form::Control::Text(::web_form::TextControl {
-            format: ::web_form::TextFormat::Email { multiple: false },
-            ..::web_form::TextControl::DEFAULT
-        })),
-        "number" => number("Number"),
-        "range" => number("Range"),
-        "date" => temporal("Date"),
-        "time" => temporal("Time"),
-        "datetime-local" | "datetime_local" => temporal("DatetimeLocal"),
-        "month" => temporal("Month"),
-        "week" => temporal("Week"),
-        "select" => choose("Select"),
-        "radio" => choose("Radio"),
-        "textarea" => quote!(::web_form::Control::Textarea(
-            ::web_form::TextareaControl::DEFAULT
-        )),
-        "file" => quote!(::web_form::Control::File(::web_form::FileControl::DEFAULT)),
-        "checkbox" => quote!(::web_form::Control::Checkbox),
-        "color" => quote!(::web_form::Control::Color),
-        "hidden" => quote!(::web_form::Control::Hidden),
-        other => {
-            return Err(Error::new(
-                span,
-                format!(
-                    "unknown field type `{other}`; expected one of: {}",
-                    KIND_NAMES.join(", ")
-                ),
-            ));
-        }
-    })
-}
-
-const KIND_NAMES: &[&str] = &[
-    "text",
-    "password",
-    "email",
-    "url",
-    "tel",
-    "search",
-    "number",
-    "range",
-    "checkbox",
-    "radio",
-    "date",
-    "time",
-    "datetime-local",
-    "month",
-    "week",
-    "color",
-    "file",
-    "hidden",
-    "textarea",
-    "select",
-];
-
-/// `Option<&'static [Choice]>` from `#[option(...)]` entries or `choices = ...`.
-fn choices_tokens(attrs: &FieldAttrs) -> Result<TokenStream> {
-    if !attrs.options.is_empty() {
-        if attrs.choices.is_some() {
-            return Err(Error::new(
-                Span::call_site(),
-                "use either `#[option(...)]` entries or `choices = ...`, not both",
-            ));
-        }
-        let items = attrs.options.iter().map(|option| {
-            let value = &option.value;
-            // An option with no label of its own is labelled by its value,
-            // which is text, never a key.
-            let label = match &option.label {
-                Some(label) => label.tokens(),
-                None => {
-                    let text = &option.value;
-                    quote!(::web_form::Text {
-                        content: ::std::borrow::Cow::Borrowed(#text),
-                        is_key: false,
-                    })
-                }
-            };
-            let disabled = option.disabled;
-            let group = opt_text(&option.group);
-            quote! {
-                ::web_form::Choice {
-                    value: ::std::borrow::Cow::Borrowed(#value),
-                    label: #label,
-                    disabled: #disabled,
-                    group: #group,
-                }
-            }
-        });
-        return Ok(quote!(::core::option::Option::Some(&[#(#items),*])));
-    }
-    Ok(match &attrs.choices {
-        Some(path) => quote!(::core::option::Option::Some(#path)),
-        None => quote!(::core::option::Option::None),
-    })
 }
 
 fn method_tokens(method: Option<&(String, Span)>) -> Result<TokenStream> {
@@ -699,7 +593,7 @@ fn generic_arg<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
 
 /// Whether a type mentions one of the struct's own type parameters, at any
 /// depth — `T`, `Option<T>` and `Vec<Wrapper<T>>` all do.
-fn mentions(ty: &Type, params: &[Ident]) -> bool {
+pub(crate) fn mentions(ty: &Type, params: &[Ident]) -> bool {
     fn walk(tokens: TokenStream, params: &[Ident]) -> bool {
         tokens.into_iter().any(|tree| match tree {
             proc_macro2::TokenTree::Ident(ident) => params.contains(&ident),
