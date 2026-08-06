@@ -469,6 +469,7 @@ let view = article.render_filled();
 |---|---|---|
 | `derive` | on | `#[derive(WebForm)]`, `#[derive(FormChoice)]` |
 | `pattern` | on | Server-side `pattern` checking via `regex-lite`. Without it, `pattern` is still rendered and enforced by the browser |
+| `axum` | off | `Outcome<T>` is an axum 0.8 extractor |
 
 ## Framework integration
 
@@ -479,6 +480,35 @@ anything a framework's body parser produces:
 let values = Values::from_pairs(parsed_body);
 match Signup::submit(&values) { /* … */ }
 ```
+
+### axum
+
+With the `axum` feature, `Outcome<T>` is an extractor, so a handler receives the
+submission already parsed and validated. It goes last, because it consumes the
+body.
+
+```rust
+async fn signup(form: Outcome<Signup>) -> Response {
+    match form {
+        Outcome::Valid(signup) => Html(format!("Welcome, {}!", signup.email)).into_response(),
+        // The re-render carries what the user typed and what was wrong with it.
+        Outcome::Invalid { view, .. } => {
+            (StatusCode::UNPROCESSABLE_ENTITY, Html(view.to_html())).into_response()
+        }
+    }
+}
+```
+
+A failed validation is **not** an extractor rejection — the handler still runs
+and decides what to do with the re-render. `FormRejection` covers only the cases
+where there is no submission to validate: a body that is not
+`application/x-www-form-urlencoded` (415), one that could not be read, or one
+that is not UTF-8 (400). As with axum's own `Form`, `GET` and `HEAD` are read
+from the query string.
+
+The feature pulls in `axum-core`, not `axum`. See
+`examples/axum_signup.rs`, run with
+`cargo run --example axum_signup --features axum`.
 
 `multipart/form-data` bodies are out of scope: parse them with a multipart crate
 and feed the text fields in through `Values::from_pairs`.

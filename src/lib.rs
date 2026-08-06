@@ -175,6 +175,13 @@
 //! context, and its fields are public, so an Askama template can walk it
 //! directly. See `examples/minijinja_render.rs`.
 //!
+//! # Framework integration
+//!
+//! Nothing here is tied to an HTTP stack: [`Values::from_pairs`] takes whatever
+//! a framework's body parser produced. With the `axum` feature, [`Outcome<T>`]
+//! is additionally an axum 0.8 extractor — see `FormRejection` and
+//! `examples/axum_signup.rs`.
+//!
 //! # The two descriptions of a form
 //!
 //! [`FormSpec`] is the static one: what the derive emits, and what both the
@@ -189,6 +196,8 @@
 //! [`Text`] is what every person-facing string in the spec is: literal text, or
 //! an i18n key. Both end up in the view, the key alongside the string.
 
+#[cfg(feature = "axum")]
+mod axum;
 mod error;
 mod kind;
 mod runtime;
@@ -198,6 +207,8 @@ mod value;
 mod values;
 mod view;
 
+#[cfg(feature = "axum")]
+pub use axum::FormRejection;
 pub use error::{ErrorKind, FieldError, FormErrors, ValueError};
 pub use kind::FieldKind;
 pub use runtime::ParseCtx;
