@@ -1,5 +1,10 @@
 # html-form
 
+> **This crate is AI generated.** A language model wrote the code, the tests and
+> this document. A person reviewed the result, but no such review catches
+> everything. Read the source before you depend on it, and treat every claim
+> here as something to verify rather than something to trust.
+
 Declarative HTML forms for Rust. One struct describes a form. The crate renders
 the form and parses the submission back into the struct. When validation fails,
 you get the same form again, with the user's values and the error messages

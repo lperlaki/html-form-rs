@@ -1,5 +1,14 @@
 //! Declarative HTML forms.
 //!
+//! <div class="warning">
+//!
+//! **This crate is AI generated.** A language model wrote the code, the tests
+//! and this documentation. A person reviewed the result, but no such review
+//! catches everything. Read the source before you depend on it, and treat every
+//! claim here as something to verify rather than something to trust.
+//!
+//! </div>
+//!
 //! One struct describes a form. From it you get:
 //!
 //! * a **render format**. [`FormView`] is a flat, serializable description of
