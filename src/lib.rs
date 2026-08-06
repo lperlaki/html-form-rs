@@ -264,11 +264,16 @@
 //!
 //! A generated default belongs to *rendering* alone. It is never a fallback
 //! while parsing — if it were, a submission that left the CSRF token out would
-//! arrive carrying a freshly minted, valid one. And on a re-render it stands in
-//! wherever the submission holds nothing of the user's: always for a hidden
-//! field, which nobody typed and where echoing a rejected token back would leave
-//! the retry failing exactly as the first attempt did; and for any other control
-//! when the name did not come back at all.
+//! arrive carrying a freshly minted, valid one.
+//!
+//! On a blank form it is the value, as any default is. Once there are values to
+//! show — a submission being re-rendered, a record being edited — only a
+//! **hidden** field is minted again: nobody typed it, so there is nothing of
+//! the caller's to preserve, and echoing a rejected token back would leave the
+//! retry failing exactly as the first attempt did. Every other control shows
+//! what it was given, empty included. A form that filled a visible field in
+//! would be putting a value the caller never had in front of the user, for them
+//! to send back without noticing.
 //!
 //! # What the form's own functions are handed
 //!

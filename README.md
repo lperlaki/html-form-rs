@@ -569,6 +569,10 @@ let view = article.render_filled();
   is how a user clears a field.
 - An unchecked checkbox submits nothing at all, so absence means `false`, never
   "fall back to the default". A `required` checkbox must be checked.
+- A **generated** default (`default = some_fn`) is a render-time thing only: it
+  is never a parse-time fallback, and once there are values to show — a
+  submission to re-render, a record to edit — only a hidden field is minted
+  again. A visible field shows what it was given, empty included.
 
 ## Feature flags
 

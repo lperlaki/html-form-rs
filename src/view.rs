@@ -473,17 +473,17 @@ impl FieldView {
         // the user typed has to be copied out of the submission.
         let current: Vec<Cow<'static, str>> = match values {
             Some(values) => {
-                // A *generated* default is what the form itself supplies, so it
-                // is minted again wherever the submission has nothing the user
-                // would recognise as their own. For a hidden field that is
-                // always: nobody typed it, and echoing a rejected token back
-                // would leave the retry failing exactly as the first attempt
-                // did. A literal default stays out of this — it has been on
-                // screen once already, and restoring it would undo a deliberate
-                // clearing.
-                let regenerate = is_generated
-                    && (kind == FieldKind::Hidden
-                        || (!values.contains(full_name) && !control.is_checkable()));
+                // A hidden field with a generated default is the form's own,
+                // not the user's: nobody typed it, and echoing a rejected token
+                // back would leave the retry failing exactly as the first
+                // attempt did, so it is minted again.
+                //
+                // Nothing else is. Once there are values to show — a submission
+                // to re-render, a record to edit — an empty field is empty
+                // because that is what it holds, and a form that filled it in
+                // would be putting a value the caller never had in front of the
+                // user, for them to save without noticing.
+                let regenerate = is_generated && kind == FieldKind::Hidden;
                 if regenerate {
                     default.into_iter().collect()
                 } else {

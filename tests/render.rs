@@ -180,7 +180,7 @@ fn a_generated_default_is_produced_afresh_for_every_render() {
 }
 
 #[test]
-fn a_generated_default_stands_in_for_what_a_submission_did_not_carry() {
+fn a_generated_default_is_the_forms_own_only_where_it_is_hidden() {
     // A generator may hand back anything a `Cow<'static, str>` is made from,
     // so a value that was already around costs nothing to return.
     fn fresh() -> &'static str {
@@ -199,6 +199,17 @@ fn a_generated_default_stands_in_for_what_a_submission_did_not_carry() {
         Renewal::render_submitted(&web_form::Values::parse(body), &web_form::FormErrors::new())
     };
 
+    // A blank form is where a default is a default: both fields show one.
+    let blank = Renewal::render();
+    assert_eq!(
+        blank.field("token").unwrap().value.as_deref(),
+        Some("fresh")
+    );
+    assert_eq!(
+        blank.field("reference").unwrap().value.as_deref(),
+        Some("fresh")
+    );
+
     let view = render("token=stale&reference=mine");
     // Nobody typed the hidden field, so there is nothing of the user's to
     // preserve: it is the form's own value, minted again rather than echoed.
@@ -209,15 +220,47 @@ fn a_generated_default_stands_in_for_what_a_submission_did_not_carry() {
         Some("mine")
     );
 
-    // Absent means the form has to supply it; submitted-but-empty means the
-    // user cleared it, and that has to stick.
-    let view = render("");
-    assert_eq!(
-        view.field("reference").unwrap().value.as_deref(),
-        Some("fresh")
-    );
+    // Once there are values to show, a visible field empty is a visible field
+    // empty — whether the name came back blank or did not come back at all.
+    // Filling it in would put a value in front of the user that the submission
+    // never carried, for them to send back without noticing.
     let view = render("reference=");
     assert_eq!(view.field("reference").unwrap().value.as_deref(), Some(""));
+    let view = render("");
+    assert_eq!(view.field("reference").unwrap().value, None);
+    // The token is still the form's to supply, however little else came back.
+    assert_eq!(view.field("token").unwrap().value.as_deref(), Some("fresh"));
+}
+
+#[test]
+fn an_edit_form_shows_what_the_record_holds_and_not_a_generated_default() {
+    fn today() -> &'static str {
+        "2026-08-06"
+    }
+
+    #[derive(WebForm)]
+    struct Article {
+        #[field(type = "hidden", default = today)]
+        edited_on: String,
+        #[field(label = "Due", default = today)]
+        due: Option<String>,
+    }
+
+    let view = Article {
+        edited_on: "1999-01-01".to_owned(),
+        due: None,
+    }
+    .render_filled();
+
+    // A record with no date has no date. Offering one here would have the user
+    // save a value they never entered.
+    assert_eq!(view.field("due").unwrap().value, None);
+    // The hidden field is the form's own on every path, so it is stamped afresh
+    // rather than carrying whatever the record was last edited with.
+    assert_eq!(
+        view.field("edited_on").unwrap().value.as_deref(),
+        Some("2026-08-06")
+    );
 }
 
 #[test]
