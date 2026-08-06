@@ -5,9 +5,9 @@
 
 use std::borrow::Cow;
 
-use web_form::{ErrorKind, FieldError, FormErrors, Outcome, Text, Values, WebForm};
+use html_form::{ErrorKind, FieldError, Form, FormErrors, Outcome, Text, Values};
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(validate = passwords_match)]
 struct Signup {
     #[field(type = "email", pattern = r"[^@]+@[^@]+\.[a-z]{2,}")]
@@ -106,7 +106,7 @@ fn every_error_is_collected_in_one_pass() {
 
 #[test]
 fn one_field_can_carry_several_errors() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Code {
         #[field(pattern = "[a-z]+", minlength = 4)]
         value: String,
@@ -143,7 +143,7 @@ fn a_type_error_reports_what_was_expected() {
 
 #[test]
 fn an_out_of_range_integer_says_so_instead_of_just_not_a_number() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Small {
         count: u8,
     }
@@ -192,7 +192,7 @@ fn a_generated_default_never_stands_in_while_parsing() {
         "issued".to_owned()
     }
 
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Ticket {
         #[field(type = "hidden", default = issued)]
         token: String,
@@ -211,7 +211,7 @@ fn a_generated_default_never_stands_in_while_parsing() {
 
 #[test]
 fn an_unchecked_box_is_false_rather_than_missing() {
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Prefs {
         #[field(default = true)]
         newsletter: bool,
@@ -240,7 +240,7 @@ fn whitespace_does_not_satisfy_a_required_field() {
 
 #[test]
 fn step_is_enforced() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Order {
         #[field(min = 0, max = 100, step = 5)]
         quantity: u32,
@@ -256,7 +256,7 @@ fn step_is_enforced() {
 
 #[test]
 fn dates_compare_chronologically() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Booking {
         #[field(type = "date", min = "2026-01-01", max = "2026-12-31")]
         day: String,
@@ -272,7 +272,7 @@ fn dates_compare_chronologically() {
 
 // ─── What a `validate = ...` function may return ──────────────────────────────
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(validate = seats_fit_the_table)]
 struct Booking {
     #[field(validate = is_even)]
@@ -426,7 +426,7 @@ fn an_invalid_submission_comes_back_as_a_renderable_form() {
     assert!(html.contains(r#"value="nope""#));
     assert!(html.contains(r#"aria-invalid="true""#));
     assert!(html.contains(r#"aria-describedby="email-error""#));
-    assert!(html.contains("web-form__field--invalid"));
+    assert!(html.contains("html-form__field--invalid"));
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn a_form_can_be_filled_from_an_existing_value() {
 
 // ─── Formats implied by the control's type ────────────────────────────────────
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Formats {
     #[field(type = "email")]
     email: Option<String>,

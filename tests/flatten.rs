@@ -3,10 +3,10 @@
 //! Reusing one form inside another: `#[field(flatten)]`, with and without a
 //! name prefix.
 
+use html_form::{ErrorKind, Form};
 use std::borrow::Cow;
-use web_form::{ErrorKind, WebForm};
 
-#[derive(WebForm, Debug, PartialEq)]
+#[derive(Form, Debug, PartialEq)]
 struct Address {
     #[field(label = "Street")]
     street: String,
@@ -20,7 +20,7 @@ struct Address {
     country: String,
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(action = "/orders")]
 struct Order {
     #[field(label = "Customer")]
@@ -34,7 +34,7 @@ struct Order {
 }
 
 /// The same sub-form without a prefix, sharing the parent's namespace.
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Profile {
     name: String,
 
@@ -190,7 +190,7 @@ fn defaults_inside_a_flattened_form_still_apply() {
 
 #[test]
 fn nesting_more_than_one_level_deep_composes() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Contact {
         #[field(type = "tel", label = "Phone")]
         phone: String,
@@ -199,7 +199,7 @@ fn nesting_more_than_one_level_deep_composes() {
         home: Address,
     }
 
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Employee {
         name: String,
 

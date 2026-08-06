@@ -1,4 +1,4 @@
-//! `#[derive(WebForm)]`.
+//! `#[derive(Form)]`.
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
@@ -37,13 +37,13 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let Data::Struct(data) = &input.data else {
         return Err(Error::new_spanned(
             &input.ident,
-            "`WebForm` can only be derived for structs with named fields",
+            "`Form` can only be derived for structs with named fields",
         ));
     };
     let Fields::Named(fields) = &data.fields else {
         return Err(Error::new_spanned(
             &data.fields,
-            "`WebForm` can only be derived for structs with named fields",
+            "`Form` can only be derived for structs with named fields",
         ));
     };
 
@@ -58,7 +58,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         .clone()
         .unwrap_or_else(|| syn::parse_quote!(()));
 
-    // A generic form is one whose `SPEC` names `<T as WebForm>::SPEC` — an
+    // A generic form is one whose `SPEC` names `<T as Form>::SPEC` — an
     // associated constant of a parameter, which the compiler resolves at
     // monomorphisation like any other. What a form *cannot* be generic over is
     // anything the spec would have to borrow from, since it is `'static`.
@@ -78,7 +78,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let mut generates: Vec<TokenStream> = Vec::new();
     // Bounds inferred from how each field is used, so that `struct WithCsrf<T>`
     // needs no bound written on it. Only types that mention a parameter get
-    // one: adding `where Address: WebForm` for a concrete field would move the
+    // one: adding `where Address: Form` for a concrete field would move the
     // error away from the field that caused it.
     let mut bounds: Vec<syn::WherePredicate> = Vec::new();
 
@@ -105,13 +105,13 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 true => {
                     syn::parse_quote!(#generic: ::core::str::FromStr + ::core::fmt::Display)
                 }
-                false => syn::parse_quote!(#generic: ::web_form::FormValue),
+                false => syn::parse_quote!(#generic: ::html_form::FormValue),
             });
         }
 
         if matches!(shape, Shape::Flatten) {
             if mentions(ty, &params) {
-                bounds.push(syn::parse_quote!(#ty: ::web_form::WebForm));
+                bounds.push(syn::parse_quote!(#ty: ::html_form::Form));
             }
             // A sub-form is parsed and rendered with this form's context, or
             // with whatever that context hands down in its place. The bound is
@@ -120,7 +120,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             // complaint away from the field that caused it.
             if mentions(ty, &params) || mentions(&context, &params) {
                 bounds.push(syn::parse_quote!(
-                    #context: ::web_form::Provides<<#ty as ::web_form::WebForm>::Context>
+                    #context: ::html_form::Provides<<#ty as ::html_form::Form>::Context>
                 ));
             }
             if let Some(custom) = attrs.custom.first() {
@@ -137,35 +137,35 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             let prefix = attrs.prefix.clone().unwrap_or_default();
             let legend = opt_text(&attrs.legend);
             entries.push(quote! {
-                ::web_form::Entry::Flatten(::web_form::Flattened {
+                ::html_form::Entry::Flatten(::html_form::Flattened {
                     prefix: #prefix,
                     legend: #legend,
                     // The sub-form's own `SPEC` constant, resolved while this
                     // one is const-evaluated.
-                    spec: <#ty as ::web_form::WebForm>::SPEC,
+                    spec: <#ty as ::html_form::Form>::SPEC,
                 })
             });
             parse_steps.push(quote! {
-                let #binding = ::web_form::ParseCtx::nested::<#ty>(
+                let #binding = ::html_form::ParseCtx::nested::<#ty>(
                     __ctx,
                     __spec.flatten_at(#index),
                 );
             });
             construct.push(quote!(#field_ident: #binding?));
             fill_steps.push(quote! {
-                ::web_form::WebForm::fill_in(
+                ::html_form::Form::fill_in(
                     &self.#field_ident,
                     __values,
                     &::std::format!("{}{}", __prefix, #prefix),
                 );
             });
 
-            generates.push(quote!(<#ty as ::web_form::WebForm>::GENERATES_DEFAULTS));
+            generates.push(quote!(<#ty as ::html_form::Form>::GENERATES_DEFAULTS));
             // One call, as on the parse side: which sub-forms are worth
             // walking, how the prefix is joined and what context the sub-form
             // is handed are the runtime's to decide, not this macro's.
             default_steps.push(quote! {
-                ::web_form::__private::nested_defaults::<#ty, #context>(
+                ::html_form::__private::nested_defaults::<#ty, #context>(
                     __values,
                     __prefix,
                     #prefix,
@@ -183,19 +183,19 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         // being built — sees the type the caller wrote.
         let value_ty = shape.value_type().map(|ty| value_type(&attrs, ty));
         let read = match (&shape, attrs.from_str) {
-            (Shape::Flag(_), _) => quote!(::web_form::ParseCtx::flag(__ctx, #spec_ref)),
+            (Shape::Flag(_), _) => quote!(::html_form::ParseCtx::flag(__ctx, #spec_ref)),
             (Shape::Optional(_), false) => {
-                quote!(::web_form::ParseCtx::optional::<#value_ty>(__ctx, #spec_ref))
+                quote!(::html_form::ParseCtx::optional::<#value_ty>(__ctx, #spec_ref))
             }
             (Shape::Optional(_), true) => quote! {
-                ::web_form::ParseCtx::optional::<#value_ty>(__ctx, #spec_ref)
+                ::html_form::ParseCtx::optional::<#value_ty>(__ctx, #spec_ref)
                     .map(|__outer| __outer.map(|__wrapped| __wrapped.0))
             },
             (Shape::Many(_), false) => {
-                quote!(::web_form::ParseCtx::many::<#value_ty>(__ctx, #spec_ref))
+                quote!(::html_form::ParseCtx::many::<#value_ty>(__ctx, #spec_ref))
             }
             (Shape::Many(_), true) => quote! {
-                ::web_form::ParseCtx::many::<#value_ty>(__ctx, #spec_ref).map(|__many| {
+                ::html_form::ParseCtx::many::<#value_ty>(__ctx, #spec_ref).map(|__many| {
                     __many
                         .into_iter()
                         .map(|__wrapped| __wrapped.0)
@@ -203,10 +203,10 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 })
             },
             (Shape::Scalar(_), false) => {
-                quote!(::web_form::ParseCtx::field::<#value_ty>(__ctx, #spec_ref))
+                quote!(::html_form::ParseCtx::field::<#value_ty>(__ctx, #spec_ref))
             }
             (Shape::Scalar(_), true) => quote! {
-                ::web_form::ParseCtx::field::<#value_ty>(__ctx, #spec_ref)
+                ::html_form::ParseCtx::field::<#value_ty>(__ctx, #spec_ref)
                     .map(|__wrapped| __wrapped.0)
             },
             (Shape::Skip | Shape::Flatten, _) => unreachable!("handled above"),
@@ -218,7 +218,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             // `Vec<T>` included, so it can check emptiness or cardinality too.
             parse_steps.push(quote! {
                 if let ::core::option::Option::Some(__value) = &#binding {
-                    ::web_form::ParseCtx::check_custom(__ctx, #spec_ref, __value, #validate);
+                    ::html_form::ParseCtx::check_custom(__ctx, #spec_ref, __value, #validate);
                 }
             });
         }
@@ -235,7 +235,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             // without — is settled by `DefaultSource`, since a macro cannot
             // see a signature.
             default_steps.push(quote! {
-                ::web_form::__private::generate_default(
+                ::html_form::__private::generate_default(
                     __values,
                     __prefix,
                     #name,
@@ -249,7 +249,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             // The other half of the conversion the field was told to use.
             let written = match attrs.from_str {
                 true => quote!(::std::string::ToString::to_string(#value)),
-                false => quote!(::web_form::FormValue::to_form_value(#value).into_owned()),
+                false => quote!(::html_form::FormValue::to_form_value(#value).into_owned()),
             };
             quote! {
                 __values.push(::std::format!("{}{}", __prefix, #name), #written);
@@ -295,7 +295,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     let form_validate = match &form.validate {
         Some(path) => quote! {
-            ::web_form::ParseCtx::check_form(__ctx, &__form, #path);
+            ::html_form::ParseCtx::check_form(__ctx, &__form, #path);
         },
         None => quote!(),
     };
@@ -312,9 +312,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     } else {
         quote! {
             fn generate_defaults(
-                __values: &mut ::web_form::Values,
+                __values: &mut ::html_form::Values,
                 __prefix: &str,
-                __context: &<Self as ::web_form::WebForm>::Context,
+                __context: &<Self as ::html_form::Form>::Context,
             ) {
                 #(#default_steps)*
             }
@@ -328,7 +328,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics ::web_form::WebForm for #ident #ty_generics #where_clause {
+        impl #impl_generics ::html_form::Form for #ident #ty_generics #where_clause {
             type Context = #context;
 
             const GENERATES_DEFAULTS: bool = #generates_defaults;
@@ -336,7 +336,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             // The whole description is one const-evaluated value: the reference
             // is to memory the compiler laid out, so nothing here runs, or
             // allocates, at render time.
-            const SPEC: &'static ::web_form::FormSpec = &::web_form::FormSpec {
+            const SPEC: &'static ::html_form::FormSpec = &::html_form::FormSpec {
                 id: #form_id,
                 name: #form_name,
                 action: #form_action,
@@ -350,9 +350,9 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             };
 
             fn parse_in(
-                __ctx: &mut ::web_form::ParseCtx<'_, #context>,
+                __ctx: &mut ::html_form::ParseCtx<'_, #context>,
             ) -> ::core::option::Option<Self> {
-                let __spec = <Self as ::web_form::WebForm>::SPEC;
+                let __spec = <Self as ::html_form::Form>::SPEC;
                 // Every field is read before anything is returned, so one pass
                 // collects every error.
                 #(#parse_steps)*
@@ -361,7 +361,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 ::core::option::Option::Some(__form)
             }
 
-            fn fill_in(&self, __values: &mut ::web_form::Values, __prefix: &str) {
+            fn fill_in(&self, __values: &mut ::html_form::Values, __prefix: &str) {
                 #(#fill_steps)*
             }
 
@@ -420,7 +420,7 @@ fn shape_of<'a>(ident: &Ident, ty: &'a Type, attrs: &FieldAttrs) -> Result<Shape
 /// second parse.
 fn value_type(attrs: &FieldAttrs, ty: &Type) -> TokenStream {
     match attrs.from_str {
-        true => quote!(::web_form::__private::Str<#ty>),
+        true => quote!(::html_form::__private::Str<#ty>),
         false => quote!(#ty),
     }
 }
@@ -448,17 +448,17 @@ fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<To
     let written = opt_str(&attrs.default);
     let default = match &inner {
         Some(ty) => quote! {
-            ::web_form::__private::or_default(
+            ::html_form::__private::or_default(
                 #written,
-                <#ty as ::web_form::FormValue>::DEFAULT,
+                <#ty as ::html_form::FormValue>::DEFAULT,
             )
         },
         None => written,
     };
 
     let implied = match &inner {
-        Some(ty) => quote!(<#ty as ::web_form::FormValue>::CONTROL),
-        None => quote!(::web_form::Control::TEXT),
+        Some(ty) => quote!(<#ty as ::html_form::FormValue>::CONTROL),
+        None => quote!(::html_form::Control::TEXT),
     };
     // A `Vec<T>` field submits repeatedly by nature; whether that renders as a
     // `multiple` attribute depends on the control.
@@ -470,7 +470,7 @@ fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<To
     )?;
 
     Ok(quote! {
-        ::web_form::Entry::Field(::web_form::FieldSpec {
+        ::html_form::Entry::Field(::html_form::FieldSpec {
             name: #name,
             label: #label,
             control: #control,
@@ -509,7 +509,7 @@ fn label_tokens(attrs: &FieldAttrs, ident: &Ident) -> TokenStream {
             // A label nobody wrote is derived from the field name, so it is
             // literal text — there is no key to guess.
             let text = humanize(&ident.to_string());
-            quote!(::core::option::Option::Some(::web_form::Text::literal(#text)))
+            quote!(::core::option::Option::Some(::html_form::Text::literal(#text)))
         }
     }
 }
@@ -541,7 +541,7 @@ fn method_tokens(method: Option<&(String, Span)>) -> Result<TokenStream> {
     };
     let variant = Ident::new(variant, *span);
     Ok(quote!(::core::option::Option::Some(
-        ::web_form::FormMethod::#variant
+        ::html_form::FormMethod::#variant
     )))
 }
 
@@ -565,7 +565,7 @@ fn enctype_tokens(enctype: Option<&(String, Span)>) -> Result<TokenStream> {
     };
     let variant = Ident::new(variant, *span);
     Ok(quote!(::core::option::Option::Some(
-        ::web_form::FormEncType::#variant
+        ::html_form::FormEncType::#variant
     )))
 }
 

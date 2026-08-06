@@ -1,4 +1,4 @@
-//! The parsing machinery shared by hand-written and derived [`WebForm`] impls.
+//! The parsing machinery shared by hand-written and derived [`Form`] impls.
 //!
 //! [`ParseCtx`] threads four things through a parse: the raw submission, the
 //! context the caller handed in, the flatten prefix currently in scope, and the
@@ -8,7 +8,7 @@
 
 use std::borrow::Cow;
 
-use crate::WebForm;
+use crate::Form;
 use crate::context::Provides;
 use crate::error::{FieldError, FormErrors};
 use crate::spec::{FieldSpec, Flattened};
@@ -50,7 +50,7 @@ fn read<'r>(values: &'r Values, spec: &'r FieldSpec, full_name: &str) -> Raw<'r>
 
 /// State carried through one parse of one submission.
 ///
-/// `C` is the form's [`Context`](crate::WebForm::Context) — whatever its own
+/// `C` is the form's [`Context`](crate::Form::Context) — whatever its own
 /// functions were promised they would be handed. A form that declares none
 /// parses with `C = ()`, which is what the parameter defaults to.
 pub struct ParseCtx<'a, C = ()> {
@@ -236,7 +236,7 @@ impl<'a, C> ParseCtx<'a, C> {
     /// The prefix and the errors are lent to the sub-parse and taken back, so
     /// nesting costs no allocation of its own and the errors of both halves end
     /// up in one list.
-    pub fn nested<T: WebForm>(&mut self, flattened: &Flattened) -> Option<T>
+    pub fn nested<T: Form>(&mut self, flattened: &Flattened) -> Option<T>
     where
         C: Provides<T::Context>,
     {
@@ -333,7 +333,7 @@ pub mod __private {
     use std::fmt::Display;
     use std::str::FromStr;
 
-    use crate::WebForm;
+    use crate::Form;
     use crate::context::{DefaultSource, Provides};
     use crate::error::{FieldError, ValueError};
     use crate::spec::{
@@ -408,7 +408,7 @@ pub mod __private {
     /// A sub-form that generates nothing is not walked, and its prefix is never
     /// built: the const decides that per instantiation, so a form that has no
     /// generated default anywhere in it compiles this down to nothing.
-    pub fn nested_defaults<T: WebForm, C: Provides<T::Context>>(
+    pub fn nested_defaults<T: Form, C: Provides<T::Context>>(
         values: &mut Values,
         prefix: &str,
         nested: &'static str,

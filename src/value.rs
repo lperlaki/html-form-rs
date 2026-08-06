@@ -25,7 +25,7 @@ use crate::spec::{Bounds, Control, NumberControl};
 ///
 /// ```
 /// use std::borrow::Cow;
-/// use web_form::{Control, FormValue, ValueError};
+/// use html_form::{Control, FormValue, ValueError};
 ///
 /// struct Slug(String);
 ///
@@ -51,7 +51,7 @@ use crate::spec::{Bounds, Control, NumberControl};
 /// what the wrapper adds:
 ///
 /// ```
-/// use web_form::{FormValue, WebForm};
+/// use html_form::{Form, FormValue};
 ///
 /// #[derive(FormValue)]
 /// #[value(type = "email", maxlength = 254, validate = is_company_address)]
@@ -61,7 +61,7 @@ use crate::spec::{Bounds, Control, NumberControl};
 ///     email.0.ends_with("@example.com")
 /// }
 ///
-/// #[derive(WebForm)]
+/// #[derive(Form)]
 /// struct Invite {
 ///     // Nothing here repeats what the type already knows.
 ///     colleague: WorkEmail,

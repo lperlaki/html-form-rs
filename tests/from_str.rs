@@ -7,7 +7,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use web_form::{Control, ErrorKind, FieldKind, FormValue, Text, WebForm};
+use html_form::{Control, ErrorKind, FieldKind, Form, FormValue, Text};
 
 /// Stands in for the foreign types this is for — a `Uuid`, a `NaiveDate`, a
 /// `Decimal`: no `FormValue` impl, and none that can be written here.
@@ -32,7 +32,7 @@ impl fmt::Display for Isbn {
     }
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Book {
     #[field(from_str, label = "ISBN", pattern = r"[\d-]+")]
     isbn: Isbn,
@@ -99,7 +99,7 @@ fn the_constraints_in_the_spec_are_checked_first_and_say_more() {
 
 #[test]
 fn a_type_check_pairs_with_the_html_one() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Dated {
         // The format check comes from `type`, and its message is the good one.
         #[field(type = "date", from_str, min = "2026-01-01")]
@@ -180,7 +180,7 @@ fn surrounding_whitespace_is_dropped_before_the_type_sees_it() {
 
 #[test]
 fn a_validator_sees_the_type_the_field_was_written_as() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Checked {
         #[field(from_str, validate = is_registered)]
         isbn: Isbn,
@@ -219,7 +219,7 @@ fn a_validator_sees_the_type_the_field_was_written_as() {
 fn a_generic_form_asks_for_the_conversion_its_field_declared() {
     // `T: FormValue` is not the bound this field wants, and the derive knows
     // which one it does — nothing is written on the struct either way.
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Wrapper<T> {
         #[field(from_str, label = "Value")]
         value: T,
@@ -308,7 +308,7 @@ impl fmt::Display for Channel {
     }
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Release {
     // No `from_str` on the field: the type is a `FormValue` in its own right
     // now, so every form that uses it needs nothing said.
@@ -366,7 +366,7 @@ fn a_type_that_converts_itself_still_checks_itself() {
         version.0.major >= 1
     }
 
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Publish {
         version: Released,
     }

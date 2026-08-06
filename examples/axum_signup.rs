@@ -12,9 +12,9 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use web_form::{Outcome, WebForm};
+use html_form::{Form, Outcome};
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(action = "/signup", method = "post", submit = "Create account")]
 struct Signup {
     #[field(
@@ -65,7 +65,7 @@ async fn signup(form: Outcome<Signup>) -> Response {
             "Welcome",
             &format!(
                 "<p>Account created for <strong>{}</strong>.</p>",
-                web_form::escape(&signup.email)
+                html_form::escape(&signup.email)
             ),
         ))
         .into_response(),

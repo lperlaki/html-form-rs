@@ -52,7 +52,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             Some(label) => label.tokens(),
             None => {
                 let text = title_case(&variant_ident.to_string());
-                quote!(::web_form::Text {
+                quote!(::html_form::Text {
                     content: ::std::borrow::Cow::Borrowed(#text),
                     is_key: false,
                 })
@@ -62,7 +62,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         let group = opt_text(&attrs.group);
 
         choices.push(quote! {
-            ::web_form::Choice {
+            ::html_form::Choice {
                 value: ::std::borrow::Cow::Borrowed(#value),
                 label: #label,
                 disabled: #disabled,
@@ -78,19 +78,19 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     Ok(quote! {
         #[automatically_derived]
-        impl ::web_form::FormValue for #ident {
-            const CONTROL: ::web_form::Control =
-                ::web_form::Control::Choose(::web_form::ChooseControl {
+        impl ::html_form::FormValue for #ident {
+            const CONTROL: ::html_form::Control =
+                ::html_form::Control::Choose(::html_form::ChooseControl {
                     choices: &[#(#choices),*],
-                    ..::web_form::ChooseControl::DEFAULT
+                    ..::html_form::ChooseControl::DEFAULT
                 });
 
             fn parse_form_value(
                 __raw: &str,
-            ) -> ::core::result::Result<Self, ::web_form::ValueError> {
+            ) -> ::core::result::Result<Self, ::html_form::ValueError> {
                 match __raw {
                     #(#parse_arms,)*
-                    _ => ::core::result::Result::Err(::web_form::ValueError::new(
+                    _ => ::core::result::Result::Err(::html_form::ValueError::new(
                         ::std::format!("one of: {}", #expected),
                     )),
                 }

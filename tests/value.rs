@@ -2,8 +2,8 @@
 
 //! `#[derive(FormValue)]`: what a type carries so that no field of it has to.
 
-use web_form::{
-    Choice, Control, ErrorKind, FieldKind, FormValue, Text, TextFormat, ValueError, WebForm,
+use html_form::{
+    Choice, Control, ErrorKind, FieldKind, Form, FormValue, Text, TextFormat, ValueError,
 };
 
 #[derive(FormValue, Debug, PartialEq)]
@@ -32,7 +32,7 @@ fn is_slug(slug: &Slug) -> bool {
     !slug.0.is_empty() && slug.0.chars().all(|c| c.is_ascii_lowercase() || c == '-')
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Invite {
     colleague: WorkEmail,
     handle: Slug,
@@ -85,7 +85,7 @@ fn the_types_default_fills_a_blank_form_and_stands_in_for_an_absent_field() {
 
 #[test]
 fn a_field_may_override_what_the_type_says() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Override {
         // Narrower than the type asks for, and pre-filled where it asked for
         // nothing — the control it named is still the one that renders.
@@ -191,7 +191,7 @@ fn a_set_of_options_travels_with_the_type_too() {
     #[value(choices = COUNTRIES, type = "radio")]
     struct Country(String);
 
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Ship {
         country: Country,
     }
@@ -214,7 +214,7 @@ fn a_wrapper_may_be_generic() {
     #[derive(FormValue, Debug, PartialEq)]
     struct Trimmed<T>(T);
 
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Note {
         title: Trimmed<String>,
         seats: Trimmed<u32>,

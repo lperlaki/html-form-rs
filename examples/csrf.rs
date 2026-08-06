@@ -15,7 +15,7 @@
 //!
 //! Run with: `cargo run --example csrf`
 
-use web_form::{Outcome, Provides, Text, WebForm};
+use html_form::{Form, Outcome, Provides, Text};
 
 /// Stand-in for a session, which a real application reaches through a cookie.
 /// Whatever a handler already has can be a context: a database handle, the
@@ -36,12 +36,12 @@ impl Provides<()> for Session {
 /// Any form, plus the hidden field that says the submission came from a page we
 /// served.
 ///
-/// The derive works out that `T` has to be a `WebForm` from the flatten, and
+/// The derive works out that `T` has to be a `Form` from the flatten, and
 /// that a `Session` has to be able to supply whatever context `T` asks for, so
 /// the struct needs no bound written on it. What the flatten splices in is `T`'s
 /// *fields* — its `action`, `method` and submit label belong to its own `<form>`
 /// element, so anything the wrapper should render has to be declared here.
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(method = "post", context = Session)]
 struct WithCsrf<T> {
     #[field(
@@ -57,7 +57,7 @@ struct WithCsrf<T> {
 
 /// The form being protected — it knows nothing about any of this, and asks for
 /// no context of its own.
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Signup {
     #[field(type = "email", label = "Email address")]
     email: String,

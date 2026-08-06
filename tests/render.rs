@@ -2,10 +2,10 @@
 
 //! Rendering a blank form: the spec, the view and the built-in HTML.
 
+use html_form::{FieldKind, Form};
 use std::borrow::Cow;
-use web_form::{FieldKind, WebForm};
 
-#[derive(WebForm)]
+#[derive(Form)]
 #[form(id = "signup", action = "/signup", method = "post", submit = "Join")]
 struct Signup {
     #[field(
@@ -132,7 +132,7 @@ fn constraints_reach_the_view() {
 
 #[test]
 fn implied_numeric_bounds_come_from_the_rust_type() {
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Counts {
         small: u8,
         signed: i32,
@@ -164,14 +164,14 @@ fn a_generated_default_is_produced_afresh_for_every_render() {
         format!("t{}", ISSUED.fetch_add(1, Ordering::Relaxed))
     }
 
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Booking {
         #[field(type = "hidden", default = ticket)]
         ticket: String,
         seat: Option<u32>,
     }
 
-    let value = |view: web_form::FormView| view.field("ticket").unwrap().value.clone().unwrap();
+    let value = |view: html_form::FormView| view.field("ticket").unwrap().value.clone().unwrap();
     assert_eq!(value(Booking::render()), "t0");
     assert_eq!(value(Booking::render()), "t1");
     // Once per render, not once per field, and only for the field that asked.
@@ -187,7 +187,7 @@ fn a_generated_default_is_the_forms_own_only_where_it_is_hidden() {
         "fresh"
     }
 
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Renewal {
         #[field(type = "hidden", default = fresh)]
         token: String,
@@ -196,7 +196,10 @@ fn a_generated_default_is_the_forms_own_only_where_it_is_hidden() {
     }
 
     let render = |body: &str| {
-        Renewal::render_submitted(&web_form::Values::parse(body), &web_form::FormErrors::new())
+        Renewal::render_submitted(
+            &html_form::Values::parse(body),
+            &html_form::FormErrors::new(),
+        )
     };
 
     // A blank form is where a default is a default: both fields show one.
@@ -238,7 +241,7 @@ fn an_edit_form_shows_what_the_record_holds_and_not_a_generated_default() {
         "2026-08-06"
     }
 
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Article {
         #[field(type = "hidden", default = today)]
         edited_on: String,
@@ -278,12 +281,12 @@ fn html_carries_the_form_and_control_attributes() {
     let html = Signup::render().to_html();
 
     assert!(html.contains(r#"<form id="signup" action="/signup" method="post""#));
-    assert!(html.contains(r#"<button type="submit" class="web-form__submit">Join</button>"#));
+    assert!(html.contains(r#"<button type="submit" class="html-form__submit">Join</button>"#));
 
     assert!(html.contains(
         r#"<input type="email" name="email" id="email" required autocomplete="email" placeholder="you@example.com">"#
     ));
-    assert!(html.contains(r#"<label class="web-form__label" for="email">Email address"#));
+    assert!(html.contains(r#"<label class="html-form__label" for="email">Email address"#));
     assert!(html.contains(r#"minlength="12""#));
     assert!(
         html.contains(r#"<input type="number" name="age" id="age" min="18" max="120" step="1">"#)
@@ -301,14 +304,14 @@ fn help_text_is_wired_up_for_screen_readers() {
     assert!(html.contains(r#"aria-describedby="password-help""#));
     assert!(
         html.contains(
-            r#"<p class="web-form__help" id="password-help">At least 12 characters.</p>"#
+            r#"<p class="html-form__help" id="password-help">At least 12 characters.</p>"#
         )
     );
 }
 
 #[test]
 fn an_optional_select_offers_an_empty_option() {
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Filter {
         #[field(type = "select")]
         #[option("new", "New")]
@@ -322,7 +325,7 @@ fn an_optional_select_offers_an_empty_option() {
 
 #[test]
 fn values_and_labels_are_escaped() {
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Risky {
         #[field(label = "Name <script>", default = r#"a" onload="x"#)]
         name: String,
@@ -347,7 +350,7 @@ fn the_view_serialises_for_template_engines() {
 
 #[test]
 fn a_control_carries_only_the_attributes_that_control_accepts() {
-    use web_form::{Control, TextControl, TextFormat};
+    use html_form::{Control, TextControl, TextFormat};
 
     let spec = Signup::spec();
     assert_eq!(spec.action, Some("/signup"));
@@ -414,8 +417,8 @@ fn a_view_borrows_what_the_spec_already_holds() {
     // What the user typed is the exception: it has to be copied out of the
     // submission, which does not outlive the view.
     let submitted = Signup::render_submitted(
-        &web_form::Values::parse("email=a@b.com"),
-        &web_form::FormErrors::new(),
+        &html_form::Values::parse("email=a@b.com"),
+        &html_form::FormErrors::new(),
     );
     let email = submitted.field("email").unwrap();
     assert!(matches!(email.value, Some(Cow::Owned(_))));
@@ -425,9 +428,9 @@ fn a_view_borrows_what_the_spec_already_holds() {
 /// Escaping hands back text that has nothing to escape, rather than copying it.
 #[test]
 fn escaping_copies_only_what_it_changes() {
-    assert!(matches!(web_form::escape("plain text"), Cow::Borrowed(_)));
-    assert_eq!(web_form::escape("a<b & c"), "a&lt;b &amp; c");
-    assert_eq!(web_form::escape("\"'"), "&quot;&#39;");
+    assert!(matches!(html_form::escape("plain text"), Cow::Borrowed(_)));
+    assert_eq!(html_form::escape("a<b & c"), "a&lt;b &amp; c");
+    assert_eq!(html_form::escape("\"'"), "&quot;&#39;");
     // Non-ASCII is left alone, and not cut in half by the search for entities.
-    assert_eq!(web_form::escape("Grüße <hier>"), "Grüße &lt;hier&gt;");
+    assert_eq!(html_form::escape("Grüße <hier>"), "Grüße &lt;hier&gt;");
 }

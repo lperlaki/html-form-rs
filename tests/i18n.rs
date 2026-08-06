@@ -1,7 +1,7 @@
 //! Any string a person reads can be an i18n key instead of literal text.
 
-use web_form::Text;
-use web_form::prelude::*;
+use html_form::Text;
+use html_form::prelude::*;
 
 /// A stand-in for whatever an application's i18n backend is: the crate only
 /// ever asks it for a key and takes what it gets.
@@ -18,7 +18,7 @@ fn german(key: &str) -> Option<&'static str> {
     }
 }
 
-#[derive(WebForm)]
+#[derive(Form)]
 #[form(submit = t("signup.submit"))]
 struct Signup {
     #[field(
@@ -128,13 +128,13 @@ fn the_built_in_html_renders_whatever_the_view_currently_holds() {
 
 #[test]
 fn a_flatten_legend_can_be_a_key() {
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Address {
         #[field(label = "Street")]
         street: String,
     }
 
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Order {
         #[field(flatten, prefix = "billing_", legend = t("address.legend"))]
         billing: Address,
@@ -162,7 +162,7 @@ fn a_form_choice_variant_can_carry_a_key() {
         Pro,
     }
 
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Pick {
         #[field(label = "Plan")]
         plan: Plan,
@@ -184,7 +184,7 @@ fn a_form_choice_variant_can_carry_a_key() {
 
 #[test]
 fn choices_supplied_at_render_time_can_be_keyed_as_well() {
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Booking {
         #[field(type = "select", label = "Room")]
         room: String,
@@ -213,7 +213,7 @@ fn the_keys_serialise_for_a_template_that_would_rather_translate_itself() {
 
 #[test]
 fn a_validators_message_can_be_a_key_like_any_other_string() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     #[form(validate = one_of_each)]
     struct Order {
         #[field(label = "Quantity", validate = in_stock)]

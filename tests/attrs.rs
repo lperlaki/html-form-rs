@@ -3,9 +3,9 @@
 //! Custom attributes: markup the crate has no opinion about, carried from the
 //! derive through the spec and the view into the HTML.
 
-use web_form::{Attr, WebForm};
+use html_form::{Attr, Form};
 
-#[derive(WebForm)]
+#[derive(Form)]
 #[form(action = "/search")]
 #[form(attr("hx-post" = "/search", "data-turbo" = "false"))]
 struct Search {
@@ -53,7 +53,7 @@ fn custom_attributes_are_rendered_in_declaration_order() {
     let html = Search::render().to_html();
 
     assert!(
-        html.contains(r#"method="post" class="web-form" hx-post="/search" data-turbo="false">"#)
+        html.contains(r#"method="post" class="html-form" hx-post="/search" data-turbo="false">"#)
     );
     assert!(html.contains(
         r#"<input type="text" name="query" id="query" required hx-trigger="keyup changed delay:300ms" data-index="3" autocorrect="off">"#
@@ -63,7 +63,7 @@ fn custom_attributes_are_rendered_in_declaration_order() {
 
 #[test]
 fn custom_attribute_values_are_escaped() {
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Risky {
         #[field(attr("data-payload" = r#"" onload="x"#))]
         name: String,
@@ -100,13 +100,13 @@ fn a_custom_attribute_can_be_set_at_render_time() {
 
 #[test]
 fn every_field_of_a_flattened_form_keeps_its_own_attributes() {
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Address {
         #[field(attr("data-autofill" = "street"))]
         street: String,
     }
 
-    #[derive(WebForm)]
+    #[derive(Form)]
     struct Order {
         #[field(flatten, prefix = "billing_")]
         billing: Address,

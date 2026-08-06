@@ -1,8 +1,8 @@
 //! The declarative description of a form: what the derive macro produces and
 //! what both the renderer and the parser read.
 //!
-//! A [`FormSpec`] is built entirely from `const` data, so `#[derive(WebForm)]`
-//! emits it as the associated constant [`WebForm::SPEC`](crate::WebForm::SPEC)
+//! A [`FormSpec`] is built entirely from `const` data, so `#[derive(Form)]`
+//! emits it as the associated constant [`Form::SPEC`](crate::Form::SPEC)
 //! and hands out a `&'static` reference to memory the compiler laid out — no
 //! allocation, no lazy initialisation, and nothing to run at render time.
 //! [`Control`] and everything inside it is `Copy`, which is what makes the merge
@@ -580,7 +580,7 @@ pub struct FieldSpec {
     /// This is the *literal* default, the one a spec can hold. The other kind —
     /// `#[field(default = path)]`, a value the form produces afresh for every
     /// render — cannot live in a `const`, and is generated instead by
-    /// [`WebForm::generate_defaults`](crate::WebForm::generate_defaults), which
+    /// [`Form::generate_defaults`](crate::Form::generate_defaults), which
     /// is also the only thing that may take the render's context.
     pub default: Option<&'static str>,
     pub placeholder: Option<Text>,
@@ -651,7 +651,7 @@ pub(crate) fn sanitize_id(name: &Cow<'static, str>) -> Cow<'static, str> {
 /// A sub-form spliced into an enclosing form.
 ///
 /// Produced by `#[field(flatten)]`. The sub-form's spec is referenced directly:
-/// [`WebForm::SPEC`](crate::WebForm::SPEC) is an associated *constant*, so the
+/// [`Form::SPEC`](crate::Form::SPEC) is an associated *constant*, so the
 /// reference is resolved while the enclosing spec is const-evaluated rather
 /// than by a call at render time.
 #[derive(Debug, Clone)]

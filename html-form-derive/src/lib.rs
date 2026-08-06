@@ -1,6 +1,6 @@
-//! Derive macros for [`web-form`](https://docs.rs/web-form).
+//! Derive macros for [`html-form`](https://docs.rs/html-form).
 //!
-//! Everything these macros generate is documented on the `web_form` crate; this
+//! Everything these macros generate is documented on the `html_form` crate; this
 //! crate exists only because procedural macros need their own compilation unit.
 
 use proc_macro::TokenStream;
@@ -12,7 +12,7 @@ mod control;
 mod form;
 mod value;
 
-/// Derive `WebForm` for a struct with named fields.
+/// Derive `Form` for a struct with named fields.
 ///
 /// # Struct attributes — `#[form(...)]`
 ///
@@ -52,7 +52,7 @@ mod value;
 /// `Decimal` needs no impl and no newtype.
 ///
 /// ```ignore
-/// #[derive(WebForm)]
+/// #[derive(Form)]
 /// struct Booking {
 ///     #[field(from_str, type = "date", min = "2026-01-01")]
 ///     day: NaiveDate,
@@ -83,13 +83,13 @@ mod value;
 /// # Generic forms
 ///
 /// A struct with type parameters derives like any other: `SPEC` is an
-/// associated constant, so `<T as WebForm>::SPEC` is resolved per
-/// instantiation. The bounds a field implies — `WebForm` for one that is
+/// associated constant, so `<T as Form>::SPEC` is resolved per
+/// instantiation. The bounds a field implies — `Form` for one that is
 /// flattened, `FormValue` for one that is a value — are added for you, so a
 /// wrapper form needs none written on it:
 ///
 /// ```ignore
-/// #[derive(WebForm)]
+/// #[derive(Form)]
 /// #[form(method = "post")]
 /// struct WithCsrf<T> {
 ///     #[field(type = "hidden", default = session_token, validate = belongs_to_session)]
@@ -109,8 +109,8 @@ mod value;
 /// `&'static str`, a `String`, a `Text` (so an i18n key), or a `FieldError`.
 /// A `#[form(validate = ...)]` function may additionally return a
 /// `(field, message)` pair or a whole `FormErrors`, so a cross-field check can
-/// blame the field the user has to change. See `web_form::FieldValidation` and
-/// `web_form::FormValidation`.
+/// blame the field the user has to change. See `html_form::FieldValidation` and
+/// `html_form::FormValidation`.
 ///
 /// # Attributes that do not apply
 ///
@@ -120,8 +120,8 @@ mod value;
 /// happens during `const` evaluation of the generated spec, because which
 /// control a field renders as can come from its Rust type — which a macro
 /// cannot inspect.
-#[proc_macro_derive(WebForm, attributes(form, field, option))]
-pub fn derive_web_form(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Form, attributes(form, field, option))]
+pub fn derive_form(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     form::derive(input)
         .unwrap_or_else(syn::Error::into_compile_error)
@@ -192,7 +192,7 @@ pub fn derive_web_form(input: TokenStream) -> TokenStream {
 /// first and says more.
 ///
 /// A struct with several fields and no `from_str` is a form of its own: derive
-/// `WebForm` and splice it in with `#[field(flatten)]`. A fieldless enum whose
+/// `Form` and splice it in with `#[field(flatten)]`. A fieldless enum whose
 /// variants are a `<select>`'s options is `#[derive(FormChoice)]`.
 ///
 /// A validator is handed `&Self` and nothing else: a `FormValue` belongs to no

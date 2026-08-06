@@ -3,9 +3,9 @@
 //! Forms with type parameters: a wrapper that adds a field to whatever it is
 //! given, and the bounds the derive works out for itself.
 
-use web_form::{Entry, Outcome, WebForm};
+use html_form::{Entry, Form, Outcome};
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Signup {
     #[field(type = "email", label = "Email address")]
     email: String,
@@ -14,7 +14,7 @@ struct Signup {
     age: Option<u32>,
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Feedback {
     #[field(type = "textarea", maxlength = 500)]
     message: String,
@@ -22,7 +22,7 @@ struct Feedback {
 
 /// The wrapper under test. No bound is written on `T`: the flatten is what says
 /// it has to be a form, and the derive adds that itself.
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(method = "post")]
 struct WithToken<T> {
     #[field(type = "hidden", label = "")]
@@ -41,7 +41,7 @@ fn a_generic_form_has_a_spec_per_instantiation() {
     assert_eq!(signup.entries.len(), 2);
     assert!(matches!(signup.entries[1], Entry::Flatten(_)));
 
-    let names = |spec: &'static web_form::FormSpec| -> Vec<String> {
+    let names = |spec: &'static html_form::FormSpec| -> Vec<String> {
         spec.fields()
             .iter()
             .map(|field| field.name.to_string())
@@ -93,7 +93,7 @@ fn errors_from_either_half_name_the_field_that_caused_them() {
 
 #[test]
 fn a_prefix_applies_to_the_whole_wrapped_form() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Prefixed<T> {
         token: String,
 
@@ -112,19 +112,19 @@ fn a_prefix_applies_to_the_whole_wrapped_form() {
 
 #[test]
 fn prefixes_compose_through_a_generic_wrapper() {
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Address {
         #[field(label = "Postcode", pattern = r"\d{5}")]
         postcode: String,
     }
 
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Order {
         #[field(flatten, prefix = "billing_")]
         billing: Address,
     }
 
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Outer<T> {
         #[field(flatten, prefix = "order_")]
         inner: T,
@@ -142,7 +142,7 @@ fn prefixes_compose_through_a_generic_wrapper() {
 fn a_parameter_used_as_a_value_is_bounded_by_form_value() {
     // `T` is a field's own type here rather than a sub-form, so what the derive
     // infers is `FormValue`.
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Pair<T> {
         #[field(label = "From")]
         from: T,

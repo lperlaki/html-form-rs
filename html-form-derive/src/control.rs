@@ -50,11 +50,11 @@ pub fn control_tokens(
     let cols = opt_u32(&constraints.cols);
 
     Ok(quote! {
-        ::web_form::__private::control(
+        ::html_form::__private::control(
             #implied,
             #explicit,
             #choices,
-            ::web_form::__private::Overrides {
+            ::html_form::__private::Overrides {
                 pattern: #pattern,
                 minlength: #minlength,
                 maxlength: #maxlength,
@@ -75,30 +75,30 @@ pub fn control_tokens(
 fn control_skeleton(name: &str, span: Span) -> Result<TokenStream> {
     let text = |format: &str| {
         let format = Ident::new(format, span);
-        quote!(::web_form::Control::Text(::web_form::TextControl {
-            format: ::web_form::TextFormat::#format,
-            ..::web_form::TextControl::DEFAULT
+        quote!(::html_form::Control::Text(::html_form::TextControl {
+            format: ::html_form::TextFormat::#format,
+            ..::html_form::TextControl::DEFAULT
         }))
     };
     let number = |format: &str| {
         let format = Ident::new(format, span);
-        quote!(::web_form::Control::Number(::web_form::NumberControl {
-            format: ::web_form::NumberFormat::#format,
-            ..::web_form::NumberControl::DEFAULT
+        quote!(::html_form::Control::Number(::html_form::NumberControl {
+            format: ::html_form::NumberFormat::#format,
+            ..::html_form::NumberControl::DEFAULT
         }))
     };
     let temporal = |format: &str| {
         let format = Ident::new(format, span);
-        quote!(::web_form::Control::Temporal(::web_form::TemporalControl {
-            format: ::web_form::TemporalFormat::#format,
-            ..::web_form::TemporalControl::DEFAULT
+        quote!(::html_form::Control::Temporal(::html_form::TemporalControl {
+            format: ::html_form::TemporalFormat::#format,
+            ..::html_form::TemporalControl::DEFAULT
         }))
     };
     let choose = |style: &str| {
         let style = Ident::new(style, span);
-        quote!(::web_form::Control::Choose(::web_form::ChooseControl {
-            style: ::web_form::ChoiceStyle::#style,
-            ..::web_form::ChooseControl::DEFAULT
+        quote!(::html_form::Control::Choose(::html_form::ChooseControl {
+            style: ::html_form::ChoiceStyle::#style,
+            ..::html_form::ChooseControl::DEFAULT
         }))
     };
 
@@ -108,9 +108,9 @@ fn control_skeleton(name: &str, span: Span) -> Result<TokenStream> {
         "tel" => text("Tel"),
         "search" => text("Search"),
         "url" => text("Url"),
-        "email" => quote!(::web_form::Control::Text(::web_form::TextControl {
-            format: ::web_form::TextFormat::Email { multiple: false },
-            ..::web_form::TextControl::DEFAULT
+        "email" => quote!(::html_form::Control::Text(::html_form::TextControl {
+            format: ::html_form::TextFormat::Email { multiple: false },
+            ..::html_form::TextControl::DEFAULT
         })),
         "number" => number("Number"),
         "range" => number("Range"),
@@ -121,13 +121,15 @@ fn control_skeleton(name: &str, span: Span) -> Result<TokenStream> {
         "week" => temporal("Week"),
         "select" => choose("Select"),
         "radio" => choose("Radio"),
-        "textarea" => quote!(::web_form::Control::Textarea(
-            ::web_form::TextareaControl::DEFAULT
+        "textarea" => quote!(::html_form::Control::Textarea(
+            ::html_form::TextareaControl::DEFAULT
         )),
-        "file" => quote!(::web_form::Control::File(::web_form::FileControl::DEFAULT)),
-        "checkbox" => quote!(::web_form::Control::Checkbox),
-        "color" => quote!(::web_form::Control::Color),
-        "hidden" => quote!(::web_form::Control::Hidden),
+        "file" => quote!(::html_form::Control::File(
+            ::html_form::FileControl::DEFAULT
+        )),
+        "checkbox" => quote!(::html_form::Control::Checkbox),
+        "color" => quote!(::html_form::Control::Color),
+        "hidden" => quote!(::html_form::Control::Hidden),
         other => {
             return Err(Error::new(
                 span,
@@ -180,7 +182,7 @@ fn choices_tokens(constraints: &Constraints, options: &[OptionAttr]) -> Result<T
                 Some(label) => label.tokens(),
                 None => {
                     let text = &option.value;
-                    quote!(::web_form::Text {
+                    quote!(::html_form::Text {
                         content: ::std::borrow::Cow::Borrowed(#text),
                         is_key: false,
                     })
@@ -189,7 +191,7 @@ fn choices_tokens(constraints: &Constraints, options: &[OptionAttr]) -> Result<T
             let disabled = option.disabled;
             let group = crate::attrs::opt_text(&option.group);
             quote! {
-                ::web_form::Choice {
+                ::html_form::Choice {
                     value: ::std::borrow::Cow::Borrowed(#value),
                     label: #label,
                     disabled: #disabled,

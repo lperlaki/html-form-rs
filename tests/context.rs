@@ -4,7 +4,7 @@
 //! what reaches a `default = ...` or `validate = ...` function, and what happens
 //! at the seam where a form with a context flattens one without.
 
-use web_form::{FormErrors, Outcome, Provides, Text, WebForm};
+use html_form::{Form, FormErrors, Outcome, Provides, Text};
 
 /// Whatever a handler already has.
 struct Session {
@@ -29,7 +29,7 @@ impl Provides<()> for Session {
     }
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(method = "post", context = Session, validate = one_admin_at_a_time)]
 struct Signup {
     #[field(type = "hidden", default = issued_token, validate = belongs_to_session)]
@@ -131,13 +131,13 @@ fn a_re_render_mints_the_hidden_default_again_rather_than_echoing_it() {
 // ─── Across the seam ──────────────────────────────────────────────────────────
 
 /// Knows nothing of any context, and is not asked to.
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Address {
     #[field(label = "Postcode", pattern = r"\d{5}")]
     postcode: String,
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(context = Session)]
 struct Order {
     #[field(type = "hidden", default = issued_token)]
@@ -169,7 +169,7 @@ fn a_context_free_sub_form_is_flattened_into_one_that_has_a_context() {
 /// A wrapper is generic over what it wraps; the derive works out that a
 /// `Session` has to be able to supply whatever context the wrapped form asks
 /// for.
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(context = Session)]
 struct WithToken<T> {
     #[field(type = "hidden", default = issued_token)]
@@ -195,7 +195,7 @@ fn a_wrapper_renders_the_token_for_a_sub_form_of_either_kind() {
     // It generates a default of its own, which lands under the flatten's
     // prefix — as its name does, and as it has to: two fields submitted under
     // one name would reach the parse as one.
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     #[form(context = Session)]
     struct Checkout<T> {
         #[field(type = "hidden", default = issued_token)]
@@ -219,7 +219,7 @@ fn a_wrapper_renders_the_token_for_a_sub_form_of_either_kind() {
 
 // ─── The forms that ask for nothing ───────────────────────────────────────────
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Search {
     #[field(type = "hidden", default = fixed_token)]
     token: String,
@@ -259,16 +259,16 @@ fn a_form_that_generates_nothing_says_so_at_compile_time() {
     const { assert!(!Address::GENERATES_DEFAULTS) };
     const { assert!(Search::GENERATES_DEFAULTS) };
     // And the answer is the whole flatten tree's, not just the outer form's.
-    const { assert!(<WithToken<Address> as WebForm>::GENERATES_DEFAULTS) };
+    const { assert!(<WithToken<Address> as Form>::GENERATES_DEFAULTS) };
 
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Plain {
         #[field(flatten)]
         inner: Address,
     }
     const { assert!(!Plain::GENERATES_DEFAULTS) };
 
-    #[derive(WebForm, Debug)]
+    #[derive(Form, Debug)]
     struct Wrapping {
         #[field(flatten, prefix = "s_")]
         inner: Search,

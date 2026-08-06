@@ -280,7 +280,7 @@ impl FormView {
     /// falls back to its declared default.
     ///
     /// `generated` is what the form produced for *this* render —
-    /// [`WebForm::defaults_with_context`](crate::WebForm::defaults_with_context),
+    /// [`Form::defaults_with_context`](crate::Form::defaults_with_context),
     /// keyed by fully-qualified field name, and `None` for a form that declares
     /// no generated default. It is separate from `values` because the two are
     /// not interchangeable: a value the form minted itself is minted again on a
@@ -335,8 +335,8 @@ impl FormView {
     /// backend calls a bundle is enough.
     ///
     /// ```
-    /// # use web_form::WebForm;
-    /// # #[derive(WebForm)]
+    /// # use html_form::Form;
+    /// # #[derive(Form)]
     /// # struct Signup {
     /// #     #[field(label = t("signup.email"))]
     /// #     email: String,

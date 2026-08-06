@@ -29,7 +29,7 @@ impl TextAttr {
     pub fn tokens(&self) -> TokenStream {
         let content = &self.content;
         let is_key = self.is_key;
-        quote!(::web_form::Text {
+        quote!(::html_form::Text {
             content: ::std::borrow::Cow::Borrowed(#content),
             is_key: #is_key,
         })
@@ -130,8 +130,8 @@ impl CustomAttr {
     pub fn tokens(&self) -> TokenStream {
         let name = &self.name;
         match &self.value {
-            Some(value) => quote!(::web_form::Attr::new(#name, #value)),
-            None => quote!(::web_form::Attr::flag(#name)),
+            Some(value) => quote!(::html_form::Attr::new(#name, #value)),
+            None => quote!(::html_form::Attr::flag(#name)),
         }
     }
 }

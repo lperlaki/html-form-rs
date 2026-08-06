@@ -40,14 +40,14 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         }
         false => {
             let (member, inner) = wrapped(&input)?;
-            // As in `WebForm`: a bound only where a parameter is what has to
+            // As in `Form`: a bound only where a parameter is what has to
             // satisfy it, so a concrete inner type reports its own missing impl
             // at the field that names it.
             if mentions(inner, &params) {
                 generics
                     .make_where_clause()
                     .predicates
-                    .push(syn::parse_quote!(#inner: ::web_form::FormValue));
+                    .push(syn::parse_quote!(#inner: ::html_form::FormValue));
             }
             Conversion::wrapping(&member, inner)
         }
@@ -64,8 +64,8 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     // trait's own empty check rather than a call that does nothing.
     let validate = match &attrs.validate {
         Some(path) => quote! {
-            fn validate_form_value(&self) -> ::core::result::Result<(), ::web_form::FieldError> {
-                ::web_form::__private::check_value(self, #path)
+            fn validate_form_value(&self) -> ::core::result::Result<(), ::html_form::FieldError> {
+                ::html_form::__private::check_value(self, #path)
             }
         },
         None => TokenStream::new(),
@@ -73,15 +73,15 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics ::web_form::FormValue for #ident #ty_generics #where_clause {
-            const CONTROL: ::web_form::Control = #control;
+        impl #impl_generics ::html_form::FormValue for #ident #ty_generics #where_clause {
+            const CONTROL: ::html_form::Control = #control;
 
             const DEFAULT: ::core::option::Option<&'static str> =
-                ::web_form::__private::or_default(#written, #inherited);
+                ::html_form::__private::or_default(#written, #inherited);
 
             fn parse_form_value(
                 __raw: &str,
-            ) -> ::core::result::Result<Self, ::web_form::ValueError> {
+            ) -> ::core::result::Result<Self, ::html_form::ValueError> {
                 #parse
             }
 
@@ -113,7 +113,7 @@ impl Conversion {
         Self {
             // A type converting itself says nothing about what it looks like,
             // so it renders as text until `type = "..."` says otherwise.
-            implied: quote!(::web_form::Control::TEXT),
+            implied: quote!(::html_form::Control::TEXT),
             // The message is the adapter's, and for the same reason: what a
             // `FromStr` says went wrong is written for whoever wrote the call.
             parse: quote! {
@@ -122,7 +122,7 @@ impl Conversion {
                         ::core::result::Result::Ok(__value)
                     }
                     ::core::result::Result::Err(_) => ::core::result::Result::Err(
-                        ::web_form::ValueError::new("a valid value"),
+                        ::html_form::ValueError::new("a valid value"),
                     ),
                 }
             },
@@ -136,16 +136,16 @@ impl Conversion {
     /// The default: the one value the type wraps does the converting, and this
     /// writes it through the wrapper.
     fn wrapping(member: &Member, inner: &syn::Type) -> Self {
-        let parsed = quote!(<#inner as ::web_form::FormValue>::parse_form_value(__raw)?);
+        let parsed = quote!(<#inner as ::html_form::FormValue>::parse_form_value(__raw)?);
         let (construct, member) = match member {
             Member::Index => (quote!(Self(#parsed)), quote!(0)),
             Member::Named(name) => (quote!(Self { #name: #parsed }), quote!(#name)),
         };
         Self {
-            implied: quote!(<#inner as ::web_form::FormValue>::CONTROL),
+            implied: quote!(<#inner as ::html_form::FormValue>::CONTROL),
             parse: quote!(::core::result::Result::Ok(#construct)),
-            render: quote!(<#inner as ::web_form::FormValue>::to_form_value(&self.#member)),
-            inherited: quote!(<#inner as ::web_form::FormValue>::DEFAULT),
+            render: quote!(<#inner as ::html_form::FormValue>::to_form_value(&self.#member)),
+            inherited: quote!(<#inner as ::html_form::FormValue>::DEFAULT),
         }
     }
 }
@@ -199,7 +199,7 @@ fn wrapped(input: &DeriveInput) -> Result<(Member, &Type)> {
                 fields,
                 "`FormValue` describes one form control, which submits one string, so it can \
                  only be derived for a struct with exactly one field; a struct with several is \
-                 either a form of its own — derive `WebForm` and splice it in with \
+                 either a form of its own — derive `Form` and splice it in with \
                  `#[field(flatten)]` — or a type that converts itself, which is \
                  `#[value(from_str)]`",
             ));

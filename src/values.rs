@@ -11,15 +11,15 @@ use serde::{Deserialize, Serialize, Serializer};
 /// A submission is where these come from most often — [`Values::parse`] builds
 /// one exactly as it came off the wire — but it is the crate's one carrier for
 /// "fully-qualified field name → value", so it is also what an existing record
-/// is written back out as ([`WebForm::to_values`](crate::WebForm::to_values))
+/// is written back out as ([`Form::to_values`](crate::Form::to_values))
 /// and what a form generates for a render
-/// ([`WebForm::generate_defaults`](crate::WebForm::generate_defaults)).
+/// ([`Form::generate_defaults`](crate::Form::generate_defaults)).
 ///
 /// Order is preserved and a name may repeat, which is how checkbox groups and
 /// `<select multiple>` submit their values.
 ///
 /// ```
-/// use web_form::Values;
+/// use html_form::Values;
 ///
 /// let v = Values::parse("email=a%40b.com&tag=x&tag=y");
 /// assert_eq!(v.get("email"), Some("a@b.com"));
@@ -37,9 +37,9 @@ use serde::{Deserialize, Serialize, Serializer};
 /// what each shape means.
 ///
 /// ```
-/// use web_form::{Values, WebForm};
+/// use html_form::{Form, Values};
 ///
-/// #[derive(WebForm)]
+/// #[derive(Form)]
 /// struct Signup {
 ///     #[field(type = "email")]
 ///     email: String,

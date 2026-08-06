@@ -455,9 +455,9 @@ pub fn required_error(_spec: &FieldSpec) -> FieldError {
 /// | `Result<(), FieldError>` | `Err` | whatever the error carries |
 ///
 /// ```
-/// use web_form::{Text, WebForm};
+/// use html_form::{Form, Text};
 ///
-/// #[derive(WebForm, Debug)]
+/// #[derive(Form, Debug)]
 /// struct Signup {
 ///     // The shortest form: a predicate, and the built-in message.
 ///     #[field(validate = is_even)]
@@ -508,9 +508,9 @@ impl<E: Into<FieldError>> FieldValidation for Result<(), E> {
 /// itself. A message that names no field belongs to the form as a whole.
 ///
 /// ```
-/// use web_form::{FormErrors, WebForm};
+/// use html_form::{Form, FormErrors};
 ///
-/// #[derive(WebForm, Debug)]
+/// #[derive(Form, Debug)]
 /// #[form(validate = passwords_match)]
 /// struct Signup {
 ///     password: String,
@@ -563,11 +563,11 @@ impl<E: Into<FormErrors>> FormValidation for Result<(), E> {
 /// validator can check emptiness or cardinality as well as the value.
 ///
 /// ```
-/// use web_form::{Text, WebForm};
+/// use html_form::{Form, Text};
 ///
 /// struct Db(Vec<&'static str>);
 ///
-/// #[derive(WebForm, Debug)]
+/// #[derive(Form, Debug)]
 /// #[form(context = Db)]
 /// struct Signup {
 ///     // Takes the context: only the database knows what is left.

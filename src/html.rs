@@ -6,7 +6,7 @@
 //! description a template engine renders. Nothing else in the crate depends on
 //! this module: parsing, validation and [`FormView`] itself are unaffected.
 //!
-//! The markup is plain and unstyled; every element carries a `web-form__*`
+//! The markup is plain and unstyled; every element carries a `html-form__*`
 //! class to hook CSS onto.
 
 use std::borrow::Cow;
@@ -18,7 +18,7 @@ use crate::view::{AttrView, FieldView, FormView};
 impl FormView {
     /// Render the complete `<form>` element.
     ///
-    /// The markup is plain and unstyled; every element carries a `web-form__*`
+    /// The markup is plain and unstyled; every element carries a `html-form__*`
     /// class to hook CSS onto. Reach for a template engine and the serialised
     /// view when you need control over the markup itself.
     pub fn to_html(&self) -> String {
@@ -29,7 +29,7 @@ impl FormView {
         attr_opt(&mut out, "action", self.action.as_deref());
         attr(&mut out, "method", self.method);
         attr_opt(&mut out, "enctype", self.enctype);
-        out.push_str(" class=\"web-form");
+        out.push_str(" class=\"html-form");
         if let Some(class) = &self.class {
             out.push(' ');
             escape_into(&mut out, class);
@@ -40,7 +40,7 @@ impl FormView {
         out.push_str(">\n");
 
         if !self.errors.is_empty() {
-            out.push_str("  <ul class=\"web-form__errors\">\n");
+            out.push_str("  <ul class=\"html-form__errors\">\n");
             for message in &self.errors {
                 out.push_str("    <li>");
                 escape_into(&mut out, message);
@@ -59,7 +59,7 @@ impl FormView {
                     out.push_str("  </fieldset>\n");
                 }
                 if let Some(legend) = group {
-                    out.push_str("  <fieldset class=\"web-form__group\">\n    <legend>");
+                    out.push_str("  <fieldset class=\"html-form__group\">\n    <legend>");
                     escape_into(&mut out, legend);
                     out.push_str("</legend>\n");
                 }
@@ -71,7 +71,7 @@ impl FormView {
             out.push_str("  </fieldset>\n");
         }
 
-        out.push_str("  <button type=\"submit\" class=\"web-form__submit\">");
+        out.push_str("  <button type=\"submit\" class=\"html-form__submit\">");
         escape_into(&mut out, &self.submit_label);
         out.push_str("</button>\n</form>");
         out
@@ -113,9 +113,9 @@ impl FieldView {
             return;
         }
 
-        out.push_str("  <div class=\"web-form__field");
+        out.push_str("  <div class=\"html-form__field");
         if self.has_errors {
-            out.push_str(" web-form__field--invalid");
+            out.push_str(" html-form__field--invalid");
         }
         out.push_str("\" data-field=\"");
         escape_into(out, &self.name);
@@ -137,7 +137,7 @@ impl FieldView {
         }
 
         if let Some(help) = &self.help {
-            out.push_str("    <p class=\"web-form__help\" id=\"");
+            out.push_str("    <p class=\"html-form__help\" id=\"");
             escape_into(out, &self.help_id);
             out.push_str("\">");
             escape_into(out, help);
@@ -145,7 +145,7 @@ impl FieldView {
         }
 
         if self.has_errors {
-            out.push_str("    <ul class=\"web-form__errors\" id=\"");
+            out.push_str("    <ul class=\"html-form__errors\" id=\"");
             escape_into(out, &self.error_id);
             out.push_str("\">\n");
             for message in &self.errors {
@@ -166,22 +166,22 @@ impl FieldView {
         if matches!(self.kind, FieldKind::Radio | FieldKind::CheckboxGroup)
             && !self.choices.is_empty()
         {
-            out.push_str("    <span class=\"web-form__label\" id=\"");
+            out.push_str("    <span class=\"html-form__label\" id=\"");
             escape_into(out, &self.label_id);
             out.push_str("\">");
             escape_into(out, label);
             if self.required {
-                out.push_str(" <span class=\"web-form__required\" aria-hidden=\"true\">*</span>");
+                out.push_str(" <span class=\"html-form__required\" aria-hidden=\"true\">*</span>");
             }
             out.push_str("</span>\n");
             return;
         }
-        out.push_str("    <label class=\"web-form__label\" for=\"");
+        out.push_str("    <label class=\"html-form__label\" for=\"");
         escape_into(out, &self.id);
         out.push_str("\">");
         escape_into(out, label);
         if self.required {
-            out.push_str(" <span class=\"web-form__required\" aria-hidden=\"true\">*</span>");
+            out.push_str(" <span class=\"html-form__required\" aria-hidden=\"true\">*</span>");
         }
         out.push_str("</label>\n");
     }
@@ -314,7 +314,7 @@ impl FieldView {
     }
 
     fn write_radio_group(&self, out: &mut String) {
-        out.push_str("<div class=\"web-form__radios\" role=\"radiogroup\"");
+        out.push_str("<div class=\"html-form__radios\" role=\"radiogroup\"");
         if self.label.is_some() {
             attr(out, "aria-labelledby", &self.label_id);
         }
@@ -322,7 +322,7 @@ impl FieldView {
         let mut id = ChoiceId::new(&self.id);
         for (index, choice) in self.choices.iter().enumerate() {
             let id = id.nth(index);
-            out.push_str("      <label class=\"web-form__radio\"><input type=\"radio\"");
+            out.push_str("      <label class=\"html-form__radio\"><input type=\"radio\"");
             self.write_common(out, id);
             attr(out, "value", &choice.value);
             flag(out, "checked", choice.selected);
@@ -335,7 +335,7 @@ impl FieldView {
     }
 
     fn write_checkbox_group(&self, out: &mut String) {
-        out.push_str("<div class=\"web-form__checkboxes\" role=\"group\"");
+        out.push_str("<div class=\"html-form__checkboxes\" role=\"group\"");
         if self.label.is_some() {
             attr(out, "aria-labelledby", &self.label_id);
         }
@@ -348,7 +348,7 @@ impl FieldView {
         let mut id = ChoiceId::new(&self.id);
         for (index, choice) in self.choices.iter().enumerate() {
             let id = id.nth(index);
-            out.push_str("      <label class=\"web-form__checkbox\"><input type=\"checkbox\"");
+            out.push_str("      <label class=\"html-form__checkbox\"><input type=\"checkbox\"");
             self.write_common(out, id);
             attr(out, "value", &choice.value);
             flag(out, "checked", choice.selected);

@@ -9,9 +9,9 @@
 //! ```no_run
 //! use axum::response::{Html, IntoResponse, Response};
 //! use axum::http::StatusCode;
-//! use web_form::{Outcome, WebForm};
+//! use html_form::{Form, Outcome};
 //!
-//! #[derive(WebForm)]
+//! #[derive(Form)]
 //! #[form(action = "/signup", method = "post")]
 //! struct Signup {
 //!     #[field(type = "email", label = "Email address")]
@@ -35,20 +35,20 @@
 //!
 //! # Where the values come from
 //!
-//! As with axum's own `Form`, a `GET` or `HEAD` request is read from the query
+//! As with `axum::Form`, a `GET` or `HEAD` request is read from the query
 //! string and every other method from the body, which must be
 //! `application/x-www-form-urlencoded`. `multipart/form-data` is out of scope:
 //! parse it with a multipart crate and go through
 //! [`Values::from_pairs`](crate::Values::from_pairs) and
-//! [`WebForm::submit`](crate::WebForm::submit).
+//! [`Form::submit`](crate::Form::submit).
 //!
 //! # Forms that ask for a context
 //!
 //! An extractor has nothing but the request, so [`Outcome<T>`] extracts only a
-//! form whose [`Context`](crate::WebForm::Context) needs no supplying. A form
+//! form whose [`Context`](crate::Form::Context) needs no supplying. A form
 //! that wants one is submitted in the handler, where the context is: take the
-//! body with axum's own `Form<Values>` or `Bytes`, then call
-//! [`WebForm::submit_with_context`](crate::WebForm::submit_with_context).
+//! body with `axum::Form<Values>` or `Bytes`, then call
+//! [`Form::submit_with_context`](crate::Form::submit_with_context).
 
 use std::fmt;
 
@@ -57,7 +57,7 @@ use axum_core::response::{IntoResponse, Response};
 use bytes::Bytes;
 use http::{Method, StatusCode, header};
 
-use crate::{EmptyContext, Outcome, Values, WebForm};
+use crate::{EmptyContext, Form, Outcome, Values};
 
 /// Why there was no submission to validate.
 ///
@@ -115,7 +115,7 @@ where
     // An extractor has nothing but the request, so it can only submit a form
     // that asks for no context of its own. One that does is submitted in the
     // handler, where the context is — see `submit_with_context`.
-    T: WebForm<Context: EmptyContext> + Send,
+    T: Form<Context: EmptyContext> + Send,
     S: Send + Sync,
 {
     type Rejection = FormRejection;

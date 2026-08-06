@@ -1,4 +1,4 @@
-# web-form
+# html-form
 
 Declarative HTML forms for Rust. One struct describes a form; the crate renders
 it, parses the submission back into it, and — when validation fails — hands you
@@ -6,9 +6,9 @@ the same form again with the user's values and the error messages already
 attached.
 
 ```rust
-use web_form::{Outcome, WebForm};
+use html_form::{Form, Outcome};
 
-#[derive(WebForm)]
+#[derive(Form)]
 #[form(action = "/signup", method = "post", submit = "Create account")]
 struct Signup {
     #[field(type = "email", label = "Email address", autocomplete = "email")]
@@ -81,7 +81,7 @@ Anywhere a person-facing string is accepted, `t("…")` names an i18n key instea
 of giving the text:
 
 ```rust
-#[derive(WebForm)]
+#[derive(Form)]
 #[form(submit = t("signup.submit"))]
 struct Signup {
     #[field(type = "email",
@@ -136,11 +136,11 @@ keyed options at render time, next to `Choice::new` and `Choice::owned`.
 
 ## Reuse: flattening one form into another
 
-Any `WebForm` can be embedded in another. Without a prefix it shares the
+Any `Form` can be embedded in another. Without a prefix it shares the
 parent's namespace; with one, the same sub-form can be embedded more than once.
 
 ```rust
-#[derive(WebForm)]
+#[derive(Form)]
 struct Address {
     #[field(label = "Street")]
     street: String,
@@ -148,7 +148,7 @@ struct Address {
     postcode: String,
 }
 
-#[derive(WebForm)]
+#[derive(Form)]
 struct Order {
     customer: String,
 
@@ -177,7 +177,7 @@ author never has to know what an enum is.
 println!("{}", Signup::render());
 ```
 
-Plain, unstyled markup with `web-form__*` class hooks, correct `for`/`id`
+Plain, unstyled markup with `html-form__*` class hooks, correct `for`/`id`
 pairing, `aria-invalid` and `aria-describedby` wired to the help text and error
 list, `<fieldset>`s for flattened groups, and `<optgroup>`s for grouped choices.
 
@@ -252,7 +252,7 @@ errors only your database knows about.
 
 ### What rendering costs
 
-A spec is `const`: `WebForm::SPEC` is one const-evaluated value, flattened
+A spec is `const`: `Form::SPEC` is one const-evaluated value, flattened
 sub-forms and all, so there is nothing to build the first time a form renders,
 and no call to make to reach a sub-form's description.
 
@@ -325,7 +325,7 @@ country: String,
 `data-*`, `hx-*`, `aria-*`, whatever your front end reads:
 
 ```rust
-#[derive(WebForm)]
+#[derive(Form)]
 #[form(attr("hx-post" = "/search", "hx-target" = "#results"))]
 struct Search {
     #[field(attr("hx-trigger" = "keyup changed delay:300ms", autocorrect = "off"))]
@@ -400,7 +400,7 @@ fn is_company_address(email: &WorkEmail) -> Result<(), Text> {
     }
 }
 
-#[derive(WebForm)]
+#[derive(Form)]
 struct Invite {
     #[field(label = "Who should we invite?")]
     colleague: WorkEmail,          // the control, the length, the check: all the type's
@@ -426,7 +426,7 @@ needs one belongs on the field.
 
 It is derived for a struct with exactly one field, named or not, because a form
 control submits one string. A struct with several is a form of its own — derive
-`WebForm` and splice it in with `#[field(flatten)]` — unless it converts itself,
+`Form` and splice it in with `#[field(flatten)]` — unless it converts itself,
 which is the next section.
 
 ### A type from a crate that has never heard of this one
@@ -436,7 +436,7 @@ which is the next section.
 `Decimal` is a field with no impl written and no newtype wrapped around it:
 
 ```rust
-#[derive(WebForm)]
+#[derive(Form)]
 struct Booking {
     #[field(from_str, type = "date", min = "2026-01-01")]
     day: NaiveDate,
@@ -586,11 +586,11 @@ a default only the request knows: none of that fits in a `const`.
 renders or parses, and every function the form names is handed it.
 
 ```rust
-use web_form::{Text, WebForm};
+use html_form::{Form, Text};
 
 struct Session { csrf: String }
 
-#[derive(WebForm)]
+#[derive(Form)]
 #[form(method = "post", context = Session)]
 struct Comment {
     #[field(type = "hidden", default = issued_token, validate = is_our_token)]
@@ -618,7 +618,7 @@ let outcome = Comment::submit_urlencoded_with_context(body, &session);
 Declaring a context changes the **names** of the calls, not their meaning: every
 method that renders or parses has a `…_with_context` form taking `&Context`, and
 a form that declares none keeps the short one — `render()`, `from_values()`,
-`submit()`. Both halves are on `WebForm` itself; the short one is bounded by
+`submit()`. Both halves are on `Form` itself; the short one is bounded by
 `Context: EmptyContext`, which `()` is, so a form that asks for nothing needs no
 extra import and reads exactly as it always did.
 
@@ -643,7 +643,7 @@ Say what a context hands down to one that asks for something else — most often
 sub-form written without a context at all:
 
 ```rust
-impl web_form::Provides<()> for Session {
+impl html_form::Provides<()> for Session {
     fn provide(&self) -> &() { &() }
 }
 ```
@@ -677,7 +677,7 @@ let view = article.render_filled();
 
 | Feature | Default | What it does |
 |---|---|---|
-| `derive` | on | `#[derive(WebForm)]`, `#[derive(FormValue)]`, `#[derive(FormChoice)]` |
+| `derive` | on | `#[derive(Form)]`, `#[derive(FormValue)]`, `#[derive(FormChoice)]` |
 | `pattern` | on | Server-side `pattern` checking via `regex-lite`. Without it, `pattern` is still rendered and enforced by the browser |
 | `axum` | off | `Outcome<T>` is an axum 0.8 extractor |
 
@@ -742,7 +742,7 @@ A failed validation is **not** an extractor rejection — the handler still runs
 and decides what to do with the re-render. `FormRejection` covers only the cases
 where there is no submission to validate: a body that is not
 `application/x-www-form-urlencoded` (415), one that could not be read, or one
-that is not UTF-8 (400). As with axum's own `Form`, `GET` and `HEAD` are read
+that is not UTF-8 (400). As with `axum::Form`, `GET` and `HEAD` are read
 from the query string.
 
 An extractor has nothing but the request, so `Outcome<T>` extracts only a form
@@ -767,4 +767,4 @@ and feed the text fields in through `Values::from_pairs`.
 | `src/validate.rs` | Server-side re-checking of every HTML constraint |
 | `src/value.rs` | `FormValue` — Rust types ↔ submitted strings |
 | `src/values.rs` | `Values` — a submission untyped, off the wire or out of JSON |
-| `web-form-derive/` | The derive macros |
+| `html-form-derive/` | The derive macros |

@@ -1,8 +1,8 @@
 [package]
-name = "web-form-derive"
+name = "html-form-derive"
 version = "0.1.0"
 edition = "2024"
-description = "Derive macros for the `web-form` crate"
+description = "Derive macros for the `html-form` crate"
 license = "MIT OR Apache-2.0"
 
 [lib]

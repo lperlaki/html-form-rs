@@ -3,7 +3,7 @@
 //! The control model: which attributes a control accepts, and what happens to
 //! the ones the Rust type and the attribute both have an opinion about.
 
-use web_form::{Control, FieldKind, FormChoice, NumberFormat, TemporalFormat, TextFormat, WebForm};
+use html_form::{Control, FieldKind, Form, FormChoice, NumberFormat, TemporalFormat, TextFormat};
 
 #[derive(FormChoice, Debug)]
 enum Plan {
@@ -11,7 +11,7 @@ enum Plan {
     Pro,
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Everything {
     // `multiple` is meaningless on a text input, so a `Vec<String>` must not
     // render one — it is still submitted repeatedly.
@@ -125,7 +125,7 @@ fn a_date_bound_is_a_string_and_compares_chronologically() {
 /// derive assemble one in a `static` and hand out a `&'static FormSpec`.
 #[test]
 fn a_control_can_be_written_by_hand_in_const_position() {
-    use web_form::{Bounds, NumberControl};
+    use html_form::{Bounds, NumberControl};
 
     const PERCENT: Control = Control::Number(NumberControl {
         format: NumberFormat::Range,

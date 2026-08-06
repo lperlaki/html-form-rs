@@ -17,9 +17,9 @@
 //! # Example
 //!
 //! ```
-//! use web_form::{Outcome, WebForm};
+//! use html_form::{Form, Outcome};
 //!
-//! #[derive(WebForm)]
+//! #[derive(Form)]
 //! #[form(action = "/signup", method = "post", submit = "Create account")]
 //! struct Signup {
 //!     #[field(type = "email", label = "Email address", autocomplete = "email")]
@@ -72,9 +72,9 @@
 //! [`FormValidation`] for every shape either one may return.
 //!
 //! ```
-//! use web_form::{FormErrors, WebForm};
+//! use html_form::{Form, FormErrors};
 //!
-//! #[derive(WebForm, Debug)]
+//! #[derive(Form, Debug)]
 //! #[form(validate = passwords_match)]
 //! struct Signup {
 //!     #[field(validate = is_available)]
@@ -112,9 +112,9 @@
 //! make. A form that uses the type then says only where it goes.
 //!
 //! ```
-//! use web_form::{Text, WebForm};
+//! use html_form::{Form, Text};
 //!
-//! #[derive(web_form::FormValue, Debug)]
+//! #[derive(html_form::FormValue, Debug)]
 //! #[value(type = "email", maxlength = 254, validate = is_company_address)]
 //! struct WorkEmail(String);
 //!
@@ -125,7 +125,7 @@
 //!     }
 //! }
 //!
-//! #[derive(WebForm, Debug)]
+//! #[derive(Form, Debug)]
 //! struct Invite {
 //!     #[field(label = "Who should we invite?")]
 //!     colleague: WorkEmail,
@@ -134,7 +134,7 @@
 //! // The control, and everything it constrains, came from the type.
 //! let view = Invite::render();
 //! let field = view.field("colleague").unwrap();
-//! assert_eq!(field.kind, web_form::FieldKind::Email);
+//! assert_eq!(field.kind, html_form::FieldKind::Email);
 //! assert_eq!(field.maxlength, Some(254));
 //!
 //! // So did the check, which runs on every form that uses the type.
@@ -158,7 +158,7 @@
 //! impl written and no newtype wrapped around it.
 //!
 //! ```
-//! use web_form::WebForm;
+//! use html_form::Form;
 //! # use std::fmt;
 //! # use std::str::FromStr;
 //! # #[derive(Debug, PartialEq)]
@@ -171,7 +171,7 @@
 //! #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
 //! # }
 //!
-//! #[derive(WebForm, Debug)]
+//! #[derive(Form, Debug)]
 //! struct Booking {
 //!     #[field(from_str, type = "date", min = "2026-01-01")]
 //!     day: Date,
@@ -214,9 +214,9 @@
 //! lookup, or read the `…_key` companion field and translate in the template.
 //!
 //! ```
-//! use web_form::WebForm;
+//! use html_form::Form;
 //!
-//! #[derive(WebForm)]
+//! #[derive(Form)]
 //! #[form(submit = t("signup.submit"))]
 //! struct Signup {
 //!     #[field(type = "email", label = t("signup.email"), help = "Never shared.")]
@@ -244,9 +244,9 @@
 //! own message can match on that instead.
 //!
 //! ```
-//! use web_form::{Outcome, Text, WebForm};
+//! use html_form::{Form, Outcome, Text};
 //!
-//! #[derive(WebForm)]
+//! #[derive(Form)]
 //! struct Signup {
 //!     #[field(label = "Username", validate = is_available)]
 //!     username: String,
@@ -279,9 +279,9 @@
 //! flatten a `prefix` to embed the same sub-form more than once.
 //!
 //! ```
-//! use web_form::WebForm;
+//! use html_form::Form;
 //!
-//! #[derive(WebForm)]
+//! #[derive(Form)]
 //! struct Address {
 //!     #[field(label = "Street")]
 //!     street: String,
@@ -289,7 +289,7 @@
 //!     postcode: String,
 //! }
 //!
-//! #[derive(WebForm)]
+//! #[derive(Form)]
 //! struct Order {
 //!     #[field(label = "Customer")]
 //!     customer: String,
@@ -322,17 +322,17 @@
 //! assert_eq!(order.shipping.postcode, "54321");
 //! ```
 //!
-//! A form may be generic, which is what makes a *wrapper* possible: [`SPEC`](WebForm::SPEC) is
-//! an associated constant, so `<T as WebForm>::SPEC` is resolved once per
+//! A form may be generic, which is what makes a *wrapper* possible: [`SPEC`](Form::SPEC) is
+//! an associated constant, so `<T as Form>::SPEC` is resolved once per
 //! instantiation, and the bounds each field implies are added by the derive.
 //! What a flatten splices in is the sub-form's fields — its `action`, `method`
 //! and submit label describe its own `<form>` element, so a wrapper declares the
 //! ones it wants.
 //!
 //! ```
-//! use web_form::WebForm;
+//! use html_form::Form;
 //!
-//! #[derive(WebForm)]
+//! #[derive(Form)]
 //! #[form(method = "post")]
 //! struct WithCsrf<T> {
 //!     #[field(type = "hidden", default = fresh_token)]
@@ -342,7 +342,7 @@
 //!     inner: T,
 //! }
 //!
-//! #[derive(WebForm)]
+//! #[derive(Form)]
 //! struct Signup {
 //!     #[field(type = "email")]
 //!     email: String,
@@ -386,23 +386,23 @@
 //! moment it renders or parses, and every function the form names is handed it.
 //!
 //! Declaring a context changes the *names* of the calls, not their meaning:
-//! [`render`](WebForm::render) becomes
-//! [`render_with_context`](WebForm::render_with_context),
-//! [`from_values`](WebForm::from_values) becomes
-//! [`from_values_with_context`](WebForm::from_values_with_context), and so on
-//! through the pairs. Both halves are on [`WebForm`] itself; the short one asks
+//! [`render`](Form::render) becomes
+//! [`render_with_context`](Form::render_with_context),
+//! [`from_values`](Form::from_values) becomes
+//! [`from_values_with_context`](Form::from_values_with_context), and so on
+//! through the pairs. Both halves are on [`Form`] itself; the short one asks
 //! for `Context: EmptyContext`, which `()` — what a form that declares no
 //! context gets — is.
 //!
 //! ```
-//! use web_form::{Text, WebForm};
+//! use html_form::{Form, Text};
 //!
 //! /// Whatever a handler already has: the session, a connection, the clock.
 //! struct Session {
 //!     csrf: String,
 //! }
 //!
-//! #[derive(WebForm, Debug)]
+//! #[derive(Form, Debug)]
 //! #[form(method = "post", context = Session)]
 //! struct Comment {
 //!     #[field(type = "hidden", default = issued_token, validate = is_our_token)]
@@ -464,9 +464,9 @@
 //! the `<form>` or onto one control. It never takes part in validation.
 //!
 //! ```
-//! use web_form::WebForm;
+//! use html_form::Form;
 //!
-//! #[derive(WebForm)]
+//! #[derive(Form)]
 //! #[form(attr("hx-post" = "/search", "hx-target" = "#results"))]
 //! struct Search {
 //!     #[field(attr("hx-trigger" = "keyup changed delay:300ms", autocorrect = "off"))]
@@ -507,8 +507,8 @@
 //! sent JSON in the first place.
 //!
 //! ```
-//! # use web_form::{Values, WebForm};
-//! # #[derive(WebForm)]
+//! # use html_form::{Form, Values};
+//! # #[derive(Form)]
 //! # struct Signup {
 //! #     #[field(type = "email")]
 //! #     email: String,
@@ -540,7 +540,7 @@
 //!
 //! # What rendering costs
 //!
-//! A spec is `const`: [`WebForm::SPEC`] is one const-evaluated value, flattened
+//! A spec is `const`: [`Form::SPEC`] is one const-evaluated value, flattened
 //! sub-forms and all, so nothing is built the first time a form is rendered.
 //!
 //! Every string in a [`FormView`] is a `Cow<'static, str>`, and rendering
@@ -559,7 +559,7 @@
 //!
 //! A context costs a reference passed down the walk, and nothing else. The
 //! defaults a form generates are the one thing that has to be produced before
-//! the view is built, and [`WebForm::GENERATES_DEFAULTS`] — const-evaluated
+//! the view is built, and [`Form::GENERATES_DEFAULTS`] — const-evaluated
 //! through the whole flatten tree — is what keeps a form that declares none from
 //! paying for the mechanism at all.
 
@@ -599,15 +599,15 @@ pub use view::{AttrView, ChoiceView, FieldView, FormView};
 pub use runtime::__private;
 
 #[cfg(feature = "derive")]
-pub use web_form_derive::{FormChoice, FormValue, WebForm};
+pub use html_form_derive::{Form, FormChoice, FormValue};
 
 /// Everything needed to declare and use a form.
 pub mod prelude {
-    // `WebForm` and `FormValue` each name both the trait and, with the `derive`
+    // `Form` and `FormValue` each name both the trait and, with the `derive`
     // feature, the macro — one `use` brings whichever of the two is meant.
     #[cfg(feature = "derive")]
     pub use crate::{Choice, FormChoice};
-    pub use crate::{FieldKind, FormErrors, FormValue, FormView, Outcome, Values, WebForm};
+    pub use crate::{FieldKind, Form, FormErrors, FormValue, FormView, Outcome, Values};
 }
 
 /// The result of handling a submission.
@@ -656,7 +656,7 @@ impl<T> Outcome<T> {
 
 /// A struct that describes an HTML form.
 ///
-/// Implemented by `#[derive(WebForm)]`. The members without a body are what the
+/// Implemented by `#[derive(Form)]`. The members without a body are what the
 /// derive generates; everything else is provided.
 ///
 /// Every method that renders or parses takes the form's [`Context`](Self::Context)
@@ -664,7 +664,7 @@ impl<T> Outcome<T> {
 /// suffix — `Signup::render()` rather than `Signup::render_with_context(&())` —
 /// available where the context is an [`EmptyContext`], which is every form that
 /// has not declared one.
-pub trait WebForm: Sized {
+pub trait Form: Sized {
     /// What this form's own functions are handed besides the value they are
     /// looking at: the session, a database handle, the request's locale —
     /// whatever `#[field(default = ...)]` and `validate = ...` need to know and
@@ -713,7 +713,7 @@ pub trait WebForm: Sized {
         let _ = (values, prefix, context);
     }
 
-    /// [`WebForm::SPEC`], for call sites that would rather not name the type.
+    /// [`Form::SPEC`], for call sites that would rather not name the type.
     fn spec() -> &'static FormSpec {
         Self::SPEC
     }
@@ -743,7 +743,7 @@ pub trait WebForm: Sized {
         }
     }
 
-    /// [`from_values_with_context`](WebForm::from_values_with_context), for a
+    /// [`from_values_with_context`](Form::from_values_with_context), for a
     /// form with nothing to be told.
     fn from_values(values: &Values) -> Result<Self, FormErrors>
     where
@@ -761,7 +761,7 @@ pub trait WebForm: Sized {
         Self::from_values_with_context(&Values::parse(body), context)
     }
 
-    /// [`from_urlencoded_with_context`](WebForm::from_urlencoded_with_context),
+    /// [`from_urlencoded_with_context`](Form::from_urlencoded_with_context),
     /// for a form with nothing to be told.
     fn from_urlencoded(body: &str) -> Result<Self, FormErrors>
     where
@@ -783,7 +783,7 @@ pub trait WebForm: Sized {
         }
     }
 
-    /// [`submit_with_context`](WebForm::submit_with_context), for a form with
+    /// [`submit_with_context`](Form::submit_with_context), for a form with
     /// nothing to be told.
     fn submit(values: &Values) -> Outcome<Self>
     where
@@ -792,12 +792,12 @@ pub trait WebForm: Sized {
         Self::submit_with_context(values, empty::<Self>())
     }
 
-    /// [`WebForm::submit_with_context`] straight from a request body.
+    /// [`Form::submit_with_context`] straight from a request body.
     fn submit_urlencoded_with_context(body: &str, context: &Self::Context) -> Outcome<Self> {
         Self::submit_with_context(&Values::parse(body), context)
     }
 
-    /// [`WebForm::submit`] straight from a request body.
+    /// [`Form::submit`] straight from a request body.
     fn submit_urlencoded(body: &str) -> Outcome<Self>
     where
         Self::Context: EmptyContext,
@@ -836,7 +836,7 @@ pub trait WebForm: Sized {
         Self::render_with_context(context).localized(translate)
     }
 
-    /// [`render_localized_with_context`](WebForm::render_localized_with_context),
+    /// [`render_localized_with_context`](Form::render_localized_with_context),
     /// for a form with nothing to be told.
     fn render_localized<S, F>(translate: F) -> FormView
     where
@@ -862,7 +862,7 @@ pub trait WebForm: Sized {
         )
     }
 
-    /// [`render_submitted_with_context`](WebForm::render_submitted_with_context),
+    /// [`render_submitted_with_context`](Form::render_submitted_with_context),
     /// for a form with nothing to be told.
     fn render_submitted(values: &Values, errors: &FormErrors) -> FormView
     where
@@ -881,7 +881,7 @@ pub trait WebForm: Sized {
         )
     }
 
-    /// [`render_filled_with_context`](WebForm::render_filled_with_context), for
+    /// [`render_filled_with_context`](Form::render_filled_with_context), for
     /// a form with nothing to be told.
     fn render_filled(&self) -> FormView
     where
@@ -900,7 +900,7 @@ pub trait WebForm: Sized {
 
 /// The context of a form that has nothing to be told, named once so that each
 /// short method above is its `…_with_context` counterpart and nothing else.
-fn empty<T: WebForm>() -> &'static T::Context
+fn empty<T: Form>() -> &'static T::Context
 where
     T::Context: EmptyContext,
 {

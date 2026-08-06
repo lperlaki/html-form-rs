@@ -5,7 +5,7 @@
 //! used to see nothing of the request they were serving. A CSRF token that has
 //! to match the session had to reach them through thread-local state.
 //!
-//! [`WebForm::Context`](crate::WebForm::Context) is that missing argument. It is
+//! [`Form::Context`](crate::Form::Context) is that missing argument. It is
 //! whatever the form says it is, it is handed in at the call that renders or
 //! parses, and it reaches every function the form declares:
 //!
@@ -28,7 +28,7 @@
 //! to be told it can supply:
 //!
 //! ```
-//! # use web_form::Provides;
+//! # use html_form::Provides;
 //! struct Session {
 //!     token: String,
 //! }
@@ -65,7 +65,7 @@ pub enum WithContext {}
     message = "`{Self}` cannot supply the `{C}` a flattened sub-form is asking for",
     label = "this form's context is `{Self}`",
     note = "a flattened sub-form is parsed and rendered with the enclosing form's context",
-    note = "write `impl web_form::Provides<{C}> for {Self}` to hand it one of its own"
+    note = "write `impl html_form::Provides<{C}> for {Self}` to hand it one of its own"
 )]
 pub trait Provides<C> {
     /// The context to hand down.
@@ -92,13 +92,13 @@ impl<C> Provides<C> for C {
 /// `&'static str` for one that was already around.
 ///
 /// ```
-/// use web_form::WebForm;
+/// use html_form::Form;
 ///
 /// struct Session {
 ///     csrf: String,
 /// }
 ///
-/// #[derive(WebForm)]
+/// #[derive(Form)]
 /// #[form(context = Session)]
 /// struct Comment {
 ///     #[field(type = "hidden", default = issued_token)]
@@ -144,8 +144,8 @@ where
 /// for one.
 ///
 /// A form whose context is one of these has the short names —
-/// [`render`](crate::WebForm::render), [`from_values`](crate::WebForm::from_values),
-/// [`submit`](crate::WebForm::submit) — alongside the `…_with_context` ones,
+/// [`render`](crate::Form::render), [`from_values`](crate::Form::from_values),
+/// [`submit`](crate::Form::submit) — alongside the `…_with_context` ones,
 /// and they hand [`EMPTY`](EmptyContext::EMPTY) over on the caller's behalf.
 ///
 /// `()` is the only implementor here, and is what a form that declares no
@@ -154,7 +154,7 @@ where
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is a context a caller has to supply",
     note = "the methods without a context are for a form whose context is `()`",
-    note = "call the `…_with_context` one, or implement `web_form::EmptyContext` for `{Self}`"
+    note = "call the `…_with_context` one, or implement `html_form::EmptyContext` for `{Self}`"
 )]
 pub trait EmptyContext: 'static {
     /// The one value of this context, handed to a form on the caller's behalf.

@@ -8,16 +8,16 @@
 //!
 //! Run with: `cargo run --example minijinja_render`
 
+use html_form::{Form, Outcome};
 use minijinja::{Environment, context};
-use web_form::{Outcome, WebForm};
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct FormId {
     #[field(type = "hidden")]
     id: String,
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(action = "/signup", method = "post", submit = "Create account")]
 struct Signup {
     #[field(

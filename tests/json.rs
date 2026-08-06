@@ -3,10 +3,10 @@
 //! `Values` through serde: the same form served to a JSON client and to a
 //! browser, with the submission the only thing that differed.
 
+use html_form::{Form, Values};
 use serde_json::json;
-use web_form::{Values, WebForm};
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Signup {
     #[field(type = "email")]
     email: String,

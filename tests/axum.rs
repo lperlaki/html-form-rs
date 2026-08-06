@@ -6,9 +6,9 @@ use axum::body::Body;
 use axum::extract::FromRequest;
 use axum::http::{Request, StatusCode, header};
 use axum::response::IntoResponse;
-use web_form::{FormRejection, Outcome, WebForm};
+use html_form::{Form, FormRejection, Outcome};
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 #[form(action = "/signup", method = "post")]
 struct Signup {
     #[field(type = "email", label = "Email address")]

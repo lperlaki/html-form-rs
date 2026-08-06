@@ -4,9 +4,9 @@
 
 use std::borrow::Cow;
 
-use web_form::{
-    Choice, Control, ErrorKind, FieldKind, FormChoice, FormErrors, FormValue, ValueError, Values,
-    WebForm,
+use html_form::{
+    Choice, Control, ErrorKind, FieldKind, Form, FormChoice, FormErrors, FormValue, ValueError,
+    Values,
 };
 
 #[derive(FormChoice, Debug, PartialEq)]
@@ -18,7 +18,7 @@ enum Plan {
     SelfHosted,
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Subscription {
     #[field(label = "Plan")]
     plan: Plan,
@@ -95,7 +95,7 @@ fn a_radio_group_labels_each_option() {
     assert!(html.contains(r#"value="yearly""#));
     // The group caption is not a `<label for=…>` pointing at only the first
     // radio; it names the group instead.
-    assert!(html.contains(r#"<span class="web-form__label" id="period-label">Billing period"#));
+    assert!(html.contains(r#"<span class="html-form__label" id="period-label">Billing period"#));
     assert!(html.contains(r#"role="radiogroup" aria-labelledby="period-label""#));
     // …and it comes before the options it captions.
     assert!(html.find("period-label").unwrap() < html.find("radiogroup").unwrap());
@@ -133,7 +133,7 @@ fn a_checkbox_group_is_one_box_per_option() {
     assert!(html.contains(r#"<input type="checkbox" name="notify" id="notify-0""#));
     assert!(html.contains(r#"id="notify-2" value="self-hosted" disabled>"#));
     // Captioned like a radio group rather than labelled through the first box.
-    assert!(html.contains(r#"<span class="web-form__label" id="notify-label">Notify me about"#));
+    assert!(html.contains(r#"<span class="html-form__label" id="notify-label">Notify me about"#));
     assert!(html.contains(r#"role="group" aria-labelledby="notify-label""#));
     assert!(html.find("notify-label").unwrap() < html.find(r#"role="group""#).unwrap());
 }
@@ -167,7 +167,7 @@ fn ticked_boxes_survive_a_failed_submission() {
     assert!(view.to_html().contains(r#"value="pro" checked"#));
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Interests {
     #[field(type = "checkbox", required, label = "Topics")]
     #[option("news", "News")]
@@ -220,7 +220,7 @@ impl FormValue for Slug {
     }
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Article {
     #[field(label = "URL slug", placeholder = "my-article")]
     slug: Slug,
@@ -250,7 +250,7 @@ struct Room {
     name: String,
 }
 
-#[derive(WebForm, Debug)]
+#[derive(Form, Debug)]
 struct Booking {
     #[field(type = "select", label = "Room")]
     room: String,
