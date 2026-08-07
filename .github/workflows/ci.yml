@@ -83,6 +83,20 @@ jobs:
       - run: cargo doc --all-features --no-deps
         env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings
+      # The crate's own docs link items that a feature gates, so the links have
+      # to be gated the same way. `--all-features` alone would never catch a
+      # link that only resolves because everything is on: the docs somebody gets
+      # from a bare `cargo doc` are the default set, and every feature is meant
+      # to stand on its own here too.
+      - run: |
+          for features in "" "derive" "html" "pattern" "axum" "axum,derive" \
+                          "derive,html,pattern" "axum,derive,html,pattern"; do
+            echo "::group::features: ${features:-none}"
+            cargo doc --no-deps --no-default-features --features "$features"
+            echo "::endgroup::"
+          done
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # The crate declares an MSRV, so something has to hold it to it.
   msrv:

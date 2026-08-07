@@ -14,9 +14,16 @@
 //! The README above is the tour. These are the items it names, for jumping
 //! straight to one:
 //!
+//! Each bullet names items this build has. A feature that is off takes its own
+//! bullet out of the list, because a link to an item that is not compiled is a
+//! `rustdoc` warning and not a pointer anybody can follow.
+//!
 //! * [`Form`] is the trait `#[derive(Form)]` implements, and it holds every
-//!   render and parse call. [`FormValue`] is the same for one *value*, and
-//!   [`FormChoice`] turns a fieldless enum into a set of options.
+//!   render and parse call. [`FormValue`] is the same for one *value*.
+#![cfg_attr(
+    feature = "derive",
+    doc = "* [`FormChoice`] turns a fieldless enum into a set of options."
+)]
 //! * [`FormSpec`] is the static description the derive emits, and [`FormView`]
 //!   is the runtime one a template renders. [`Control`] is what keeps an
 //!   attribute from landing on a control that cannot hold it, and [`Text`] is
@@ -30,8 +37,11 @@
 //!   for `default = ...`, and [`FieldDefault`] is the slot in the spec that
 //!   holds all three kinds of default.
 //! * [`Provides`] is how a form with a context flattens one without.
-//! * The [`axum`] module holds both extractors and the [`Renderer`](axum::Renderer)
-//!   trait behind `#[form(renderer = ...)]`.
+#![cfg_attr(
+    feature = "axum",
+    doc = "* The [`axum`] module holds both extractors and the \
+           [`Renderer`](axum::Renderer) trait behind `#[form(renderer = ...)]`."
+)]
 
 #[cfg(feature = "axum")]
 pub mod axum;

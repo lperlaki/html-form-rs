@@ -86,9 +86,13 @@
 //! submission that failed validation, `415 Unsupported Media Type` for a body
 //! that was never a form, and whatever the context's own extractor said for a
 //! context that turned the request down. The same page returned by a handler is
-//! therefore a plain `200`. [`Builtin`] is the renderer around
-//! [`FormView::to_html`](crate::FormView::to_html), and it asks for nothing but
-//! the `html` feature.
+//! therefore a plain `200`.
+#![cfg_attr(
+    feature = "html",
+    doc = "\n [`Builtin`] is the renderer around \
+           [`FormView::to_html`](crate::FormView::to_html), and it asks for \
+           nothing but the `html` feature, which this build has."
+)]
 //!
 //! Nothing in the [`Rejection`] is a response yet. The invalid case is an
 //! [`Invalid`], which holds the [`FormView`], the [`FormErrors`] and the
@@ -476,9 +480,12 @@ fn rendered_form<T: crate::Form, R: Renderer<T>>(value: &T, context: &T::Context
 /// How [`Form<T, R>`] answers a submission that failed validation.
 ///
 /// The view is the form again. It carries the values the user typed and the
-/// message on each field, so a renderer is usually the page around
-/// [`FormView::to_html`](crate::FormView::to_html), or the template that reads
-/// the view.
+/// message on each field, so a renderer is usually the page around the built-in
+/// HTML render, or the template that reads the view.
+#[cfg_attr(
+    feature = "html",
+    doc = "That render is [`FormView::to_html`](crate::FormView::to_html)."
+)]
 ///
 /// The function gets the form's [`Context`](crate::Form::Context), so a
 /// renderer may reach for whatever the context holds: the session that names
@@ -494,8 +501,10 @@ fn rendered_form<T: crate::Form, R: Renderer<T>>(value: &T, context: &T::Context
 ///
 /// **A renderer is zero-sized.** `render` is an associated function, so no
 /// value of one is ever passed anywhere and any data it carried would be
-/// unreachable. Implement it for a unit struct, which is what [`Builtin`] and
-/// every renderer `#[derive(Form)]` generates are. What a render needs to *know*
+/// unreachable. Implement it for a unit struct, which is what every renderer
+/// `#[derive(Form)]` generates is.
+#[cfg_attr(feature = "html", doc = "[`Builtin`] is one as well.")]
+/// What a render needs to *know*
 /// reaches it through the context, which is the argument that exists for it.
 /// `#[form(renderer = ...)]` rejects anything larger outright.
 ///
