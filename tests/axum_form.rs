@@ -11,6 +11,9 @@ use axum::response::{Html, IntoResponse};
 use html_form::FormView;
 use html_form::axum::{Builtin, Form, Rejection, Renderer};
 
+mod common;
+use common::{Page, body_of, post};
+
 #[derive(html_form::Form, Debug)]
 #[form(action = "/signup", method = "post")]
 struct Signup {
@@ -21,36 +24,12 @@ struct Signup {
     age: Option<u32>,
 }
 
-/// A renderer of the kind an application writes once: the form inside its page.
-struct Page;
-
-impl<T: html_form::Form> Renderer<T> for Page {
-    fn render(view: FormView, _context: &T::Context) -> impl IntoResponse {
-        Html(format!("<h1>Check the form</h1>{}", view.to_html()))
-    }
-}
-
-fn post(body: &str) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri("/signup")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .body(Body::from(body.to_owned()))
-        .unwrap()
-}
-
-async fn body_of(response: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    String::from_utf8(bytes.to_vec()).unwrap()
-}
-
 #[tokio::test]
 async fn a_valid_submission_reaches_the_handler() {
-    let form: Form<Signup, Page> = Form::from_request(post("email=a%40example.com&age=30"), &())
-        .await
-        .unwrap();
+    let form: Form<Signup, Page> =
+        Form::from_request(post("/signup", "email=a%40example.com&age=30"), &())
+            .await
+            .unwrap();
 
     assert_eq!(form.data.email, "a@example.com");
     // The value is reachable without naming the field, and can be taken out.
@@ -74,7 +53,7 @@ async fn get_reads_the_query_string() {
 /// handler, and the rejection is already the page to send back.
 #[tokio::test]
 async fn an_invalid_submission_is_rejected_with_the_rendered_form() {
-    let rejection = Form::<Signup, Page>::from_request(post("email=nope&age=7"), &())
+    let rejection = Form::<Signup, Page>::from_request(post("/signup", "email=nope&age=7"), &())
         .await
         .unwrap_err();
 
@@ -97,7 +76,7 @@ async fn an_invalid_submission_is_rejected_with_the_rendered_form() {
 /// renderer runs only where a response is asked for.
 #[tokio::test]
 async fn the_rejection_is_still_a_form_until_it_is_asked_for_a_response() {
-    let rejection = Form::<Signup, Page>::from_request(post("email=nope&age=7"), &())
+    let rejection = Form::<Signup, Page>::from_request(post("/signup", "email=nope&age=7"), &())
         .await
         .unwrap_err();
 
@@ -122,7 +101,7 @@ async fn the_rejection_is_still_a_form_until_it_is_asked_for_a_response() {
 
 #[tokio::test]
 async fn the_builtin_renderer_answers_with_the_forms_own_html() {
-    let rejection = Form::<Signup, Builtin>::from_request(post("email=nope"), &())
+    let rejection = Form::<Signup, Builtin>::from_request(post("/signup", "email=nope"), &())
         .await
         .unwrap_err();
 
@@ -172,11 +151,13 @@ async fn a_handler_takes_it_and_the_rejection_becomes_the_response() {
         Html(format!("Welcome, {}!", form.data.email))
     }
 
-    let welcome = signup.call(post("email=a%40example.com&age=30"), ()).await;
+    let welcome = signup
+        .call(post("/signup", "email=a%40example.com&age=30"), ())
+        .await;
     assert_eq!(welcome.status(), StatusCode::OK);
     assert_eq!(body_of(welcome).await, "Welcome, a@example.com!");
 
-    let rejected = signup.call(post("email=nope&age=7"), ()).await;
+    let rejected = signup.call(post("/signup", "email=nope&age=7"), ()).await;
     assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     assert!(body_of(rejected).await.contains("Check the form"));
 }
@@ -226,7 +207,9 @@ async fn a_handler_can_take_one_and_return_one() {
         form
     }
 
-    let response = preview.call(post("email=a%40example.com&age=30"), ()).await;
+    let response = preview
+        .call(post("/signup", "email=a%40example.com&age=30"), ())
+        .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(body_of(response).await.contains(r#"value="a@example.com""#));
 }

@@ -118,6 +118,123 @@
 //! }
 //! ```
 //!
+//! # `#[form(renderer = ...)]`: the struct is both
+//!
+//! A form that always answers the same way need not say so at every handler.
+//! `#[form(renderer = ...)]` moves the renderer onto the declaration, and the
+//! struct itself becomes the extractor and the response:
+//!
+//! ```no_run
+//! use axum::response::{Html, IntoResponse};
+//! use html_form::FormView;
+//! use html_form::axum::Renderer;
+//!
+//! struct Page;
+//!
+//! impl<T: html_form::Form> Renderer<T> for Page {
+//!     fn render(view: FormView, _context: &T::Context) -> impl IntoResponse {
+//!         Html(format!("<h1>Check the form</h1>{}", view.to_html()))
+//!     }
+//! }
+//!
+//! #[derive(html_form::Form)]
+//! #[form(action = "/signup", method = "post", renderer = Page)]
+//! struct Signup {
+//!     #[field(type = "email", label = "Email address")]
+//!     email: String,
+//! }
+//!
+//! // The argument is the struct, and so is the answer. A `GET` shows the form
+//! // and a bad `POST` never arrives.
+//! async fn edit() -> Signup {
+//!     Signup { email: "ada@example.com".to_owned() }
+//! }
+//!
+//! async fn signup(form: Signup) -> Html<String> {
+//!     Html(format!("Welcome, {}!", form.email))
+//! }
+//!
+//! # let _: axum::Router =
+//! axum::Router::new().route("/signup", axum::routing::get(edit).post(signup))
+//! # ;
+//! ```
+//!
+//! The derive also generates the [`Renderer`] itself, as a unit struct named
+//! after the form. `Page` above is called from `SignupRenderer`, and the
+//! extractor is `Form<Signup, SignupRenderer>` with the wrapper taken off. That
+//! name is the one to write where a rejection has to be written out:
+//!
+//! ```
+//! # use html_form::axum::{Builtin, Rejection};
+//! # use std::convert::Infallible;
+//! # #[derive(html_form::Form)]
+//! # #[form(renderer = Builtin)]
+//! # struct Signup { #[field(type = "email")] email: String }
+//! /// What `Signup` turns a request down with, on a router with no state.
+//! type SignupRejection = Rejection<Signup, SignupRenderer, Infallible>;
+//! ```
+//!
+//! The rejection is the same [`Rejection`] either way, [`Invalid`] and all, and
+//! nothing about the statuses changes: a failed submission is `400`, and a form
+//! a handler returns is a `200` that `#[form(status = ...)]` may move.
+//!
+//! [`HasRenderer`] is the same thing said as a bound. A form that declared a
+//! renderer implements it, so `T: HasRenderer` is how a function takes any such
+//! form and asks it for its page, with no status put on it by either impl
+//! above.
+//!
+//! The renderer may also be a plain function, which is the whole of it for a
+//! form that renders one way and needs no marker to say so:
+//!
+//! ```
+//! # use axum::response::Html;
+//! # use html_form::FormView;
+//! fn page(view: FormView) -> Html<String> {
+//!     Html(format!("<main>{}</main>", view.to_html()))
+//! }
+//!
+//! #[derive(html_form::Form)]
+//! #[form(renderer = page, status = 201)]
+//! struct Note {
+//!     #[field(type = "textarea")]
+//!     body: String,
+//! }
+//! ```
+//!
+//! A function may take the form's context after the view, exactly as a
+//! `default = ...` or a `validate = ...` function may, and a closure written in
+//! the attribute is a function like any other:
+//!
+//! ```
+//! # use axum::response::Html;
+//! # use html_form::FormView;
+//! #[derive(html_form::Form)]
+//! #[form(renderer = |view: FormView| Html(format!("<aside>{}</aside>", view.to_html())))]
+//! struct Tag {
+//!     name: String,
+//! }
+//! ```
+//!
+//! [`IntoRenderer`] is what reads which of the three shapes you named. It is
+//! also why the attribute names a *value* rather than a type, and why the
+//! derive has a struct of its own to generate: a function has no type anybody
+//! can write down. A [`Renderer`] written in the attribute is therefore a unit
+//! struct, which a renderer already is.
+//!
+//! What the attribute will not take is a `fn` **pointer**. Everything above is
+//! zero-sized — one type, one behaviour, a direct call — and nothing anywhere
+//! keeps a renderer, because [`Renderer::render`] takes no `self`: a renderer
+//! is a type, never a value. A pointer is a word of data that picks a renderer
+//! per call, so it is the one shape there would be something to keep, and the
+//! declaration would read as though it had settled a question it had not. The
+//! size is checked while the crate compiles.
+//!
+//! Either impl can be left out with `from_request = false` and
+//! `into_response = false`. The response is left out on its own where the form
+//! declares a [`Context`](crate::Form::Context), because a value renders itself
+//! with no context to render it under; `into_response` puts it back where that
+//! context is an [`EmptyContext`] after all.
+//!
 //! # Where the values come from
 //!
 //! As with `axum::Form`, the crate reads a `GET` or `HEAD` request from the
@@ -151,7 +268,7 @@ use axum_core::response::{IntoResponse, Response};
 use bytes::Bytes;
 use http::{Method, StatusCode, header};
 
-use crate::{EmptyContext, FormErrors, FormView, Outcome, Values};
+use crate::{EmptyContext, FormErrors, FormView, Outcome, Values, WithContext, WithoutContext};
 
 /// Why there was no submission to validate.
 ///
@@ -341,9 +458,19 @@ where
     R: Renderer<T>,
 {
     fn into_response(self) -> Response {
-        let context = <T::Context as EmptyContext>::EMPTY;
-        R::render(self.data.render_filled_with_context(context), context).into_response()
+        rendered_form::<T, R>(&self.data, <T::Context as EmptyContext>::EMPTY)
     }
+}
+
+/// A value, filled into its own form and run through a renderer, with no status
+/// on it.
+///
+/// The one place that says what "the page this form makes" is, so that the page
+/// a returned [`Form<T, R>`] answers with and the page
+/// [`HasRenderer::render_form_with_context`] makes are the same page by
+/// construction, and not by two impls agreeing.
+fn rendered_form<T: crate::Form, R: Renderer<T>>(value: &T, context: &T::Context) -> Response {
+    R::render(value.render_filled_with_context(context), context).into_response()
 }
 
 /// How [`Form<T, R>`] answers a submission that failed validation.
@@ -365,6 +492,13 @@ where
 /// returns is a `200`. What a renderer does own is the rest of the response, the
 /// content type and any header the page needs among it.
 ///
+/// **A renderer is zero-sized.** `render` is an associated function, so no
+/// value of one is ever passed anywhere and any data it carried would be
+/// unreachable. Implement it for a unit struct, which is what [`Builtin`] and
+/// every renderer `#[derive(Form)]` generates are. What a render needs to *know*
+/// reaches it through the context, which is the argument that exists for it.
+/// `#[form(renderer = ...)]` rejects anything larger outright.
+///
 /// ```
 /// use axum::response::{Html, IntoResponse};
 /// use html_form::FormView;
@@ -385,6 +519,179 @@ where
 pub trait Renderer<T: crate::Form> {
     /// The response for a submission that did not validate.
     fn render(view: FormView, context: &T::Context) -> impl IntoResponse;
+}
+
+/// A form that named its renderer, and the renderer it named.
+///
+/// `#[form(renderer = ...)]` implements it. It is the one thing the attribute
+/// always generates, whether or not `from_request` and `into_response` are left
+/// on, so it is what a bound asks for when it means "a form that knows how it
+/// is rendered":
+///
+/// ```
+/// use axum::response::Response;
+/// use html_form::axum::{Builtin, HasRenderer};
+///
+/// #[derive(html_form::Form)]
+/// #[form(renderer = Builtin)]
+/// struct Signup {
+///     #[field(type = "email")]
+///     email: String,
+/// }
+///
+/// /// Any form that declared a renderer, shown as itself.
+/// fn edit<T: HasRenderer<Context = ()>>(record: &T) -> Response {
+///     record.render_form()
+/// }
+///
+/// let response = edit(&Signup { email: "ada@example.com".to_owned() });
+/// assert_eq!(response.status(), axum::http::StatusCode::OK);
+/// ```
+///
+/// The answer is a [`Response`] and not the `impl IntoResponse` that
+/// [`Renderer::render`] hands back. That one is an opaque type per impl, and a
+/// trait that meant to be called through `dyn` or behind a bound has to name
+/// what comes out.
+///
+/// This is the same page a handler returning the form makes, without the status
+/// `#[form(status = ...)]` put on it, and the same page a failed submission
+/// gets, without the `400`. The value fills the form in, so the fields carry it
+/// and none of them carries an error.
+pub trait HasRenderer: crate::Form {
+    /// The [`Renderer`] this form declared. The derive generates it, as a unit
+    /// struct named after the form.
+    type Renderer: Renderer<Self>;
+
+    /// This value, filled into its own form and rendered.
+    fn render_form_with_context(&self, context: &Self::Context) -> Response {
+        rendered_form::<Self, Self::Renderer>(self, context)
+    }
+
+    /// [`render_form_with_context`](HasRenderer::render_form_with_context), for
+    /// a form that needs no context.
+    fn render_form(&self) -> Response
+    where
+        Self::Context: EmptyContext,
+    {
+        self.render_form_with_context(<Self::Context as EmptyContext>::EMPTY)
+    }
+}
+
+/// Marker: the renderer is a type that implements [`Renderer`] itself, rather
+/// than a function standing in for one.
+///
+/// You never write it down. It is what keeps the three [`IntoRenderer`] impls
+/// apart, the way [`WithContext`] and [`WithoutContext`] keep the two arities of
+/// a `default = ...` function apart.
+pub enum AsRenderer {}
+
+/// What `#[form(renderer = ...)]` may name.
+///
+/// The derive cannot see a signature, or tell a type from a function. This is
+/// what settles it, and all three shapes come out as the same call:
+///
+/// | What you name | What the crate calls |
+/// |---|---|
+/// | a unit struct that implements [`Renderer<T>`] | its `render` |
+/// | `fn(FormView) -> impl IntoResponse` | the function |
+/// | `fn(FormView, &Context) -> impl IntoResponse` | the function, with the render's context |
+///
+/// A non-capturing closure written in the attribute is the middle row or the
+/// last one. There is nothing in scope at a struct declaration to capture.
+///
+/// The view arrives by value, exactly as [`Renderer::render`] takes it, so a
+/// function may consume it — [`FormView::localized`](crate::FormView::localized)
+/// takes `self`.
+///
+/// A renderer named in the attribute is written in *value* position, because a
+/// function has no type anybody can name. A [`Renderer`] named there is
+/// therefore a unit struct, which is what a renderer already is. Anything else
+/// implements [`Renderer`] and reaches the same place through [`Form<T, R>`],
+/// which names it as a type.
+///
+/// # What it is, and what it is not
+///
+/// It names a [`Renderer`] and does no rendering of its own. There is one trait
+/// that renders, and this says which impl of it the attribute meant. A
+/// [`Renderer`] names itself. A function names [`FnRenderer`], which is the
+/// renderer that calls it.
+///
+/// Nothing here keeps the function either. `Renderer::render` takes no `self`,
+/// so a renderer is a type and never a value: every implementor is zero-sized —
+/// a function path, a non-capturing closure and a marker struct each have one
+/// inhabitant and no bytes — and [`conjure`](__private::conjure) is what
+/// produces the one value [`FnRenderer`] calls through.
+///
+/// That is also why a `fn` **pointer** is rejected. A pointer is a word of data
+/// naming one of several functions, so it *is* something that would have to be
+/// kept, and the choice would be made per call rather than by the declaration.
+/// The size is checked while the crate compiles, both where the attribute names
+/// a renderer and again inside `conjure`.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is neither a `Renderer<{T}>` nor a function that renders `{T}`",
+    note = "a renderer is a unit struct implementing `html_form::axum::Renderer<{T}>`",
+    note = "or a `fn(FormView) -> impl IntoResponse`, which may also take `&Context` after the view"
+)]
+pub trait IntoRenderer<T: crate::Form, M> {
+    /// The renderer this names.
+    type Renderer: Renderer<T>;
+}
+
+/// A [`Renderer`] is already one.
+impl<T: crate::Form, R: Renderer<T>> IntoRenderer<T, AsRenderer> for R {
+    type Renderer = R;
+}
+
+impl<T, F, O> IntoRenderer<T, WithoutContext> for F
+where
+    T: crate::Form,
+    F: Fn(FormView) -> O,
+    O: IntoResponse,
+{
+    type Renderer = FnRenderer<F, WithoutContext>;
+}
+
+impl<T, F, O> IntoRenderer<T, WithContext> for F
+where
+    T: crate::Form,
+    F: Fn(FormView, &T::Context) -> O,
+    O: IntoResponse,
+{
+    type Renderer = FnRenderer<F, WithContext>;
+}
+
+/// The [`Renderer`] a function is: it calls `F`, and `M` says with what.
+///
+/// You never write it down. `F` is a function path or a closure, and neither
+/// has a type anybody can name — which is the whole reason
+/// [`IntoRenderer`] exists. This is what it names, and it reaches you only as
+/// `<F as IntoRenderer<T, M>>::Renderer`.
+///
+/// It holds no `F`, because it holds nothing at all: it is a type that appears
+/// in a bound, never a value that is built. [`conjure`](__private::conjure)
+/// produces the one `F` there is at the point of the call.
+pub struct FnRenderer<F, M>(PhantomData<fn() -> (F, M)>);
+
+impl<T, F, O> Renderer<T> for FnRenderer<F, WithoutContext>
+where
+    T: crate::Form,
+    F: Fn(FormView) -> O,
+    O: IntoResponse,
+{
+    fn render(view: FormView, _context: &T::Context) -> impl IntoResponse {
+        __private::conjure::<F>()(view)
+    }
+}
+
+impl<T, F, O> Renderer<T> for FnRenderer<F, WithContext>
+where
+    T: crate::Form,
+    F: Fn(FormView, &T::Context) -> O,
+    O: IntoResponse,
+{
+    fn render(view: FormView, context: &T::Context) -> impl IntoResponse {
+        __private::conjure::<F>()(view, context)
+    }
 }
 
 /// A submission that arrived whole and failed validation.
@@ -433,6 +740,10 @@ pub struct Invalid<T: crate::Form, R> {
 }
 
 impl<T: crate::Form, R> Invalid<T, R> {
+    /// What a submission that failed validation answers with: `400 Bad
+    /// Request`. The page under it is the renderer's, and the status is not.
+    pub const STATUS: StatusCode = StatusCode::BAD_REQUEST;
+
     /// The three parts, under the renderer that will answer with them.
     pub fn new(view: Box<FormView>, errors: FormErrors, context: T::Context) -> Self {
         Invalid {
@@ -452,12 +763,6 @@ impl<T: crate::Form<Context: fmt::Debug>, R> fmt::Debug for Invalid<T, R> {
             .field("context", &self.context)
             .finish()
     }
-}
-
-impl<T: crate::Form, R> Invalid<T, R> {
-    /// What a submission that failed validation answers with: `400 Bad
-    /// Request`. The page under it is the renderer's, and the status is not.
-    pub const STATUS: StatusCode = StatusCode::BAD_REQUEST;
 }
 
 /// This is where the renderer runs, and where the status is put on the page it
@@ -607,6 +912,131 @@ where
     // The percent-decode also decodes the body, so the body never has to be a
     // `str` on the way there. See `Values::parse_bytes`.
     Ok(Values::parse_bytes(&bytes))
+}
+
+/// What `#[form(renderer = ...)]` generates against. Nothing here is API.
+///
+/// The derive writes absolute paths, and a crate that derives a form has no
+/// reason to depend on `axum-core` or on `http` itself. These are the names the
+/// generated impls need, in one place, so the derive names no crate but this
+/// one.
+#[doc(hidden)]
+pub mod __private {
+    pub use axum_core::extract::{FromRequest, FromRequestParts, Request};
+    pub use axum_core::response::{IntoResponse, Response};
+    pub use http::StatusCode;
+
+    use crate::{Form, FormView};
+
+    use super::{IntoRenderer, Renderer};
+
+    /// The one call the derived [`Renderer`](super::Renderer) makes. The marker
+    /// `M` is what the compiler infers, and it is why the attribute takes a
+    /// type or a function under one key.
+    /// The renderer the attribute named is taken as a *value*, and read for its
+    /// **type** alone.
+    ///
+    /// A macro holds an expression, and dispatch happens on the type that
+    /// expression has. Rust has no way to write "the type of this expression",
+    /// so the expression has to reach a call for inference to name it — which
+    /// is what this argument is, and all it is. A function has no type anybody
+    /// could have written in the attribute instead.
+    ///
+    /// Nothing is stored, and nothing is passed on. `R` is zero-sized, so the
+    /// argument costs no instruction and no byte of stack.
+    pub fn render_with<T, R, M>(_renderer: R, view: FormView, context: &T::Context) -> Response
+    where
+        T: Form,
+        R: IntoRenderer<T, M>,
+    {
+        <R::Renderer as Renderer<T>>::render(view, context).into_response()
+    }
+
+    /// The one value of a zero-sized type, with none to hand.
+    ///
+    /// [`Renderer::render`](super::Renderer::render) takes no `self`, because a
+    /// renderer is a type and not a value.
+    /// [`FnRenderer`](super::FnRenderer) still has to *call* the function it
+    /// stands for, and this is where that one value comes from.
+    ///
+    /// Sound because a zero-sized type has exactly one inhabitant and no
+    /// representation bytes: there is nothing to initialize, so uninitialized
+    /// memory of that type is already the value. The size is what makes it so,
+    /// and [`Zst`] is what checks the size, while the compiler evaluates the
+    /// call rather than after one.
+    ///
+    /// It conjures nothing a caller could not already build. The derive uses it
+    /// only on the type of an expression written in `#[form(renderer = ...)]`,
+    /// which whoever wrote it evidently had a value of.
+    // Clippy reads the call and not the bound above it: `MaybeUninit::uninit`
+    // followed by `assume_init` is undefined behaviour for almost every type,
+    // and the assert is what leaves only the type it is defined for.
+    #[allow(clippy::uninit_assumed_init)]
+    pub fn conjure<R>() -> R {
+        let () = Zst::<R>::CHECK;
+
+        // SAFETY: `Zst::<R>::CHECK` did not compile unless `R` is zero-sized,
+        // and a zero-sized type has one inhabitant and no bytes to read. There
+        // is nothing this could be reading uninitialized.
+        unsafe { ::core::mem::MaybeUninit::<R>::uninit().assume_init() }
+    }
+
+    /// The size check behind [`conjure`], as an associated const so that it
+    /// names `R` and the compiler evaluates it when `conjure` is instantiated.
+    /// An `assert!` in the function body would be a check made per call.
+    pub struct Zst<R>(::core::marker::PhantomData<R>);
+
+    impl<R> Zst<R> {
+        pub const CHECK: () = assert!(
+            size_of::<R>() == 0,
+            "a renderer holds nothing: `render` takes no `self`, so only a zero-sized type can \
+             be one"
+        );
+    }
+
+    /// The check that `#[form(renderer = ...)]` names something that settles
+    /// the render once, while the crate is compiled.
+    ///
+    /// A function path, a non-capturing closure and a marker struct are each
+    /// zero-sized: one type, one behaviour, and a direct call. A function
+    /// *pointer* is a word of data, so `renderer = SOME_FN_PTR` would decide
+    /// the renderer per call, behind an indirect call, in an attribute that
+    /// reads as though the declaration had decided it. It is the one shape that
+    /// satisfies [`Fn`] without being a decision, so it is rejected rather than
+    /// accepted quietly.
+    ///
+    /// A [`Renderer`](super::Renderer) is the same story from the other side.
+    /// Its `render` is an associated function, so a value of one is never
+    /// passed anywhere, and any data it carried would be unreachable.
+    ///
+    /// The argument is a reference, because a function has no type anybody can
+    /// write down: the value the attribute names is what tells the check what
+    /// to measure.
+    ///
+    /// This is the diagnostic, and not the guarantee. The derive calls it from
+    /// a `const` item of its own, so it reports the size at the declaration
+    /// whether or not anything ever renders the form. [`Zst`] is the same
+    /// check inside [`conjure`], where reaching it is what makes the `unsafe`
+    /// sound, and nothing can arrive there without passing it.
+    pub const fn assert_zst<R>(_renderer: &R) {
+        assert!(
+            size_of::<R>() == 0,
+            "`renderer` takes a function path, a non-capturing closure or a marker struct, and \
+             this one carries data; a `fn` pointer decides the render per call, which a \
+             declaration cannot"
+        );
+    }
+
+    /// `#[form(status = 422)]`, checked while the compiler evaluates it.
+    ///
+    /// A `StatusCode` written out is checked by its own type. A number is not,
+    /// so this is where `422` is a status and `4222` is a compile error.
+    pub const fn status(code: u16) -> StatusCode {
+        match StatusCode::from_u16(code) {
+            Ok(status) => status,
+            Err(_) => panic!("`status` takes a three-digit status code, such as `422`"),
+        }
+    }
 }
 
 /// Whether the request declares an urlencoded body. This ignores any parameter

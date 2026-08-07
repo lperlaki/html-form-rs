@@ -10,6 +10,7 @@ mod attrs;
 mod choice;
 mod control;
 mod form;
+mod response;
 mod value;
 
 /// Derive `Form` for a struct with named fields.
@@ -24,6 +25,9 @@ mod value;
 /// | `novalidate` | Turn off the browser's own validation |
 /// | `submit = "Create account"` | The caption of the built-in submit button |
 /// | `validate = path::to::fn` | Cross-field check, `fn(&Self) -> bool` or `-> Result<(), E>` |
+/// | `context = Session` | What this form's own functions receive besides the value they look at |
+/// | `renderer = Page` | The struct becomes an axum extractor and response. The `axum` feature |
+/// | `status`, `from_request`, `into_response` | What `renderer` generates. See below |
 ///
 /// # Field attributes — `#[field(...)]`
 ///
@@ -112,6 +116,45 @@ mod value;
 /// `(field, message)` pair or a whole `FormErrors`. A cross-field check can
 /// therefore name the field the user has to change. See
 /// `html_form::FieldValidation` and `html_form::FormValidation`.
+///
+/// # A form that is its own axum extractor — `#[form(renderer = ...)]`
+///
+/// The `axum` feature. Name what answers a failed submission, and the struct
+/// itself becomes the argument a handler takes and the response it returns:
+///
+/// ```ignore
+/// #[derive(Form)]
+/// #[form(method = "post", renderer = Page)]
+/// struct Signup {
+///     #[field(type = "email")]
+///     email: String,
+/// }
+///
+/// async fn signup(form: Signup) -> Html<String> { … }
+/// ```
+///
+/// It generates a unit struct named after the form, `SignupRenderer`, which is
+/// the `Renderer` the named type, function or closure is called from — a
+/// function has no type anybody can write down, so the derive makes one that
+/// can be. `HasRenderer for Signup` names it, and is what a bound asks for when
+/// it means "a form that knows how it is rendered". From there it is
+/// `html_form::axum::Form<Signup, SignupRenderer>` with the wrapper taken off:
+/// `FromRequest` and `IntoResponse` for the form itself, and the rejection, the
+/// statuses and the context extraction that extractor already had.
+///
+/// | Attribute | Meaning |
+/// |---|---|
+/// | `renderer = Page` | A unit struct implementing `Renderer`, or a `fn(FormView) -> impl IntoResponse`, which may take `&Context` after the view. A closure works too, and a `fn` pointer is a compile error |
+/// | `status = 201` | What the derived `IntoResponse` answers with. A number or an `http::StatusCode`, checked while the compiler evaluates it. `200` otherwise |
+/// | `from_request = false` | Leave the extractor out |
+/// | `into_response = false` | Leave the response out |
+///
+/// The response is left out on its own where the form declares a `context`,
+/// because a value renders itself with no context to render it under.
+/// `into_response` puts it back where that context is an
+/// `html_form::EmptyContext`. The status of a *failed* submission is not this
+/// attribute's to set: it belongs to the rejection, which is what knows the
+/// submission was bad.
 ///
 /// # Attributes that do not apply
 ///

@@ -8,6 +8,13 @@ license = "MIT OR Apache-2.0"
 [lib]
 proc-macro = true
 
+[features]
+# `html-form`'s own `axum` feature turns this on. It says that
+# `html_form::axum` exists, so `#[form(renderer = ...)]` has somewhere to
+# generate against. A macro cannot read the features of the crate that invokes
+# it, which is why this is a feature here as well.
+axum = []
+
 [dependencies]
 proc-macro2 = "1.0.107"
 quote = "1.0.47"

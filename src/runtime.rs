@@ -372,6 +372,22 @@ pub mod __private {
         }
     }
 
+    // A default is written for the field's own type, and the adapter is what
+    // the field goes through. These two are what let a default reach the glue
+    // as a `Str<T>`, so a `from_str` field needs no second set of glue to
+    // produce one.
+    impl<T> From<T> for Str<T> {
+        fn from(value: T) -> Self {
+            Str(value)
+        }
+    }
+
+    impl<T: Default> Default for Str<T> {
+        fn default() -> Self {
+            Str(T::default())
+        }
+    }
+
     // ─── The glue behind a default ────────────────────────────────────────────
     //
     // A `FieldDefault` is one function pointer, and the derive writes the
@@ -416,21 +432,6 @@ pub mod __private {
         source.generate(context).into_form_value()
     }
 
-    /// [`default_from`], for a `#[field(from_str)]` field, which writes its
-    /// values out with `Display` in place of a [`FormValue`] impl.
-    ///
-    /// # Safety
-    ///
-    /// The same as [`default_from`].
-    pub unsafe fn default_displayed<C, V: Display, M, S: DefaultSource<C, V, M>>(
-        context: *const (),
-        source: S,
-    ) -> Cow<'static, str> {
-        // SAFETY: the same as `default_from`.
-        let context = unsafe { read_context::<C>(context) };
-        Cow::Owned(source.generate(context).to_string())
-    }
-
     /// The glue for a default that a *type* declares, which is a literal the
     /// macro cannot read: [`FormValue::DEFAULT`] is an associated const.
     fn default_of_type<V: FormValue>(_context: *const ()) -> Cow<'static, str> {
@@ -446,9 +447,14 @@ pub mod __private {
         V::default().into_form_value()
     }
 
-    /// [`default_standard`], for a `#[field(from_str)]` field.
-    pub fn default_standard_displayed<V: Default + Display>() -> Cow<'static, str> {
-        Cow::Owned(V::default().to_string())
+    /// A field's fully qualified name: the flatten prefix it sits under, then
+    /// its own name.
+    ///
+    /// The derive's `fill_in` writes the same names the walk resolves, so both
+    /// join them here. It gives a `Cow` because a field under no prefix is
+    /// already the `&'static str` in the spec.
+    pub fn join(prefix: &str, name: &'static str) -> Cow<'static, str> {
+        crate::spec::join(prefix, name)
     }
 
     /// A *type's* default: the one `#[value(...)]` wrote, or the one the type
@@ -486,7 +492,8 @@ pub mod __private {
     /// Whether a field shows its default on every render.
     ///
     /// `#[field(reset)]` settles it outright, and `reset = false` settles it
-    /// the other way. Where the field says nothing, one kind of field resets on
+    /// the other way. The macro emits what you wrote in that case and never
+    /// calls this. Where the field says nothing, one kind of field resets on
     /// its own: a hidden control whose default the form *produces*. Nobody
     /// typed such a field, it can hold nothing a caller would miss, and a
     /// rejected token sent back would make the retry fail exactly as the first
@@ -496,19 +503,12 @@ pub mod __private {
     /// rule. A control can come from the field's Rust type, and so can a
     /// default. [`FieldSpec::reset`](crate::FieldSpec::reset) is what the
     /// renderer reads, and it is the whole answer by the time a spec exists.
-    pub const fn or_reset(
-        written: Option<bool>,
-        control: &Control,
-        default: &Option<FieldDefault>,
-    ) -> bool {
-        match written {
-            Some(reset) => reset,
-            None => match default {
-                Some(default) => {
-                    default.is_generated() && matches!(control.kind(), crate::FieldKind::Hidden)
-                }
-                None => false,
-            },
+    pub const fn or_reset(control: &Control, default: &Option<FieldDefault>) -> bool {
+        match default {
+            Some(default) => {
+                default.is_generated() && matches!(control.kind(), crate::FieldKind::Hidden)
+            }
+            None => false,
         }
     }
 
@@ -1387,14 +1387,15 @@ pub mod __private {
         }
 
         /// A `#[field(from_str)]` field writes its values out with `Display`,
-        /// and its default takes the same road.
+        /// and its default takes the same road: the `Str` adapter, which is
+        /// the road every other value of such a field takes.
         #[test]
         fn a_default_of_a_foreign_type_is_written_out_the_way_the_field_is() {
             fn loopback() -> std::net::Ipv4Addr {
                 std::net::Ipv4Addr::LOCALHOST
             }
             const LOOPBACK: Generate = |context| unsafe {
-                default_displayed::<(), std::net::Ipv4Addr, _, _>(context, loopback)
+                default_from::<(), Str<std::net::Ipv4Addr>, _, _>(context, loopback)
             };
             const HOST: FieldDefault = unsafe { FieldDefault::new(LOOPBACK, None) };
             assert_eq!(produced(HOST), "127.0.0.1");

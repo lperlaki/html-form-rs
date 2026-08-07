@@ -591,7 +591,9 @@
 //! extractors, and they differ in who answers a failed validation:
 //! [`Outcome<T>`] hands it to the handler, and
 //! [`axum::Form<T, R>`](axum::Form) rejects with the form again, rendered by
-//! `R`. See the [`axum`] module and `examples/axum_signup.rs`.
+//! `R`. `#[form(renderer = ...)]` puts that `R` on the declaration, and the
+//! struct itself is then the extractor and the response. See the [`axum`]
+//! module and `examples/axum_signup.rs`.
 //!
 //! A submission also does not have to be a form. [`Values`] is `Serialize` and
 //! `Deserialize`, so a JSON body is a submission too. You get the same struct,

@@ -31,8 +31,10 @@ html = []
 # Without this feature `pattern` is still rendered into the HTML, but only
 # enforced by the browser.
 pattern = ["dep:regex-lite"]
-# `Outcome<T>` is an axum extractor (axum 0.8).
-axum = ["dep:axum-core", "dep:bytes", "dep:http"]
+# `Outcome<T>` is an axum extractor (axum 0.8). With `derive` it also unlocks
+# `#[form(renderer = ...)]`, which the derive crate has to be told about: only
+# then does it emit the two impls that name this module.
+axum = ["dep:axum-core", "dep:bytes", "dep:http", "html-form-derive?/axum"]
 
 [dev-dependencies]
 # The crate's own tests and examples render markup, so they need the built-in

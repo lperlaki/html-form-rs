@@ -5,6 +5,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
+use syn::spanned::Spanned;
 use syn::{Attribute, Error, Ident, Lit, LitStr, Path, Result, Token, token};
 
 /// A string a person reads. You write it either as plain text or as `t("key")`,
@@ -240,6 +241,28 @@ fn check_attr_name(attr: &CustomAttr, owner: &str, reserved: &[Reserved]) -> Res
     ))
 }
 
+/// `#[form(status = ...)]`: the status the derived `IntoResponse` answers with.
+///
+/// Both shapes are settled before anything runs. A `StatusCode` is checked by
+/// its own type, and a number by the `const fn` that turns it into one.
+pub enum StatusAttr {
+    /// `status = 422`
+    Code(syn::LitInt),
+    /// `status = StatusCode::UNPROCESSABLE_ENTITY`, or anything else that is a
+    /// `StatusCode` a `const` can hold.
+    Value(syn::Expr),
+}
+
+impl StatusAttr {
+    /// The `StatusCode` const this becomes.
+    pub fn tokens(&self) -> TokenStream {
+        match self {
+            StatusAttr::Code(lit) => quote!(::html_form::axum::__private::status(#lit)),
+            StatusAttr::Value(expr) => quote!(#expr),
+        }
+    }
+}
+
 /// `#[form(...)]` on the struct.
 #[derive(Default)]
 pub struct FormAttrs {
@@ -255,6 +278,22 @@ pub struct FormAttrs {
     /// `context = Type`: what this form's own functions receive. `None` means
     /// `()`.
     pub context: Option<syn::Type>,
+    /// `renderer = ...`: the type, function or closure that answers a failed
+    /// submission, and what makes this struct an extractor and a response of
+    /// its own.
+    ///
+    /// It is an expression, because that is the one position a function and a
+    /// marker type can share: a function has no type anybody can write down.
+    /// The span is where the key was written, so the errors about the three
+    /// keys below point at it.
+    pub renderer: Option<(syn::Expr, Span)>,
+    /// `status = ...`: what the derived `IntoResponse` answers with. `None` is
+    /// `200 OK`.
+    pub status: Option<(StatusAttr, Span)>,
+    /// `from_request = false`: leave the extractor out.
+    pub from_request: Option<(bool, Span)>,
+    /// `into_response = false`: leave the response out.
+    pub into_response: Option<(bool, Span)>,
     /// `attr(...)` entries, in the order you wrote them.
     pub custom: Vec<CustomAttr>,
 }
@@ -294,12 +333,45 @@ impl FormAttrs {
                             )
                         })?);
                     }
+                    "renderer" => {
+                        let span = meta.path.span();
+                        out.renderer = Some((
+                            meta.value()?.parse().map_err(|e| {
+                                Error::new(
+                                    e.span(),
+                                    "expected a `Renderer`, or a function that renders one, e.g. \
+                                     `renderer = Page`",
+                                )
+                            })?,
+                            span,
+                        ));
+                    }
+                    "status" => {
+                        let span = meta.path.span();
+                        let value = meta.value()?;
+                        let status = if value.peek(syn::LitInt) {
+                            StatusAttr::Code(value.parse()?)
+                        } else if value.peek(Lit) {
+                            return Err(value.error(
+                                "expected a status code, e.g. `422`, or an `http::StatusCode`",
+                            ));
+                        } else {
+                            StatusAttr::Value(value.parse()?)
+                        };
+                        out.status = Some((status, span));
+                    }
+                    "from_request" => {
+                        out.from_request = Some((parse_flag(&meta)?, meta.path.span()))
+                    }
+                    "into_response" => {
+                        out.into_response = Some((parse_flag(&meta)?, meta.path.span()))
+                    }
                     "attr" => parse_custom_attrs(&meta, "form", FORM_RESERVED, &mut out.custom)?,
                     other => {
                         return Err(meta.error(format!(
                             "unknown `form` attribute `{other}`; expected one of: id, name, \
                              action, method, enctype, class, submit, novalidate, validate, \
-                             context, attr"
+                             context, renderer, status, from_request, into_response, attr"
                         )));
                     }
                 }
@@ -423,20 +495,30 @@ impl Constraints {
     }
 }
 
+/// Where a field's default comes from. The three spellings of `#[field(default
+/// …)]`, which are alternatives, so one field of this type holds the answer.
+pub enum DefaultAttr {
+    /// `default = "…"`: the value itself, written into the spec.
+    Literal(String),
+    /// `default` with nothing after it: the field type's own
+    /// `Default::default()`. A `const` cannot call that, so it too becomes glue
+    /// the spec holds.
+    Std,
+    /// `default = path`: a function the crate calls once per render, not a
+    /// value written into the spec.
+    Fn(Path),
+}
+
 /// `#[field(...)]` plus any `#[option(...)]` entries on one struct field.
 #[derive(Default)]
 pub struct FieldAttrs {
     pub name: Option<String>,
     pub label: Option<TextAttr>,
     pub required: Option<bool>,
-    pub default: Option<String>,
-    /// `default = path`: a function the crate calls once per render, not a
-    /// value written into the spec.
-    pub default_fn: Option<Path>,
-    /// `default` with nothing after it: the field type's own
-    /// `Default::default()`. A `const` cannot call that, so it too becomes glue
-    /// the spec holds.
-    pub default_std: bool,
+    /// `default`, in whichever of its three spellings you wrote. One field,
+    /// because the three are alternatives: naming two of them is an error, and
+    /// a type that says so needs no check to enforce it.
+    pub default: Option<DefaultAttr>,
     /// `reset`: show the default on every render, and never what came in.
     ///
     /// Unwritten, so that the spec can fall back on the rule for a field the
@@ -505,31 +587,28 @@ impl FieldAttrs {
                     // value, a literal is the value itself, and anything else
                     // names a function that produces one at render time.
                     "default" => {
-                        if !meta.input.peek(Token![=]) {
-                            out.default_std = true;
-                        } else {
-                            let value = meta.value()?;
-                            if value.peek(Lit) {
-                                out.default = Some(lit_to_string(&value.parse()?)?);
-                            } else {
-                                out.default_fn = Some(value.parse().map_err(|e| {
-                                    Error::new(
-                                        e.span(),
-                                        "expected a literal default or the path of a function \
-                                         returning one",
-                                    )
-                                })?);
-                            }
-                        }
-                        let written = usize::from(out.default.is_some())
-                            + usize::from(out.default_fn.is_some())
-                            + usize::from(out.default_std);
-                        if written > 1 {
+                        if out.default.is_some() {
                             return Err(meta.error(
                                 "`default` names one source: a literal, a function that produces \
                                  one, or nothing at all for the field type's own `Default`",
                             ));
                         }
+                        out.default = Some(if !meta.input.peek(Token![=]) {
+                            DefaultAttr::Std
+                        } else {
+                            let value = meta.value()?;
+                            if value.peek(Lit) {
+                                DefaultAttr::Literal(lit_to_string(&value.parse()?)?)
+                            } else {
+                                DefaultAttr::Fn(value.parse().map_err(|e| {
+                                    Error::new(
+                                        e.span(),
+                                        "expected a literal default or the path of a function \
+                                         returning one",
+                                    )
+                                })?)
+                            }
+                        });
                     }
                     "reset" => out.reset = Some(parse_flag(&meta)?),
                     "placeholder" => out.placeholder = Some(meta.value()?.parse()?),
