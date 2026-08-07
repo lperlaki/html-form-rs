@@ -5,10 +5,16 @@ members = ["html-form-derive"]
 name = "html-form"
 version = "0.1.0"
 edition = "2024"
+# Let-chains, which the crate uses throughout. Edition 2024 alone would be 1.85.
+rust-version = "1.88"
 description = "Declarative HTML forms: render, parse and validate the same struct"
 license = "MIT OR Apache-2.0"
 authors = ["Liam Perlaki <liam@perlaki.org>"]
 repository = "https://github.com/lperlaki/html-form-rs"
+documentation = "https://docs.rs/html-form"
+readme = "README.md"
+keywords = ["html", "form", "validation", "forms", "web"]
+categories = ["web-programming", "template-engine"]
 
 [dependencies]
 form_urlencoded = "1.2.2"
