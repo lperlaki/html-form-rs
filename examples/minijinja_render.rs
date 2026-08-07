@@ -109,10 +109,12 @@ fn main() {
 
     // 2. POST /signup with a bad body: the same template and the same view
     //    type, now carrying what the user typed and each error.
-    let body = "email=not-an-email&password=short&age=7&plan=free&bio=Hi&newsletter=on";
+    // The hidden `id` the flatten added rides along, as the browser sends it
+    // back from the page that rendered it.
+    let body = "id=42&email=not-an-email&password=short&age=7&plan=free&bio=Hi&newsletter=on";
     println!("── POST /signup (rejected) ─────────────────────────────────");
     match Signup::submit_urlencoded(body) {
-        Outcome::Valid(signup) => println!("unexpectedly accepted: {signup:?}"),
+        Outcome::Valid(signup) => panic!("unexpectedly accepted: {signup:?}"),
         Outcome::Invalid { errors, view } => {
             println!("// {} error(s): {errors}\n", errors.len());
             println!("{}", template.render(context! { form => view }).unwrap());
@@ -120,10 +122,11 @@ fn main() {
     }
 
     // 3. POST /signup with a good body: straight to a typed struct.
-    let body = "email=ada@example.com&password=correct-horse-battery&age=36&plan=pro&newsletter=on";
+    let body =
+        "id=42&email=ada@example.com&password=correct-horse-battery&age=36&plan=pro&newsletter=on";
     println!("── POST /signup (accepted) ─────────────────────────────────");
     match Signup::submit_urlencoded(body) {
         Outcome::Valid(signup) => println!("{signup:#?}"),
-        Outcome::Invalid { errors, .. } => println!("unexpectedly rejected: {errors}"),
+        Outcome::Invalid { errors, .. } => panic!("unexpectedly rejected: {errors}"),
     }
 }
