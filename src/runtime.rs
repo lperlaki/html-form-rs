@@ -512,7 +512,7 @@ pub mod __private {
         }
     }
 
-    /// The bridge a `#[field(flatten)]` puts in its [`Flattened`], which turns
+    /// The bridge a `#[field(flatten)]` puts in its [`Flattened`][crate::Flattened], which turns
     /// the enclosing form's context into the one the sub-form's own defaults
     /// read. It is the rendering half of
     /// [`ParseCtx::nested`](super::ParseCtx::nested), and it follows the same

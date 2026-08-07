@@ -43,10 +43,15 @@ pattern = ["dep:regex-lite"]
 axum = ["dep:axum-core", "dep:bytes", "dep:http", "html-form-derive?/axum"]
 
 [dev-dependencies]
-# The crate's own tests and examples render markup, so they need the built-in
-# renderer whether or not it is in the default set: `cargo test
-# --no-default-features` would otherwise fail to compile them.
-html-form = { path = ".", features = ["html"] }
+# The crate's own tests, examples and doctests render markup and cover the axum
+# integration, so they need those two features whether or not they are in the
+# default set: `cargo test` would otherwise fail to compile them.
+#
+# `axum` is here because the crate's documentation is the README, and the README
+# documents the extractors. A doc comment can be `#[cfg]`-gated; a line of an
+# included file cannot, so the feature is on wherever doctests run. This changes
+# nothing about what a dependent gets — `axum` is still off by default.
+html-form = { path = ".", features = ["html", "axum"] }
 minijinja = "2.23.0"
 serde_json = "1.0"
 axum = "0.8.9"

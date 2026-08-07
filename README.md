@@ -29,19 +29,31 @@ struct Signup {
     #[field(label = "Subscribe to the newsletter", default = true)]
     newsletter: bool,
 }
-```
 
-```rust
-// GET  /signup
+// GET /signup — a blank form, with each field showing its default.
 let html = Signup::render().to_html();
+assert!(html.contains(r#"<input type="email" name="email""#));
 
-// POST /signup
-match Signup::submit_urlencoded(body) {
-    Outcome::Valid(signup) => create_account(signup),
-    // `view` is the same render format. It now carries what the user typed
-    // and each error.
-    Outcome::Invalid { errors, view } => render_page(&view),
+// POST /signup with a bad body: every problem is reported at once.
+match Signup::submit_urlencoded("email=nope&password=short&age=7") {
+    Outcome::Valid(_) => unreachable!(),
+    Outcome::Invalid { errors, view } => {
+        // A bad address, a short password, an age below the minimum.
+        assert_eq!(errors.len(), 3);
+        // The re-render keeps what the user typed…
+        assert_eq!(view.field("email").unwrap().value.as_deref(), Some("nope"));
+        // …and carries the messages.
+        assert!(view.field("age").unwrap().errors[0].contains("18"));
+    }
 }
+
+// And a good one.
+let signup = Signup::from_urlencoded(
+    "email=a@example.com&password=correct-horse-battery&age=30&newsletter=on",
+)
+.unwrap();
+assert_eq!(signup.age, Some(30));
+assert!(signup.newsletter);
 ```
 
 ## What it does
@@ -63,12 +75,22 @@ The crate parses each field on its own, so one round trip tells the user
 everything that is wrong:
 
 ```rust
+# use html_form::Form;
+# #[derive(Form, Debug)]
+# struct Signup {
+#     #[field(type = "email")]
+#     email: String,
+#     #[field(type = "password", minlength = 12)]
+#     password: String,
+#     #[field(min = 18, max = 120)]
+#     age: Option<u32>,
+# }
 let body = "email=nope&password=short&age=7";
 let errors = Signup::from_urlencoded(body).unwrap_err();
 
 assert_eq!(errors.len(), 3);
 for (field, error) in errors.iter() {
-    println!("{field}: {}", error.message);
+    println!("{field}: {}", error.message.as_str());
 }
 // email:    Enter a valid email address.
 // password: Enter at least 12 characters (currently 5).
@@ -80,12 +102,57 @@ can match on `ErrorKind::TooShort { minlength, length }` and write your own text
 translated or not. `FormErrors` also serializes to
 `{"form": [...], "fields": {"email": [...]}}` for JSON APIs.
 
+## Checks the markup cannot express
+
+`validate = ...` names a function. The crate runs it after every check the spec
+could make: per field with `#[field(...)]`, or once over the whole struct with
+`#[form(...)]`. A predicate is enough when the built-in message will do. Return a
+`Result` to say more.
+
+```rust
+use html_form::{Form, FormErrors};
+
+#[derive(Form, Debug)]
+#[form(validate = passwords_match)]
+struct Signup {
+    #[field(validate = is_available)]
+    username: String,
+    #[field(type = "password")]
+    password: String,
+    #[field(type = "password")]
+    confirm: String,
+}
+
+fn is_available(name: &String) -> bool {
+    name != "admin"
+}
+
+fn passwords_match(form: &Signup) -> Result<(), FormErrors> {
+    if form.password == form.confirm {
+        Ok(())
+    } else {
+        // Attach it to the field the user can correct, not to the form.
+        Err(("confirm", "The two passwords do not match.").into())
+    }
+}
+
+let errors =
+    Signup::from_urlencoded("username=admin&password=a&confirm=b").unwrap_err();
+assert!(errors.has_field("username") && errors.has_field("confirm"));
+```
+
+A field validator may return a `bool`, a `Result<(), &str | String | Cow>`, a
+`Result<(), Text>` for an i18n key, or a `Result<(), FieldError>`. A form
+validator takes those and two more that name a field: a `(field, message)` pair,
+or a whole `FormErrors` it built itself.
+
 ## Localization
 
 Where the crate accepts a string a person reads, `t("…")` names an i18n key in
 place of the text:
 
 ```rust
+# use html_form::Form;
 #[derive(Form)]
 #[form(submit = t("signup.submit"))]
 struct Signup {
@@ -113,15 +180,30 @@ The crate resolves no key itself. It has no more opinion about your i18n stack
 than about your HTTP stack. Give it a lookup and it walks the view:
 
 ```rust
-let view = Signup::render_localized(|key| bundle.get(key));
+# use html_form::Form;
+# #[derive(Form)]
+# #[form(submit = t("signup.submit"))]
+# struct Signup {
+#     #[field(type = "email", label = t("signup.email"), help = "Never shared.")]
+#     email: String,
+# }
+let view = Signup::render_localized(|key| match key {
+    "signup.email" => Some("E-Mail-Adresse"),
+    "signup.submit" => Some("Konto erstellen"),
+    _ => None,
+});
 
-// …or on a view from anywhere else
-let view = article.render_filled().localized(|key| bundle.get(key));
-let view = outcome.view().unwrap().localized(&translate);
+assert_eq!(view.field("email").unwrap().label.as_deref(), Some("E-Mail-Adresse"));
+assert_eq!(view.submit_label, "Konto erstellen");
+// A literal is a literal, whatever language the rest is in.
+assert_eq!(view.field("email").unwrap().help.as_deref(), Some("Never shared."));
 ```
 
-`translate` is any `Fn(&str) -> Option<impl Into<Cow<'static, str>>>`. A lookup
-that returns `&'static str` therefore costs nothing to apply.
+`localized` does the same to a view from anywhere else, so
+`article.render_filled().localized(&translate)` and
+`outcome.view().unwrap().localized(&translate)` work the same way. `translate` is
+any `Fn(&str) -> Option<impl Into<Cow<'static, str>>>`, so a lookup that returns
+`&'static str` costs nothing to apply.
 
 Or leave the work to the template. Every translatable string has a companion
 `…_key`. The crate sets it only while the key is unresolved:
@@ -138,22 +220,33 @@ resolves a key, it clears the `…_key`, so nothing translates twice.
 `Choice::keyed("de", "country.de")` and `Choice::owned_keyed(id, key)` build
 keyed options at render time, next to `Choice::new` and `Choice::owned`.
 
+A `validate = ...` function localizes the same way. Return a `Text::key`, and the
+crate resolves the message with everything else. The key is also the error's
+code, so a caller that would rather build its own message can match on that
+instead. The messages of the *built-in* checks are English and carry no key on
+purpose: every `ErrorKind` names the constraint the value broke, so a caller that
+needs a translation matches on the kind and writes its own text. There is no key
+to guess at, and no message table to keep in step.
+
 ## Reuse: flattening one form into another
 
 You can put any `Form` inside another. Without a prefix, the sub-form shares the
 parent's namespace. With a prefix, you can use the same sub-form more than once.
 
 ```rust
+use html_form::Form;
+
 #[derive(Form)]
 struct Address {
     #[field(label = "Street")]
     street: String,
-    #[field(label = "Postcode", pattern = r"\d{5}")]
+    #[field(label = "Postcode", pattern = r"\d{4,5}")]
     postcode: String,
 }
 
 #[derive(Form)]
 struct Order {
+    #[field(label = "Customer")]
     customer: String,
 
     #[field(flatten, prefix = "billing_", legend = "Billing address")]
@@ -162,12 +255,62 @@ struct Order {
     #[field(flatten, prefix = "shipping_", legend = "Shipping address")]
     shipping: Address,
 }
+
+let view = Order::render();
+let names: Vec<&str> = view.fields.iter().map(|f| f.name.as_ref()).collect();
+assert_eq!(
+    names,
+    ["customer", "billing_street", "billing_postcode",
+     "shipping_street", "shipping_postcode"]
+);
+
+let order = Order::from_urlencoded(
+    "customer=Ada&billing_street=Main+1&billing_postcode=12345\
+     &shipping_street=Side+2&shipping_postcode=54321",
+)
+.unwrap();
+assert_eq!(order.shipping.postcode, "54321");
 ```
 
-The browser submits the fields as `billing_street`, `shipping_postcode` and so
-on. The errors use the same prefixed names. Each group renders inside its own
-`<fieldset>` with the given legend. `Address` is still a good form on its own.
-Nothing about it had to change.
+The browser submits the fields under the prefixed names, and the errors use the
+same ones. Each group renders inside its own `<fieldset>` with the given legend.
+`Address` is still a good form on its own. Nothing about it had to change.
+
+A form may be generic, which is what makes a *wrapper* possible. `Form::SPEC` is
+an associated constant, so the compiler resolves `<T as Form>::SPEC` once per
+instantiation, and the derive adds the bounds each field implies. A flatten
+brings in the sub-form's fields alone: its `action`, `method` and submit label
+describe its own `<form>` element, so a wrapper declares the ones it wants.
+
+```rust
+use html_form::Form;
+
+#[derive(Form)]
+#[form(method = "post")]
+struct WithCsrf<T> {
+    #[field(type = "hidden", default = fresh_token)]
+    csrf_token: String,
+
+    #[field(flatten)]
+    inner: T,
+}
+
+#[derive(Form)]
+struct Signup {
+    #[field(type = "email")]
+    email: String,
+}
+
+fn fresh_token() -> String {
+    // A real one comes from a CSPRNG, and the session remembers it.
+    "3f9c…".to_owned()
+}
+
+let view = WithCsrf::<Signup>::render();
+let names: Vec<&str> = view.fields.iter().map(|f| f.name.as_ref()).collect();
+assert_eq!(names, ["csrf_token", "email"]);
+assert_eq!(view.field("csrf_token").unwrap().value.as_deref(), Some("3f9c…"));
+```
 
 ## Rendering
 
@@ -178,6 +321,9 @@ author never has to know what an enum is.
 ### Built in
 
 ```rust
+# use html_form::Form;
+# #[derive(Form)]
+# struct Signup { #[field(type = "email")] email: String }
 println!("{}", Signup::render());
 ```
 
@@ -188,14 +334,23 @@ choices get an `<optgroup>`.
 
 This is the `html` feature, on by default. If you render through a template
 engine, turn the feature off. You lose `to_html`, the `Display` impls and
-`escape`. Nothing else changes.
+`escape`. Nothing else changes, `FormView` included.
 
 ### MiniJinja
 
 `FormView` is `Serialize`, so it goes straight into a context:
 
 ```rust
+use minijinja::{Environment, context};
+# use html_form::Form;
+# #[derive(Form)]
+# struct Signup { #[field(type = "email", label = "Email address")] email: String }
+# let mut env = Environment::new();
+# env.add_template("signup.html", "{% for f in form.fields %}{{ f.label }}{% endfor %}")?;
+# let template = env.get_template("signup.html")?;
 let html = template.render(context! { form => Signup::render() })?;
+# assert_eq!(html, "Email address");
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ```jinja
@@ -217,7 +372,7 @@ let html = template.render(context! { form => Signup::render() })?;
 {% endfor %}
 ```
 
-See `examples/minijinja_render.rs` for the whole request cycle:
+`examples/minijinja_render.rs` is the whole request cycle, and it runs in CI:
 `cargo run --example minijinja_render`.
 
 ### Askama
@@ -247,10 +402,22 @@ suits you.
 The view is owned and mutable, which is where a list from the database goes:
 
 ```rust
+use html_form::{Choice, Form};
+
+# struct Room { id: String, name: String }
+# let rooms = vec![Room { id: "a1".into(), name: "Attic".into() }];
+#[derive(Form)]
+struct Booking {
+    #[field(type = "select")]
+    room: String,
+}
+
 let mut view = Booking::render();
 view.field_mut("room")
     .unwrap()
     .set_choices(rooms.iter().map(|r| Choice::owned(&r.id, &r.name)));
+
+assert_eq!(view.field("room").unwrap().choices[0].label, "Attic");
 ```
 
 `view.add_field_error("email", "That address is already registered.")` adds the
@@ -281,6 +448,11 @@ Parsing works the same way. A field's name reaches `FormErrors` borrowed from
 the spec. Only `#[field(flatten, prefix = "…")]` makes a name that the crate has
 to build.
 
+A context costs one pointer passed down the walk, and nothing else. A default
+costs one indirect call, made where the render reads the value and nowhere else.
+There is no pass over the form to collect defaults first, so a form that declares
+none pays nothing for the mechanism.
+
 ## Attributes
 
 ### `#[form(...)]` — on the struct
@@ -295,6 +467,7 @@ to build.
 | `validate = path::to::fn` | Cross-field check: `fn(&Self) -> Result<(), E>`, or `fn(&Self, &Context) -> Result<(), E>` |
 | `context = Session` | What the crate gives the form's own functions, and what every `…_with_context` call takes. Defaults to `()` |
 | `attr("hx-post" = "/signup")` | Anything the crate has no opinion about. The crate renders it as written |
+| `renderer`, `status`, `from_request`, `into_response` | With the `axum` feature: the struct is its own extractor and response. See [axum](#axum) |
 
 ### `#[field(...)]` — on a field
 
@@ -321,10 +494,15 @@ to build.
 You can also list options inline:
 
 ```rust
-#[field(label = "Country")]
-#[option("de", "Germany")]
-#[option("ch", "Switzerland", group = "Non-EU")]
-country: String,
+# use html_form::Form;
+#[derive(Form)]
+struct Delivery {
+    #[field(label = "Country")]
+    #[option("de", "Germany")]
+    #[option("ch", "Switzerland", group = "Non-EU")]
+    country: String,
+}
+# assert_eq!(Delivery::render().field("country").unwrap().choices.len(), 2);
 ```
 
 ### Custom attributes
@@ -333,6 +511,8 @@ country: String,
 `aria-*`, and whatever else your front end reads.
 
 ```rust
+use html_form::Form;
+
 #[derive(Form)]
 #[form(attr("hx-post" = "/search", "hx-target" = "#results"))]
 struct Search {
@@ -342,6 +522,10 @@ struct Search {
     #[field(attr(inert))]                     // a bare word is a boolean attribute
     sort: Option<String>,
 }
+
+let html = Search::render().to_html();
+assert!(html.contains(r#"hx-post="/search""#));
+assert!(html.contains(r#"autocorrect="off""#));
 ```
 
 Write a dashed name as a string. The crate takes a bare word as written, so
@@ -354,8 +538,12 @@ The spec holds the list in `FieldSpec::attrs`. It reaches the render format as
 attribute. The crate renders the list after every attribute it generates itself.
 Naming one of *those* is a compile error, not a duplicate attribute the browser
 would ignore: `attr("class" = "x")` tells you to write `#[field(class = "x")]`.
+
 `FormView::set_attr` and `FieldView::set_attr` set attributes at render time,
-next to `set_choices`.
+next to `set_choices`. A *value* set there may be anything, because the renderer
+escapes it. A **name** is written outside the quotes, so the built-in renderer
+writes only names made of what a name may be made of, and skips the rest: build
+one from a constant, not from input.
 
 ## Types
 
@@ -376,7 +564,9 @@ next to `set_choices`.
 A fieldless enum becomes a `<select>`:
 
 ```rust
-#[derive(FormChoice)]
+use html_form::{Form, FormChoice};
+
+#[derive(FormChoice, Debug, PartialEq)]
 enum Plan {
     Free,                                       // submits "free", labeled "Free"
     #[choice(value = "pro", label = "Professional")]
@@ -384,10 +574,20 @@ enum Plan {
     #[choice(group = "Contact sales", disabled)]
     SelfHosted,                                 // submits "self-hosted"
 }
-```
 
-The crate rejects a value outside the declared options with
-`ErrorKind::NotAChoice`. A `<select>` is a constraint, not a suggestion.
+#[derive(Form, Debug)]
+struct Subscribe {
+    plan: Plan,
+}
+
+assert_eq!(Subscribe::from_urlencoded("plan=pro").unwrap().plan, Plan::Pro);
+// A `<select>` is a constraint, not a suggestion.
+let errors = Subscribe::from_urlencoded("plan=enterprise").unwrap_err();
+assert_eq!(
+    errors.field("plan").next().unwrap().kind,
+    html_form::ErrorKind::NotAChoice
+);
+```
 
 ### A type that carries its own rules
 
@@ -397,7 +597,9 @@ does the conversion, because it is already a `FormValue`, and `#[value(...)]`
 says what the wrapper adds.
 
 ```rust
-#[derive(FormValue)]
+use html_form::{Form, Text};
+
+#[derive(html_form::FormValue, Debug)]
 #[value(type = "email", maxlength = 254, validate = is_company_address)]
 struct WorkEmail(String);
 
@@ -408,11 +610,24 @@ fn is_company_address(email: &WorkEmail) -> Result<(), Text> {
     }
 }
 
-#[derive(Form)]
+#[derive(Form, Debug)]
 struct Invite {
     #[field(label = "Who should we invite?")]
-    colleague: WorkEmail,          // the control, the length, the check: all the type's
+    colleague: WorkEmail,      // the control, the length, the check: all the type's
 }
+
+// The control, and every constraint on it, came from the type.
+let view = Invite::render();
+let field = view.field("colleague").unwrap();
+assert_eq!(field.kind, html_form::FieldKind::Email);
+assert_eq!(field.maxlength, Some(254));
+
+// So did the check, which runs on every form that uses the type.
+let errors = Invite::from_urlencoded("colleague=ada@example.org").unwrap_err();
+assert_eq!(
+    errors.field("colleague").next().unwrap().code(),
+    Some("invite.email.outside")
+);
 ```
 
 | `#[value(...)]` | |
@@ -444,22 +659,40 @@ itself. The next section covers that case.
 or a `Decimal` becomes a field with no impl and no newtype:
 
 ```rust
-#[derive(Form)]
+use html_form::Form;
+# use std::fmt;
+# use std::str::FromStr;
+# #[derive(Debug, PartialEq)]
+# struct NaiveDate(String);
+# impl FromStr for NaiveDate {
+#     type Err = &'static str;
+#     fn from_str(raw: &str) -> Result<Self, Self::Err> { Ok(NaiveDate(raw.to_owned())) }
+# }
+# impl fmt::Display for NaiveDate {
+#     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+# }
+
+#[derive(Form, Debug)]
 struct Booking {
     #[field(from_str, type = "date", min = "2026-01-01")]
-    day: NaiveDate,
-
-    #[field(from_str)]
-    reference: Uuid,
-
-    #[field(from_str)]
-    guests: Vec<Uuid>,          // and `Option<T>`, and `Vec<T>`
+    day: NaiveDate,          // and `Option<T>`, and `Vec<T>`
 }
+
+let booking = Booking::from_urlencoded("day=2026-08-06").unwrap();
+assert_eq!(booking.day, NaiveDate("2026-08-06".to_owned()));
+
+// The crate makes every check the spec could make first. Those checks say more
+// than a conversion could: this is the date control's own format check.
+let errors = Booking::from_urlencoded("day=whenever").unwrap_err();
+assert_eq!(
+    errors.field("day").next().unwrap().message.as_str(),
+    "Enter a date as YYYY-MM-DD."
+);
 ```
 
-Everything else about the field stays the same. The crate checks the constraints
-in the spec first. A `validate` function gets the type the field was written as,
-and `Display` writes the value out again for an edit form.
+Everything else about the field stays the same. A `validate` function gets the
+type the field was written as, and `Display` writes the value out again for an
+edit form.
 
 There are two things it cannot do, and one answer to both. It implies no
 control, because a foreign type has no `CONTROL` to give one. The field is
@@ -474,9 +707,29 @@ names it. Self-conversion asks nothing of a type's shape, so this is also how a
 several-field struct or an enum becomes one value:
 
 ```rust
-#[derive(FormValue)]
+use std::fmt;
+use std::str::FromStr;
+
+#[derive(html_form::FormValue)]
 #[value(from_str, pattern = r"\d+\.\d+\.\d+", default = "1.0.0")]
 struct Version { major: u32, minor: u32, patch: u32 }
+
+// `from_str` asks for these two, and for nothing else.
+impl FromStr for Version {
+    type Err = &'static str;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let mut parts = raw.split('.').map(str::parse);
+        let mut next = || parts.next().transpose().ok().flatten().ok_or("not a version");
+        Ok(Version { major: next()?, minor: next()?, patch: next()? })
+    }
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
 ```
 
 ### By hand
@@ -484,11 +737,19 @@ struct Version { major: u32, minor: u32, patch: u32 }
 The trait is small enough to write out. It requires only the two conversions:
 
 ```rust
+use std::borrow::Cow;
+use html_form::{Control, FormValue, ValueError};
+
+struct Slug(String);
+
 impl FormValue for Slug {
     const CONTROL: Control = Control::TEXT;
 
     fn parse_form_value(raw: &str) -> Result<Self, ValueError> {
-        // …
+        match raw.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+            true => Ok(Slug(raw.to_owned())),
+            false => Err(ValueError::new("lowercase letters and dashes")),
+        }
     }
 
     fn to_form_value(&self) -> Cow<'static, str> {
@@ -506,6 +767,7 @@ it wherever it owns the value, such as a default a form produced.
 constraints it implies travel together, so `u32` says
 
 ```rust
+# use html_form::{Bounds, Control, NumberControl};
 const CONTROL: Control = Control::Number(NumberControl {
     bounds: Bounds { min: Some("0"), step: Some("1"), max: None },
     ..NumberControl::DEFAULT
@@ -556,8 +818,22 @@ already chooses between options, it means a checkbox *group*. That is a
 `FormChoice` enum, or a field with `choices` or `#[option(...)]`:
 
 ```rust
-#[field(type = "checkbox", label = "Notify me about")]
-notify: Vec<Topic>,
+use html_form::{Form, FormChoice};
+
+#[derive(FormChoice, Debug, PartialEq)]
+enum Topic {
+    Releases,
+    Security,
+}
+
+#[derive(Form, Debug)]
+struct Preferences {
+    #[field(type = "checkbox", label = "Notify me about")]
+    notify: Vec<Topic>,
+}
+
+let prefs = Preferences::from_urlencoded("notify=releases&notify=security").unwrap();
+assert_eq!(prefs.notify, [Topic::Releases, Topic::Security]);
 ```
 
 A checkbox group is the usable alternative to `<select multiple>`. Two things
@@ -586,19 +862,78 @@ because a submission can come from anywhere:
 - `<select>`, radio and checkbox-group values must be one of the declared
   choices. For the multi-valued ones, every submitted value must be
 
+## Defaults, blank values and checkboxes
+
+- `default` fills a blank form, and that is all it does. **Parsing never reads
+  it.** A field a submission left out is a field with no value: an optional one
+  parses as empty, and a required one is reported as missing. If a default stood
+  in, a request carrying no CSRF token at all would arrive holding a valid one.
+- An unchecked checkbox submits nothing at all, so absence means `false`. It
+  never means "use the default". A user must check a `required` checkbox.
+- A literal (`default = "web"`), the field type's own `Default` (`default` with
+  nothing after it) and a **generated** one (`default = some_fn`) share one slot
+  in the spec, and the derive writes the glue for all three. The last two hand
+  back the field's own type, or anything that converts into it, and the crate
+  writes it out as it writes out every other value.
+- Once there are values to show, such as a submission to re-render or a record
+  to edit, the crate mints only a hidden field whose default it generates. A
+  visible field shows what it received, an empty value included — a form that
+  filled one in would put a value the caller never had in front of the user, to
+  save without noticing. Where a render shows what it received, the generator is
+  not called at all.
+- `#[field(reset)]` says the same about any other field. It shows its default on
+  every render, and never what was submitted or stored. The derive settles this
+  once, in the spec, so `reset = false` also turns off the rule above.
+
+```rust
+use html_form::Form;
+
+# struct Session { csrf: String }
+# fn issued_token(session: &Session) -> String { session.csrf.clone() }
+#[derive(Form)]
+#[form(context = Session)]
+struct ChangePassword {
+    // A hidden field the form generates resets already. `reset` says it where
+    // the crate cannot tell on its own: a literal default, or a visible control.
+    #[field(type = "hidden", default = issued_token)]
+    csrf_token: String,
+
+    // No default, so a rejected submission comes back with an empty box.
+    #[field(type = "password", reset, minlength = 12)]
+    new_password: String,
+}
+
+let session = Session { csrf: "3f9c…".to_owned() };
+let outcome = ChangePassword::submit_urlencoded_with_context(
+    "csrf_token=3f9c…&new_password=short",
+    &session,
+);
+let view = outcome.view().unwrap();
+
+// The box comes back empty, and the token comes back freshly minted.
+assert_eq!(view.field("new_password").unwrap().value, None);
+assert!(view.field("new_password").unwrap().has_errors);
+assert_eq!(view.field("csrf_token").unwrap().value.as_deref(), Some("3f9c…"));
+```
+
+The field still *parses* as any other does. Resetting is about what the next
+render shows, so a validator sees the value the user sent, and the error it
+reports stays on the field.
+
 ## What the form's own functions receive
 
-A `const` cannot hold a token that has to match the session. Nor a check that
-depends on who is logged in, nor a default that only the request knows.
+A `const` cannot hold a token that has to match the session. Nor a list of
+options only the database knows, nor a check that depends on who is logged in.
 `#[form(context = …)]` declares a type. The caller passes it in at the moment
 the form renders or parses, and every function the form names receives it.
 
 ```rust
 use html_form::{Form, Text};
 
+/// Whatever a handler already has: the session, a connection, the clock.
 struct Session { csrf: String }
 
-#[derive(Form)]
+#[derive(Form, Debug)]
 #[form(method = "post", context = Session)]
 struct Comment {
     #[field(type = "hidden", default = issued_token, validate = is_our_token)]
@@ -608,10 +943,12 @@ struct Comment {
     body: String,
 }
 
+/// A default may take the context. The crate calls it once per render.
 fn issued_token(session: &Session) -> String {
     session.csrf.clone()
 }
 
+/// So may a validator, after the value it checks.
 fn is_our_token(submitted: &String, session: &Session) -> Result<(), Text> {
     match *submitted == session.csrf {
         true => Ok(()),
@@ -619,8 +956,26 @@ fn is_our_token(submitted: &String, session: &Session) -> Result<(), Text> {
     }
 }
 
+let session = Session { csrf: "3f9c…".to_owned() };
+
+// The session that will check the hidden field also fills it in.
 let view = Comment::render_with_context(&session);
-let outcome = Comment::submit_urlencoded_with_context(body, &session);
+assert_eq!(view.field("csrf_token").unwrap().value.as_deref(), Some("3f9c…"));
+
+let comment = Comment::from_urlencoded_with_context(
+    "csrf_token=3f9c…&body=Nice+post",
+    &session,
+)
+.unwrap();
+assert_eq!(comment.body, "Nice post");
+
+// The check the markup could not make rejects somebody else's token.
+let errors =
+    Comment::from_urlencoded_with_context("csrf_token=forged&body=x", &session).unwrap_err();
+assert_eq!(
+    errors.field("csrf_token").next().unwrap().code(),
+    Some("form.csrf.rejected")
+);
 ```
 
 A context changes the **names** of the calls, not their meaning. Every method
@@ -647,10 +1002,11 @@ crate reads which one you wrote off the function itself. A form that gains a
 context therefore need not rewrite the checks that never took one.
 
 The crate parses and renders a flattened sub-form with the enclosing form's
-context. Say what one context gives to a sub-form that asks for something else.
-Most often that sub-form asks for no context at all:
+context. `Provides` lets the two differ. Most usefully, it lets you reuse a form
+written without a context inside one that has a context:
 
 ```rust
+# struct Session { csrf: String }
 impl html_form::Provides<()> for Session {
     fn provide(&self) -> &() { &() }
 }
@@ -665,42 +1021,20 @@ markup could not make.
 `fill_in` runs the conversion the other way, so you can show a filled-in form:
 
 ```rust
-let view = article.render_filled();
-```
+use html_form::Form;
 
-## Defaults, blank values and checkboxes
-
-- `default` fills a blank form, and that is all it does. **Parsing never reads
-  it.** A field a submission left out is a field with no value: an optional one
-  parses as empty, and a required one is reported as missing.
-- An unchecked checkbox submits nothing at all, so absence means `false`. It
-  never means "use the default". A user must check a `required` checkbox.
-- A literal (`default = "web"`), the field type's own `Default` (`default` with
-  nothing after it) and a **generated** one (`default = some_fn`) share one slot
-  in the spec, and the derive writes the glue for all three. The last two hand
-  back the field's own type, or anything that converts into it, and the crate
-  writes it out as it writes out every other value.
-- Once there are values to show, such as a submission to re-render or a record
-  to edit, the crate mints only a hidden field whose default it generates. A
-  visible field shows what it received, an empty value included. Where a render
-  shows what it received, the generator is not called at all.
-- `#[field(reset)]` says the same about any other field. It shows its default on
-  every render, and never what was submitted or stored. The derive settles this
-  once, in the spec, so `reset = false` also turns off the rule above.
-
-```rust
 #[derive(Form)]
-#[form(context = Session)]
-struct ChangePassword {
-    // A hidden field the form generates resets already. `reset` says it where
-    // the crate cannot tell on its own: a literal default, or a visible control.
-    #[field(type = "hidden", default = issued_token)]
-    csrf_token: String,
-
-    // No default, so a rejected submission comes back with an empty box.
-    #[field(type = "password", reset, minlength = 12)]
-    new_password: String,
+struct Article {
+    #[field(label = "Title")]
+    title: String,
+    #[field(type = "textarea", label = "Body")]
+    body: String,
 }
+
+let article = Article { title: "Hello".into(), body: "World".into() };
+let view = article.render_filled();
+
+assert_eq!(view.field("title").unwrap().value.as_deref(), Some("Hello"));
 ```
 
 ## Feature flags
@@ -708,6 +1042,7 @@ struct ChangePassword {
 | Feature | Default | What it does |
 |---|---|---|
 | `derive` | on | `#[derive(Form)]`, `#[derive(FormValue)]`, `#[derive(FormChoice)]` |
+| `html` | on | The built-in renderer: `to_html`, the `Display` impls and `escape` |
 | `pattern` | on | Server-side `pattern` checking with `regex-lite`. Without it, the crate still renders `pattern`, and the browser enforces it |
 | `axum` | off | `Outcome<T>` and `axum::Form<T, R>` are axum 0.8 extractors |
 
@@ -717,8 +1052,13 @@ The crate has no opinion about your HTTP stack. `Values::from_pairs` takes
 anything a framework's body parser produces:
 
 ```rust
+use html_form::{Form, Outcome, Values};
+
+# #[derive(Form)]
+# struct Signup { #[field(type = "email")] email: String }
+# let parsed_body = vec![("email", "ada@example.com")];
 let values = Values::from_pairs(parsed_body);
-match Signup::submit(&values) { /* … */ }
+assert!(matches!(Signup::submit(&values), Outcome::Valid(_)));
 ```
 
 ### JSON
@@ -729,11 +1069,26 @@ the same checks, and the errors already serialize for the client that sent JSON
 in the first place:
 
 ```rust
-let values: Values = serde_json::from_str(body)?;
-match Signup::submit(&values) {
-    Outcome::Valid(signup) => Json(create_account(signup)).into_response(),
-    Outcome::Invalid { errors, .. } => (StatusCode::UNPROCESSABLE_ENTITY, Json(errors)).into_response(),
-}
+use html_form::{Form, Values};
+
+# #[derive(Form)]
+# struct Signup {
+#     #[field(type = "email")]
+#     email: String,
+#     age: Option<u32>,
+#     tags: Vec<String>,
+# }
+let values: Values = serde_json::from_str(
+    r#"{"email": "ada@example.com", "age": 36, "tags": ["rust", "forms"]}"#,
+)?;
+let signup = Signup::from_values(&values)?;
+assert_eq!(signup.age, Some(36));
+assert_eq!(signup.tags, ["rust", "forms"]);
+
+// And back out, for a client that wants JSON in place of markup.
+let json = serde_json::to_string(&signup.to_values())?;
+assert_eq!(json, r#"{"email":"ada@example.com","age":"36","tags":["rust","forms"]}"#);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 An object is a submission, and so is a list of `[name, value]` pairs:
@@ -757,7 +1112,13 @@ With the `axum` feature, `Outcome<T>` is an extractor, so a handler receives the
 submission already parsed and validated. It goes last, because it consumes the
 body.
 
-```rust
+```rust,no_run
+use axum::response::{Html, IntoResponse, Response};
+use axum::http::StatusCode;
+use html_form::{Form, Outcome};
+
+# #[derive(Form)]
+# struct Signup { #[field(type = "email")] email: String }
 async fn signup(form: Outcome<Signup>) -> Response {
     match form {
         Outcome::Valid(signup) => Html(format!("Welcome, {}!", signup.email)).into_response(),
@@ -787,9 +1148,13 @@ validation with the form itself, so the handler runs only on a valid submission
 and holds nothing else. `R` is a `Renderer`: one type, written once, that turns
 a failed submission into the response for every form that shares a layout.
 
-```rust
+```rust,no_run
+use axum::response::{Html, IntoResponse};
+use html_form::FormView;
 use html_form::axum::{Form, Renderer};
 
+# #[derive(html_form::Form)]
+# struct Signup { #[field(type = "email")] email: String }
 struct Page;
 
 impl<T: html_form::Form<Context = ()>> Renderer<T> for Page {
@@ -802,10 +1167,24 @@ impl<T: html_form::Form<Context = ()>> Renderer<T> for Page {
 async fn signup(form: Form<Signup, Page>) -> Html<String> {
     Html(format!("Welcome, {}!", form.data.email))
 }
+
+// `Form<T, R>` is also a response. A handler that returns one shows the form
+// filled in from the value, through the same renderer, so the page a `GET` puts
+// up and the page a failed `POST` puts up are the same page.
+async fn edit() -> Form<Signup, Page> {
+    Form::new(Signup { email: "ada@example.com".to_owned() })
+}
 ```
 
 A renderer builds a page, not a status. `html_form::axum::Builtin` is the one
-around `view.to_html()`, for a form that is the whole answer.
+around `view.to_html()`, for a form that is the whole answer. A renderer may
+also be a plain function, or a closure written in the attribute.
+
+`#[form(renderer = ...)]` moves the renderer onto the declaration, and the struct
+itself becomes the extractor and the response — so a `GET` handler returns
+`Signup` and a bad `POST` never arrives. `#[form(status = 201)]` moves the status
+of the page a handler returns, and `from_request = false` /
+`into_response = false` leave either impl out.
 
 The rejection is not a response yet. `Rejection<T, R, C>` keeps each refusal in
 the type it refused as: `C` is whatever the context's own extractor rejects
@@ -814,13 +1193,26 @@ with, and the invalid case is an `Invalid<T, R>` holding the `FormView`, the
 a layer can log what failed, and a handler can map the rejection to something
 else without ever rendering the page:
 
-```rust
-let Rejection::Invalid(invalid) = rejection else { /* … */ };
-tracing::info!("{} field(s) rejected", invalid.errors.len());
-let response = invalid.into_response(); // `R` runs here.
+```rust,no_run
+use axum::response::{IntoResponse, Response};
+use html_form::axum::{Builtin, Form, Rejection};
+# #[derive(html_form::Form, Debug)]
+# struct Signup { #[field(type = "email")] email: String }
+
+/// Whatever `Form<Signup, Builtin>` turned the request down with.
+fn handle(rejection: Rejection<Signup, Builtin, std::convert::Infallible>) -> Response {
+    let Rejection::Invalid(invalid) = rejection else {
+        return rejection_is_not_ours();
+    };
+    // Still a form and a set of errors, because nothing has rendered yet.
+    eprintln!("{} field(s) rejected", invalid.errors.len());
+
+    invalid.into_response() // `R` runs here, and the `400` goes on here.
+}
+# fn rejection_is_not_ours() -> Response { unimplemented!() }
 ```
 
-The status is decided here too, because what went wrong is what a status is
+The status is decided there too, because what went wrong is what a status is
 about:
 
 | Rejection | Status |
@@ -829,17 +1221,6 @@ about:
 | A body the server could not read | the one that rejection came with, 400 among them |
 | A context that turned the request down | whatever that extractor answers with |
 | A submission that failed validation | 400 Bad Request |
-
-`Form<T, R>` is also a response. A handler that returns one shows the form
-filled in from the value, through the same renderer, so the page a `GET` puts up
-and the page a failed `POST` puts up are the same page. Nothing rejected it, so
-it is a plain 200:
-
-```rust
-async fn edit(id: Id) -> Form<Signup, Page> {
-    Form::new(load(id).await)
-}
-```
 
 This extractor also reads the form's `Context` out of the request, which is what
 `Outcome<T>` cannot do. The context has to be an axum extractor of its own
@@ -855,15 +1236,10 @@ a submission and an edit page — run with
 `multipart/form-data` bodies are out of scope. Parse them with a multipart crate
 and pass the text fields to `Values::from_pairs`.
 
-## Layout
+## License
 
-| | |
-|---|---|
-| `src/spec.rs` | `FormSpec`/`FieldSpec`/`Control`/`Text` — the `const` description the derive emits |
-| `src/view.rs` | `FormView`/`FieldView` — the render format, plus the built-in HTML |
-| `src/runtime.rs` | `ParseCtx` — the error-collecting parse, and the `const` control assembly |
-| `src/context.rs` | `Provides`, and how a `default` or `validate` function of either arity reaches the context |
-| `src/validate.rs` | The server-side re-check of every HTML constraint |
-| `src/value.rs` | `FormValue` — Rust types to and from submitted strings |
-| `src/values.rs` | `Values` — a submission untyped, off the wire or out of JSON |
-| `html-form-derive/` | The derive macros |
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option. Unless you explicitly state otherwise,
+any contribution intentionally submitted for inclusion in this crate by you, as
+defined in the Apache-2.0 license, shall be dual licensed as above, without any
+additional terms or conditions.
