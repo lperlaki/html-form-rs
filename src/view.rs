@@ -414,6 +414,12 @@ impl FormView {
     /// same name.
     ///
     /// Pass `None` as the value to get a bare boolean attribute.
+    ///
+    /// A *value* may be anything: the renderer escapes it, and a template
+    /// engine escapes it. A **name** is written outside the quotes, so the
+    /// built-in renderer writes only names made of what a name may be made of,
+    /// and silently skips the rest. Build a name from a constant, not from
+    /// input.
     pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) {
         set_attr(&mut self.attrs, name.into(), value);
     }
@@ -645,6 +651,12 @@ impl FieldView {
     /// same name.
     ///
     /// Pass `None` as the value to get a bare boolean attribute.
+    ///
+    /// A *value* may be anything: the renderer escapes it, and a template
+    /// engine escapes it. A **name** is written outside the quotes, so the
+    /// built-in renderer writes only names made of what a name may be made of,
+    /// and silently skips the rest. Build a name from a constant, not from
+    /// input.
     pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) {
         set_attr(&mut self.attrs, name.into(), value);
     }

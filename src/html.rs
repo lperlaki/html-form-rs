@@ -421,8 +421,35 @@ impl ChoiceId {
     }
 }
 
+/// Whether `name` is a name this renderer will write out.
+///
+/// Everywhere else the renderer escapes what it writes, and a *value* is safe
+/// however it was built. A name is not: it sits outside the quotes, so a space
+/// in one would end it and start a second attribute that nobody declared —
+/// `attr("x onfocus=alert(1)" = "…")` would render a live event handler. Escaping
+/// does not help, because a space needs no escape.
+///
+/// So the renderer writes only what a name may be made of. This is the HTML
+/// attribute-name production narrowed to what a real one uses: no whitespace, no
+/// quote, no `/`, `=`, `<` or `>`, and no control character. Every `data-*`,
+/// `aria-*`, `hx-*` and plain word passes untouched.
+///
+/// `#[field(attr(...))]` is checked while the crate compiles, so this can only
+/// reject a name built at run time and handed to
+/// [`set_attr`](crate::FieldView::set_attr).
+fn is_attr_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.chars().any(|ch| {
+            ch.is_whitespace()
+                || ch.is_control()
+                || matches!(ch, '"' | '\'' | '>' | '<' | '/' | '=' | '&')
+        })
+}
+
+/// Write the custom attributes, skipping any whose name would not survive being
+/// written outside quotes. See [`is_attr_name`].
 fn write_attrs(out: &mut String, attrs: &[AttrView]) {
-    for custom in attrs {
+    for custom in attrs.iter().filter(|a| is_attr_name(&a.name)) {
         match &custom.value {
             Some(value) => attr(out, &custom.name, value),
             None => flag(out, &custom.name, true),

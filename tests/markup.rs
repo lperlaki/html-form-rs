@@ -486,3 +486,44 @@ fn what_a_user_typed_cannot_break_out_of_the_markup() {
     assert!(!html.contains("<script>"));
     assert!(html.contains("&lt;script&gt;"));
 }
+
+/// An attribute *value* is escaped, so it may be anything. A **name** sits
+/// outside the quotes, where a space would end it and start a second attribute
+/// nobody declared — and no escaping helps, because a space needs none. The
+/// renderer therefore writes only names made of what a name may be made of.
+#[test]
+fn an_attribute_name_cannot_forge_a_second_attribute() {
+    let mut view = Signup::render();
+    let field = view.field_mut("email").expect("the email field");
+
+    // Each of these would render a live `onfocus` handler if the name went
+    // through as written.
+    field.set_attr(r#"x onfocus="alert(1)""#, Some("y"));
+    field.set_attr("x\tonfocus=alert(1)", None);
+    field.set_attr(r#"x">"#, Some("y"));
+    // And the value is what may hold anything, because that one is escaped.
+    field.set_attr("data-note", Some(r#""><script>alert(1)</script>"#));
+
+    let html = view.to_html();
+    assert!(!html.contains("onfocus"), "{html}");
+    assert!(!html.contains("<script>"), "{html}");
+    assert!(
+        html.contains("data-note=\"&quot;&gt;&lt;script&gt;"),
+        "{html}"
+    );
+
+    // What a real attribute is made of still goes through untouched.
+    let mut view = Signup::render();
+    let field = view.field_mut("email").expect("the email field");
+    field.set_attr("data-role", Some("primary"));
+    field.set_attr("hx-trigger", Some("keyup changed delay:300ms"));
+    field.set_attr("autocorrect", None);
+
+    let html = view.to_html();
+    assert!(html.contains(r#"data-role="primary""#), "{html}");
+    assert!(
+        html.contains(r#"hx-trigger="keyup changed delay:300ms""#),
+        "{html}"
+    );
+    assert!(html.contains(" autocorrect"), "{html}");
+}
