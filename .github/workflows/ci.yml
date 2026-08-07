@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features --workspace
+      # The crate's documentation is the README, so its examples are doctests.
+      # They have to pass on the default feature set too, which is what somebody
+      # running a bare `cargo test` gets.
+      - run: cargo test --workspace
+
+  # The examples assert what they demonstrate, so running them is a test. Nothing
+  # else builds or runs them, and `axum_signup` binds a port, so it is only built.
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --examples --all-features
+      - run: cargo run --example minijinja_render --all-features
+      - run: cargo run --example csrf --all-features
+
+  # Every feature is meant to stand on its own: `html` off for a template
+  # engine, `pattern` off to drop the regex engine, `derive` off for a
+  # hand-written impl. Each combination has to compile.
+  features:
+    name: Features
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ""
+          - "derive"
+          - "html"
+          - "pattern"
+          - "axum"
+          - "axum,derive"
+          - "derive,html,pattern"
+          - "axum,derive,html,pattern"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --no-default-features --features "${{ matrix.features }}"
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-features --all-targets --workspace
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # `docs.rs` builds with `--cfg docsrs`, which needs nightly for `doc_cfg`.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+
+  # The crate declares an MSRV, so something has to hold it to it.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all-features
