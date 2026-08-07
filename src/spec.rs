@@ -947,7 +947,9 @@ impl FormSpec {
     /// # Safety
     ///
     /// `context` has to point at a live
-    /// [`Context`](crate::Form::Context) of the form this spec describes.
+    /// [`Context`](crate::Form::Context) of the form this spec describes —
+    /// which is to say, of the form whose [`SPEC`](crate::Form::SPEC) this is.
+    /// [`Form`](crate::Form) is an unsafe trait so that the two can be paired.
     pub(crate) unsafe fn walk_with_context(
         &self,
         context: NonNull<()>,

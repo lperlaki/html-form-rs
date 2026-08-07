@@ -295,9 +295,11 @@ impl FormView {
         // The walk goes straight into the view. It does not collect the
         // flattened field list first, so it builds only the `FieldView`s.
         let mut fields = Vec::new();
-        // SAFETY: the context is `F::Context`, and the spec is `F::SPEC`. The
-        // derive writes each field's glue to read exactly that, and a
-        // hand-written `FieldDefault` promised the same of the form it went in.
+        // SAFETY: the context is `F::Context`, and the spec is `F::SPEC`.
+        // `Form` is an unsafe trait for exactly this: implementing it promises
+        // that the glue in `SPEC` reads its erased pointer as `F::Context` and
+        // as nothing else. The derive writes both halves together, and a
+        // hand-written impl made the same promise.
         unsafe {
             F::SPEC.walk_with_context(NonNull::from(context).cast(), |resolved| {
                 fields.push(FieldView::build(resolved, values, errors));

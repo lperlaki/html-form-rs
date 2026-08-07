@@ -760,7 +760,24 @@ impl<T> Outcome<T> {
 /// without the argument and without the suffix, such as `Signup::render()` in
 /// place of `Signup::render_with_context(&())`. The twin is available where the
 /// context is an [`EmptyContext`], which covers every form that declares none.
-pub trait Form: Sized {
+///
+/// # Safety
+///
+/// [`SPEC`](Self::SPEC) has to be a spec written for *this* form: every
+/// [`FieldDefault`] it holds, and every [`Provider`] on a flatten inside it,
+/// must read its erased context pointer as nothing but a `&Self::Context`.
+///
+/// A spec cannot name a context type. It is one `const` shared by every render
+/// of every caller, so the pointer that reaches its glue is erased, and the
+/// pairing of the two is what this trait promises. `#[derive(Form)]` writes both
+/// halves together and always keeps that promise. A hand-written impl keeps it
+/// by building its own spec, or by naming the `SPEC` of a form whose `Context`
+/// is the same type.
+///
+/// Borrowing another form's `SPEC` under a different `Context` is the way to
+/// break it, and it is undefined behaviour: the glue would read the pointer as a
+/// type the caller never passed.
+pub unsafe trait Form: Sized {
     /// What this form's own functions receive besides the value they look at:
     /// the session, a database handle, the request's locale. It holds whatever
     /// `#[field(default = ...)]` and `validate = ...` need to know and a
@@ -779,6 +796,10 @@ pub trait Form: Sized {
     /// const-evaluation time. A flattened sub-form is therefore a reference the
     /// compiler has already resolved, not a call made at render time, and any
     /// `const` context can read `SPEC`.
+    ///
+    /// This is the constant the trait's safety contract is about: its glue reads
+    /// an erased pointer as a [`Context`](Self::Context), so it has to be a spec
+    /// written for this form. See the trait's own docs.
     const SPEC: &'static FormSpec;
 
     /// Parse the form out of `ctx`, and honor the flatten prefix in scope.

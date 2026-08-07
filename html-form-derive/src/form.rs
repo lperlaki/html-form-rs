@@ -304,7 +304,12 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         // are themselves `unsafe`. Only the outer block is load-bearing, and
         // the inner ones say where the pointers are read.
         #[allow(unused_unsafe)]
-        impl #impl_generics ::html_form::Form for #ident #ty_generics #where_clause {
+        // SAFETY: the spec below is written for this form and for no other. Each
+        // `FieldDefault` in it is paired, right here, with glue that reads the
+        // erased pointer as `#context`, which is this impl's `Context`; each
+        // flatten's `Provider` turns that same `#context` into the sub-form's
+        // own. Nothing in the spec came from another form.
+        unsafe impl #impl_generics ::html_form::Form for #ident #ty_generics #where_clause {
             type Context = #context;
 
             // The whole description is one const-evaluated value. The reference
