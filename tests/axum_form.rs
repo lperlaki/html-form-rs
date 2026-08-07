@@ -14,7 +14,7 @@ use html_form::axum::{Builtin, Form, Rejection, Renderer};
 mod common;
 use common::{Page, body_of, post};
 
-#[derive(html_form::Form, Debug)]
+#[derive(html_form::Form, Debug, Clone)]
 #[form(action = "/signup", method = "post")]
 struct Signup {
     #[field(type = "email", label = "Email address")]
@@ -97,6 +97,25 @@ async fn the_rejection_is_still_a_form_until_it_is_asked_for_a_response() {
     let response = invalid.into_response();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(body_of(response).await.contains("<h1>Check the form</h1>"));
+}
+
+/// `Form<T, R>` and `Rejection<T, R, C>` carry `Debug` (and `Form` carries
+/// `Clone`) of their own, written by hand because `R` is a marker no bound on
+/// `T` or `C` would reach.
+#[tokio::test]
+async fn the_extractor_and_its_rejection_debug_and_clone_through_to_the_data() {
+    let form: Form<Signup, Page> =
+        Form::from_request(post("/signup", "email=a%40example.com&age=30"), &())
+            .await
+            .unwrap();
+    let cloned = form.clone();
+    assert_eq!(cloned.data.email, form.data.email);
+    assert!(format!("{form:?}").contains("a@example.com"));
+
+    let rejection = Form::<Signup, Page>::from_request(post("/signup", "email=nope&age=7"), &())
+        .await
+        .unwrap_err();
+    assert!(format!("{rejection:?}").starts_with("Invalid("));
 }
 
 #[tokio::test]

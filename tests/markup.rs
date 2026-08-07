@@ -103,6 +103,12 @@ fn each_method_and_enctype_reaches_the_markup_as_written() {
         note: String,
     }
 
+    #[derive(Form)]
+    #[form(enctype = "application/x-www-form-urlencoded")]
+    struct Urlencoded {
+        note: String,
+    }
+
     assert_eq!(Search::render().method, "get");
     assert_eq!(Confirm::render().method, "dialog");
     assert_eq!(
@@ -111,6 +117,11 @@ fn each_method_and_enctype_reaches_the_markup_as_written() {
         "which the file input needs to arrive at all"
     );
     assert_eq!(Plain::render().enctype, Some("text/plain"));
+    assert_eq!(
+        Urlencoded::render().enctype,
+        Some("application/x-www-form-urlencoded"),
+        "written out even though it is also the default a browser assumes"
+    );
     assert_eq!(Signup::render().enctype, None);
 
     assert!(Search::render().to_html().contains(r#"method="get""#));

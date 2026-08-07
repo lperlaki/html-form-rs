@@ -40,6 +40,11 @@ fn a_json_value_is_a_string_whatever_the_client_typed_it_as() {
 
     let floats: Values = serde_json::from_str(r#"{"weight": 1.5}"#).unwrap();
     assert_eq!(floats.get("weight"), Some("1.5"));
+
+    // A negative integer is still a signed `i64` to `serde_json`, not the
+    // `u64` a positive one deserializes as.
+    let negative: Values = serde_json::from_str(r#"{"balance": -5}"#).unwrap();
+    assert_eq!(negative.get("balance"), Some("-5"));
 }
 
 #[test]
