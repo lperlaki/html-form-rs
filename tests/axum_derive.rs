@@ -110,31 +110,32 @@ where
 {
 }
 
-/// `IntoRenderer` names a renderer and renders nothing itself: a `Renderer`
-/// names itself, and a function names the `FnRenderer` that calls it. Neither
-/// carries a value — `Renderer::render` takes no `self`.
+/// Each of the three shapes `renderer = ...` accepts carries nothing: a
+/// renderer is a type and never a value, because `Renderer::render` takes no
+/// `self`. That is what lets `render_view` take the value the attribute named
+/// by `self` and cost nothing for it.
 #[test]
-fn into_renderer_names_the_renderer_and_holds_nothing() {
-    fn names<T, R, M>(_renderer: R) -> usize
+fn every_shape_a_renderer_takes_holds_nothing() {
+    fn size<T, R, M>(_renderer: R) -> usize
     where
         T: html_form::Form,
         R: IntoRenderer<T, M>,
     {
-        size_of::<R::Renderer>()
+        size_of::<R>()
     }
 
-    // A `Renderer` is its own.
+    // A `Renderer` reaches its own impl, under the `AsRenderer` marker.
     fn is_page<T: html_form::Form>(_: PhantomData<Page>)
     where
-        Page: IntoRenderer<T, AsRenderer, Renderer = Page>,
+        Page: IntoRenderer<T, AsRenderer>,
     {
     }
     is_page::<Signup>(PhantomData);
 
-    // Every one of the three is zero-sized, `FnRenderer` included.
-    assert_eq!(names::<Signup, _, _>(Page), 0);
-    assert_eq!(names::<Note, _, _>(plain), 0);
-    assert_eq!(names::<Comment, _, _>(with_session), 0);
+    // A unit struct, a plain function and one that takes the context.
+    assert_eq!(size::<Signup, _, _>(Page), 0);
+    assert_eq!(size::<Note, _, _>(plain), 0);
+    assert_eq!(size::<Comment, _, _>(with_session), 0);
 }
 
 /// A body that was never a form is the same rejection it always was.

@@ -2,6 +2,11 @@
 //!
 //! The `html_form` crate documents everything these macros generate. This crate
 //! exists only because a procedural macro needs its own compilation unit.
+//!
+//! Nothing it emits is `unsafe` either. The macro writes calls into
+//! `html_form::__private`, and `html_form` itself is `#![forbid(unsafe_code)]`.
+
+#![forbid(unsafe_code)]
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};

@@ -448,10 +448,10 @@ Parsing works the same way. A field's name reaches `FormErrors` borrowed from
 the spec. Only `#[field(flatten, prefix = "…")]` makes a name that the crate has
 to build.
 
-A context costs one pointer passed down the walk, and nothing else. A default
-costs one indirect call, made where the render reads the value and nowhere else.
-There is no pass over the form to collect defaults first, so a form that declares
-none pays nothing for the mechanism.
+A context costs one `&dyn Any` passed down the walk, and nothing else. A default
+costs one indirect call and one `TypeId` comparison, made where the render reads
+the value and nowhere else. There is no pass over the form to collect defaults
+first, so a form that declares none pays nothing for the mechanism.
 
 ## Attributes
 
@@ -977,6 +977,14 @@ assert_eq!(
     Some("form.csrf.rejected")
 );
 ```
+
+A context is a type that owns what it holds — `String` above rather than
+`&'a str`. One `const` spec describes every render, so it cannot name a context
+type: the render hands the context to the spec as a `&dyn Any` and the glue the
+derive wrote beside it names the type back. That is what makes the context
+`'static`, and it is also why pairing a spec with the wrong context is a panic
+that says so rather than anything worse. A context that has to borrow reaches
+the form behind an `Arc` or a handle.
 
 A context changes the **names** of the calls, not their meaning. Every method
 that renders or parses has a `…_with_context` twin that takes `&Context`. A form

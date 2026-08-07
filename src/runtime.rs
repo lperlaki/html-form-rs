@@ -321,6 +321,7 @@ impl<'a, C> ParseCtx<'a, C> {
 /// Helpers the derive macro calls. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
+    use std::any::Any;
     use std::borrow::Cow;
     use std::fmt::Display;
     use std::str::FromStr;
@@ -392,9 +393,9 @@ pub mod __private {
     //
     // A `FieldDefault` is one function pointer, and the derive writes the
     // function it points at. These are the bodies of those functions: the crate
-    // holds the unsafe halves, and the macro emits nothing but a call. Each one
-    // takes the render's context as an erased pointer, reads it as the type the
-    // form declared, and gives back the string the field renders. See
+    // holds the downcasts, and the macro emits nothing but a call. Each one
+    // takes the render's context erased as a `&dyn Any`, names the type the
+    // form declared back, and gives back the string the field renders. See
     // [`FieldDefault`](crate::FieldDefault).
 
     /// The glue for a default written into the spec.
@@ -417,16 +418,16 @@ pub mod __private {
     /// it holds, so a default and a filled-in record reach the render as the
     /// same string.
     ///
-    /// # Safety
+    /// # Panics
     ///
-    /// `context` has to point at a live `C`.
-    pub unsafe fn default_from<C, V: FormValue, M, S: DefaultSource<C, V, M>>(
-        context: *const (),
+    /// If `context` is not a `C`. The derive pairs this call with the form
+    /// whose context is `C`, and the renderer passes that form's context, so
+    /// only a hand-written spec put on the wrong form can reach it.
+    pub fn default_from<C: Any, V: FormValue, M, S: DefaultSource<C, V, M>>(
+        context: &dyn Any,
         source: S,
     ) -> Cow<'static, str> {
-        // SAFETY: the derive pairs this call with the form whose context is
-        // `C`, and the renderer passes that form's context.
-        let context = unsafe { read_context::<C>(context) };
+        let context = read_context::<C>(context);
         // The value was made for this call and nothing else holds it, so a type
         // that can hand its string over does.
         source.generate(context).into_form_value()
@@ -434,7 +435,7 @@ pub mod __private {
 
     /// The glue for a default that a *type* declares, which is a literal the
     /// macro cannot read: [`FormValue::DEFAULT`] is an associated const.
-    fn default_of_type<V: FormValue>(_context: *const ()) -> Cow<'static, str> {
+    fn default_of_type<V: FormValue>(_context: &dyn Any) -> Cow<'static, str> {
         default_literal(V::DEFAULT.expect("`or_default` only reaches for a default the type has"))
     }
 
@@ -479,11 +480,9 @@ pub mod __private {
         match written {
             Some(default) => Some(default),
             None => match V::DEFAULT {
-                // SAFETY: this glue reads no context, so it holds for a form of
-                // any kind.
-                Some(literal) => {
-                    Some(unsafe { FieldDefault::new(default_of_type::<V>, Some(literal)) })
-                }
+                // This glue reads no context, so it holds for a form of any
+                // kind.
+                Some(literal) => Some(FieldDefault::new(default_of_type::<V>, Some(literal))),
                 None => None,
             },
         }
@@ -519,27 +518,25 @@ pub mod __private {
     /// rule: the sub-form receives whatever this form's context [`Provides`] in
     /// place of its own.
     ///
-    /// # Safety
+    /// # Panics
     ///
-    /// `context` has to point at a live `C`.
-    pub unsafe fn provide<C: Provides<I>, I>(context: *const ()) -> *const () {
-        // SAFETY: the derive pairs this call with the form whose context is
-        // `C`, and the walk passes that form's context.
-        let context = unsafe { read_context::<C>(context) };
-        std::ptr::from_ref(Provides::provide(context)).cast()
+    /// If `context` is not a `C`, for the reason [`default_from`] does.
+    pub fn provide<C: Provides<I> + Any, I: Any>(context: &dyn Any) -> &dyn Any {
+        Provides::provide(read_context::<C>(context))
     }
 
-    /// Read an erased context pointer as the concrete type the caller
-    /// promises it holds. The three functions above each did this cast
-    /// separately; this is the one place the pointer punning happens.
-    ///
-    /// # Safety
-    ///
-    /// `context` has to point at a live `C`, for the lifetime `'a` the caller
-    /// gives back.
-    unsafe fn read_context<'a, C>(context: *const ()) -> &'a C {
-        // SAFETY: the caller vouches for the pointer and its type.
-        unsafe { &*context.cast::<C>() }
+    /// Name an erased context back as the concrete type the glue was written
+    /// for. The two functions above each did this separately; this is the one
+    /// place the downcast happens, and the one place that names what went wrong
+    /// when it fails.
+    fn read_context<C: Any>(context: &dyn Any) -> &C {
+        context.downcast_ref::<C>().unwrap_or_else(|| {
+            panic!(
+                "a form's own glue was handed a context that is not its `{}` — the spec of one \
+                 form was put on another",
+                std::any::type_name::<C>(),
+            )
+        })
     }
 
     /// Run a `#[value(validate = ...)]` function over a value of the type that
@@ -1322,12 +1319,11 @@ pub mod __private {
 
         /// The glue a derived form writes for `default = "from the field"`.
         const FROM_THE_FIELD: Generate = |_context| default_literal("from the field");
-        const WRITTEN: FieldDefault =
-            unsafe { FieldDefault::new(FROM_THE_FIELD, Some("from the field")) };
+        const WRITTEN: FieldDefault = FieldDefault::new(FROM_THE_FIELD, Some("from the field"));
 
         /// Run a default the way a render does, with a context it ignores.
         fn produced(default: FieldDefault) -> Cow<'static, str> {
-            unsafe { default.value(std::ptr::from_ref(&()).cast()) }
+            default.value(&())
         }
 
         /// The macro cannot see what a type's `DEFAULT` is, so the same trade
@@ -1367,23 +1363,38 @@ pub mod __private {
 
             // What the derive emits for `#[field(default = booked)]` on a `u32`
             // field of a form whose context is `Session`.
-            const BOOKED: Generate =
-                |context| unsafe { default_from::<Session, u32, _, _>(context, booked) };
-            const TAKEN: FieldDefault = unsafe { FieldDefault::new(BOOKED, None) };
+            const BOOKED: Generate = |context| default_from::<Session, u32, _, _>(context, booked);
+            const TAKEN: FieldDefault = FieldDefault::new(BOOKED, None);
             // And for a function that ignores the context and hands back
             // something the field's type is made from.
-            const FREE: Generate =
-                |context| unsafe { default_from::<Session, u32, _, _>(context, free) };
-            const SPARE: FieldDefault = unsafe { FieldDefault::new(FREE, None) };
+            const FREE: Generate = |context| default_from::<Session, u32, _, _>(context, free);
+            const SPARE: FieldDefault = FieldDefault::new(FREE, None);
 
             assert!(TAKEN.is_generated());
             assert_eq!(TAKEN.literal(), None);
             assert_eq!(format!("{TAKEN:?}"), "<generated>");
 
             let session = Session { seats: 12 };
-            let context = std::ptr::from_ref(&session).cast();
-            assert_eq!(unsafe { TAKEN.value(context) }, "12");
-            assert_eq!(unsafe { SPARE.value(context) }, "7");
+            assert_eq!(TAKEN.value(&session), "12");
+            assert_eq!(SPARE.value(&session), "7");
+        }
+
+        /// The downcast is what keeps the erasure honest. Handing a default the
+        /// context of some *other* form is a panic that names the type the glue
+        /// wanted, and never a value read out of something that is not one.
+        #[test]
+        #[should_panic(expected = "is not its ")]
+        fn glue_handed_the_wrong_context_says_so_rather_than_misreading_it() {
+            struct Session;
+            struct Elsewhere;
+
+            fn nothing(_session: &Session) -> String {
+                String::new()
+            }
+
+            const GLUE: Generate =
+                |context| default_from::<Session, String, _, _>(context, nothing);
+            FieldDefault::new(GLUE, None).value(&Elsewhere);
         }
 
         /// A `#[field(from_str)]` field writes its values out with `Display`,
@@ -1394,10 +1405,9 @@ pub mod __private {
             fn loopback() -> std::net::Ipv4Addr {
                 std::net::Ipv4Addr::LOCALHOST
             }
-            const LOOPBACK: Generate = |context| unsafe {
-                default_from::<(), Str<std::net::Ipv4Addr>, _, _>(context, loopback)
-            };
-            const HOST: FieldDefault = unsafe { FieldDefault::new(LOOPBACK, None) };
+            const LOOPBACK: Generate =
+                |context| default_from::<(), Str<std::net::Ipv4Addr>, _, _>(context, loopback);
+            const HOST: FieldDefault = FieldDefault::new(LOOPBACK, None);
             assert_eq!(produced(HOST), "127.0.0.1");
         }
 
@@ -1563,7 +1573,7 @@ mod tests {
     fn a_default_never_stands_in_for_a_value_that_did_not_arrive() {
         // The glue a derived form writes for `default = "ada"`.
         const ADA_GLUE: Generate = |_context| __private::default_literal("ada");
-        const ADA: FieldDefault = unsafe { FieldDefault::new(ADA_GLUE, Some("ada")) };
+        const ADA: FieldDefault = FieldDefault::new(ADA_GLUE, Some("ada"));
         let with_default = FieldSpec {
             default: Some(ADA),
             ..spec("name")

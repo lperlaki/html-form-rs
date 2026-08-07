@@ -1,4 +1,10 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// The one thing a `const` spec cannot describe is the type of the context its
+// glue reads, so a render hands that context over erased. It travels as a
+// `&dyn Any` and each piece of glue downcasts, which keeps the pairing of a
+// spec with a context a checked one — and leaves the whole crate, generated
+// code included, with nothing to write `unsafe` for.
+#![forbid(unsafe_code)]
 // The crate's documentation is the README, so the two cannot drift: every Rust
 // block in it is a doctest that `cargo test` runs.
 #![doc = include_str!("../README.md")]
@@ -129,23 +135,26 @@ impl<T> Outcome<T> {
 /// place of `Signup::render_with_context(&())`. The twin is available where the
 /// context is an [`EmptyContext`], which covers every form that declares none.
 ///
-/// # Safety
+/// # Pairing the spec with the context
 ///
-/// [`SPEC`](Self::SPEC) has to be a spec written for *this* form: every
+/// [`SPEC`](Self::SPEC) should be a spec written for *this* form: every
 /// [`FieldDefault`] it holds, and every [`Provider`] on a flatten inside it,
-/// must read its erased context pointer as nothing but a `&Self::Context`.
+/// names `Self::Context` as the type it reads back out of the erased context it
+/// is called with.
 ///
 /// A spec cannot name a context type. It is one `const` shared by every render
-/// of every caller, so the pointer that reaches its glue is erased, and the
-/// pairing of the two is what this trait promises. `#[derive(Form)]` writes both
-/// halves together and always keeps that promise. A hand-written impl keeps it
-/// by building its own spec, or by naming the `SPEC` of a form whose `Context`
-/// is the same type.
+/// of every caller, so the context that reaches its glue arrives as a
+/// [`&dyn Any`](std::any::Any), and the glue downcasts. `#[derive(Form)]` writes
+/// both halves together, so they always agree. A hand-written impl agrees by
+/// building its own spec, or by naming the `SPEC` of a form whose `Context` is
+/// the same type.
 ///
 /// Borrowing another form's `SPEC` under a different `Context` is the way to
-/// break it, and it is undefined behaviour: the glue would read the pointer as a
-/// type the caller never passed.
-pub unsafe trait Form: Sized {
+/// disagree, and it *panics* on the first render that runs a generated default
+/// or crosses such a flatten. Nothing about it is undefined, which is why this
+/// trait is safe to implement: the downcast is a check, and it names the type
+/// the glue wanted.
+pub trait Form: Sized {
     /// What this form's own functions receive besides the value they look at:
     /// the session, a database handle, the request's locale. It holds whatever
     /// `#[field(default = ...)]` and `validate = ...` need to know and a
@@ -156,7 +165,12 @@ pub unsafe trait Form: Sized {
     /// [`DefaultSource`], [`FieldValidator`] and [`FormValidator`] are how a
     /// function reaches it. [`Provides`] lets a form with a context flatten one
     /// without a context.
-    type Context;
+    ///
+    /// It is `'static` because a render hands it to the spec's glue erased, and
+    /// the glue names the type back with a downcast. A context that borrows is
+    /// therefore a context that holds an owned handle — a `String` rather than
+    /// a `&str` — or one reached through an `Arc`.
+    type Context: 'static;
 
     /// The static description of this form.
     ///
@@ -165,8 +179,8 @@ pub unsafe trait Form: Sized {
     /// compiler has already resolved, not a call made at render time, and any
     /// `const` context can read `SPEC`.
     ///
-    /// This is the constant the trait's safety contract is about: its glue reads
-    /// an erased pointer as a [`Context`](Self::Context), so it has to be a spec
+    /// This is the constant the pairing above is about: its glue downcasts the
+    /// erased context to a [`Context`](Self::Context), so it should be a spec
     /// written for this form. See the trait's own docs.
     const SPEC: &'static FormSpec;
 

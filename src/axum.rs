@@ -611,35 +611,45 @@ pub enum AsRenderer {}
 ///
 /// # What it is, and what it is not
 ///
-/// It names a [`Renderer`] and does no rendering of its own. There is one trait
-/// that renders, and this says which impl of it the attribute meant. A
-/// [`Renderer`] names itself. A function names [`FnRenderer`], which is the
-/// renderer that calls it.
+/// It says how the thing the attribute named renders, and it does no rendering
+/// of its own. There is one trait that renders, [`Renderer`], and a renderer
+/// named in the attribute reaches its own impl of it straight away. A
+/// *function* has no such impl to reach, so this is what calls it.
 ///
-/// Nothing here keeps the function either. `Renderer::render` takes no `self`,
-/// so a renderer is a type and never a value: every implementor is zero-sized —
-/// a function path, a non-capturing closure and a marker struct each have one
-/// inhabitant and no bytes — and [`conjure`](__private::conjure) is what
-/// produces the one value [`FnRenderer`] calls through.
+/// Nothing here keeps the function beyond the call it makes.
+/// `Renderer::render` takes no `self`, so a renderer is a type and never a
+/// value, and every shape the attribute accepts is zero-sized: a function path,
+/// a non-capturing closure and a marker struct each have one inhabitant and no
+/// bytes.
 ///
 /// That is also why a `fn` **pointer** is rejected. A pointer is a word of data
 /// naming one of several functions, so it *is* something that would have to be
 /// kept, and the choice would be made per call rather than by the declaration.
-/// The size is checked while the crate compiles, both where the attribute names
-/// a renderer and again inside `conjure`.
+/// The size is checked while the crate compiles, where the attribute names a
+/// renderer.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is neither a `Renderer<{T}>` nor a function that renders `{T}`",
     note = "a renderer is a unit struct implementing `html_form::axum::Renderer<{T}>`",
     note = "or a `fn(FormView) -> impl IntoResponse`, which may also take `&Context` after the view"
 )]
 pub trait IntoRenderer<T: crate::Form, M> {
-    /// The renderer this names.
-    type Renderer: Renderer<T>;
+    /// Render `view` through whatever this names: the [`Renderer`] it is, or
+    /// the function it is.
+    ///
+    /// It takes `self` because a function reaches its call only as a value.
+    /// There is nothing in that value — every implementor is zero-sized, which
+    /// is what the trait's own docs are about — so nothing is moved and nothing
+    /// is kept.
+    fn render_view(self, view: FormView, context: &T::Context) -> Response;
 }
 
-/// A [`Renderer`] is already one.
+/// A [`Renderer`] renders through the impl it already has. The value is the
+/// unit struct a renderer is, and `render` takes no `self`, so it goes no
+/// further than this call.
 impl<T: crate::Form, R: Renderer<T>> IntoRenderer<T, AsRenderer> for R {
-    type Renderer = R;
+    fn render_view(self, view: FormView, context: &T::Context) -> Response {
+        R::render(view, context).into_response()
+    }
 }
 
 impl<T, F, O> IntoRenderer<T, WithoutContext> for F
@@ -648,7 +658,9 @@ where
     F: Fn(FormView) -> O,
     O: IntoResponse,
 {
-    type Renderer = FnRenderer<F, WithoutContext>;
+    fn render_view(self, view: FormView, _context: &T::Context) -> Response {
+        self(view).into_response()
+    }
 }
 
 impl<T, F, O> IntoRenderer<T, WithContext> for F
@@ -657,40 +669,8 @@ where
     F: Fn(FormView, &T::Context) -> O,
     O: IntoResponse,
 {
-    type Renderer = FnRenderer<F, WithContext>;
-}
-
-/// The [`Renderer`] a function is: it calls `F`, and `M` says with what.
-///
-/// You never write it down. `F` is a function path or a closure, and neither
-/// has a type anybody can name — which is the whole reason
-/// [`IntoRenderer`] exists. This is what it names, and it reaches you only as
-/// `<F as IntoRenderer<T, M>>::Renderer`.
-///
-/// It holds no `F`, because it holds nothing at all: it is a type that appears
-/// in a bound, never a value that is built. [`conjure`](__private::conjure)
-/// produces the one `F` there is at the point of the call.
-pub struct FnRenderer<F, M>(PhantomData<fn() -> (F, M)>);
-
-impl<T, F, O> Renderer<T> for FnRenderer<F, WithoutContext>
-where
-    T: crate::Form,
-    F: Fn(FormView) -> O,
-    O: IntoResponse,
-{
-    fn render(view: FormView, _context: &T::Context) -> impl IntoResponse {
-        __private::conjure::<F>()(view)
-    }
-}
-
-impl<T, F, O> Renderer<T> for FnRenderer<F, WithContext>
-where
-    T: crate::Form,
-    F: Fn(FormView, &T::Context) -> O,
-    O: IntoResponse,
-{
-    fn render(view: FormView, context: &T::Context) -> impl IntoResponse {
-        __private::conjure::<F>()(view, context)
+    fn render_view(self, view: FormView, context: &T::Context) -> Response {
+        self(view, context).into_response()
     }
 }
 
@@ -928,7 +908,7 @@ pub mod __private {
 
     use crate::{Form, FormView};
 
-    use super::{IntoRenderer, Renderer};
+    use super::IntoRenderer;
 
     /// The one call the derived [`Renderer`](super::Renderer) makes. The marker
     /// `M` is what the compiler infers, and it is why the attribute takes a
@@ -942,56 +922,15 @@ pub mod __private {
     /// is what this argument is, and all it is. A function has no type anybody
     /// could have written in the attribute instead.
     ///
-    /// Nothing is stored, and nothing is passed on. `R` is zero-sized, so the
-    /// argument costs no instruction and no byte of stack.
-    pub fn render_with<T, R, M>(_renderer: R, view: FormView, context: &T::Context) -> Response
+    /// Nothing is stored, and nothing is passed on beyond the call the value
+    /// makes. `R` is zero-sized, so the argument costs no instruction and no
+    /// byte of stack.
+    pub fn render_with<T, R, M>(renderer: R, view: FormView, context: &T::Context) -> Response
     where
         T: Form,
         R: IntoRenderer<T, M>,
     {
-        <R::Renderer as Renderer<T>>::render(view, context).into_response()
-    }
-
-    /// The one value of a zero-sized type, with none to hand.
-    ///
-    /// [`Renderer::render`](super::Renderer::render) takes no `self`, because a
-    /// renderer is a type and not a value.
-    /// [`FnRenderer`](super::FnRenderer) still has to *call* the function it
-    /// stands for, and this is where that one value comes from.
-    ///
-    /// Sound because a zero-sized type has exactly one inhabitant and no
-    /// representation bytes: there is nothing to initialize, so uninitialized
-    /// memory of that type is already the value. The size is what makes it so,
-    /// and [`Zst`] is what checks the size, while the compiler evaluates the
-    /// call rather than after one.
-    ///
-    /// It conjures nothing a caller could not already build. The derive uses it
-    /// only on the type of an expression written in `#[form(renderer = ...)]`,
-    /// which whoever wrote it evidently had a value of.
-    // Clippy reads the call and not the bound above it: `MaybeUninit::uninit`
-    // followed by `assume_init` is undefined behaviour for almost every type,
-    // and the assert is what leaves only the type it is defined for.
-    #[allow(clippy::uninit_assumed_init)]
-    pub fn conjure<R>() -> R {
-        let () = Zst::<R>::CHECK;
-
-        // SAFETY: `Zst::<R>::CHECK` did not compile unless `R` is zero-sized,
-        // and a zero-sized type has one inhabitant and no bytes to read. There
-        // is nothing this could be reading uninitialized.
-        unsafe { ::core::mem::MaybeUninit::<R>::uninit().assume_init() }
-    }
-
-    /// The size check behind [`conjure`], as an associated const so that it
-    /// names `R` and the compiler evaluates it when `conjure` is instantiated.
-    /// An `assert!` in the function body would be a check made per call.
-    pub struct Zst<R>(::core::marker::PhantomData<R>);
-
-    impl<R> Zst<R> {
-        pub const CHECK: () = assert!(
-            size_of::<R>() == 0,
-            "a renderer holds nothing: `render` takes no `self`, so only a zero-sized type can \
-             be one"
-        );
+        renderer.render_view(view, context)
     }
 
     /// The check that `#[form(renderer = ...)]` names something that settles
@@ -1013,11 +952,11 @@ pub mod __private {
     /// write down: the value the attribute names is what tells the check what
     /// to measure.
     ///
-    /// This is the diagnostic, and not the guarantee. The derive calls it from
-    /// a `const` item of its own, so it reports the size at the declaration
-    /// whether or not anything ever renders the form. [`Zst`] is the same
-    /// check inside [`conjure`], where reaching it is what makes the `unsafe`
-    /// sound, and nothing can arrive there without passing it.
+    /// The derive calls it from a `const` item of its own, so it reports the
+    /// size at the declaration whether or not anything ever renders the form.
+    /// It is the whole of the check: `render_with` takes the value the
+    /// attribute named and calls straight through it, so nothing later has to
+    /// produce one out of the type alone.
     pub const fn assert_zst<R>(_renderer: &R) {
         assert!(
             size_of::<R>() == 0,

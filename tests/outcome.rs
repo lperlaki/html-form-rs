@@ -137,9 +137,9 @@ struct Login {
     plan: String,
 }
 
-// SAFETY: `LOGIN` is this form's own spec, written just above, and it holds no
-// default at all — so there is no glue to read the erased context pointer.
-unsafe impl Form for Login {
+// `LOGIN` is this form's own spec, written just above, and it holds no default
+// at all — so there is no glue to name a context type back.
+impl Form for Login {
     type Context = ();
     const SPEC: &'static FormSpec = &LOGIN;
 
@@ -226,9 +226,9 @@ fn a_hand_written_form_fills_itself_in_and_renders_what_it_holds() {
 fn a_hand_written_form_writes_a_spec_and_two_methods_and_nothing_else() {
     struct Empty;
 
-    // SAFETY: a spec with no entries holds no default and no flatten, so it
-    // carries no glue that could read the context pointer.
-    unsafe impl Form for Empty {
+    // A spec with no entries holds no default and no flatten, so it carries no
+    // glue that could read a context at all.
+    impl Form for Empty {
         type Context = ();
         const SPEC: &'static FormSpec = &FormSpec::DEFAULT;
 

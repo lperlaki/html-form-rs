@@ -33,7 +33,6 @@
 //! a template sees exactly what it always did.
 
 use std::borrow::Cow;
-use std::ptr::NonNull;
 
 use serde::Serialize;
 
@@ -284,9 +283,10 @@ impl FormView {
     ///
     /// `context` is what the form's own defaults receive, and it is `&()` for a
     /// form that asks for none. The form supplies both halves — the spec and
-    /// the type of the context its glue reads — which is what lets this stay a
-    /// safe call over the erased pointer a [`FieldDefault`](crate::FieldDefault)
-    /// holds.
+    /// the type of the context its glue reads — so the downcast each piece of
+    /// glue makes over the [`&dyn Any`](std::any::Any) a
+    /// [`FieldDefault`](crate::FieldDefault) is called with finds the type it
+    /// asks for.
     pub fn build<F: Form>(
         values: Option<&Values>,
         errors: &FormErrors,
@@ -295,16 +295,12 @@ impl FormView {
         // The walk goes straight into the view. It does not collect the
         // flattened field list first, so it builds only the `FieldView`s.
         let mut fields = Vec::new();
-        // SAFETY: the context is `F::Context`, and the spec is `F::SPEC`.
-        // `Form` is an unsafe trait for exactly this: implementing it promises
-        // that the glue in `SPEC` reads its erased pointer as `F::Context` and
-        // as nothing else. The derive writes both halves together, and a
-        // hand-written impl made the same promise.
-        unsafe {
-            F::SPEC.walk_with_context(NonNull::from(context).cast(), |resolved| {
-                fields.push(FieldView::build(resolved, values, errors));
-            });
-        }
+        // The context is `F::Context` and the spec is `F::SPEC`, which is the
+        // pairing `Form` is about: the glue in `SPEC` downcasts to `F::Context`
+        // and to nothing else. The derive writes both halves together.
+        F::SPEC.walk_with_context(context, |resolved| {
+            fields.push(FieldView::build(resolved, values, errors));
+        });
         let spec = F::SPEC;
 
         let (form_errors, form_error_keys) = split_messages(errors.form_errors().iter());
@@ -434,7 +430,11 @@ impl FormView {
 }
 
 impl FieldView {
-    fn build(resolved: ResolvedField, values: Option<&Values>, errors: &FormErrors) -> FieldView {
+    fn build(
+        resolved: ResolvedField<'_>,
+        values: Option<&Values>,
+        errors: &FormErrors,
+    ) -> FieldView {
         let spec = resolved.spec;
         let control = &spec.control;
         let kind = control.kind();

@@ -76,6 +76,15 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     // away from the field that caused it.
     let mut bounds: Vec<syn::WherePredicate> = Vec::new();
 
+    // A render hands the context to the spec's glue erased, and the glue names
+    // the type back with a downcast, so `Form::Context` is `'static`. A context
+    // written out is one the compiler already checks; only a context that names
+    // a parameter needs the bound stated, and stating it here puts the error on
+    // the caller who chose the parameter rather than on the generated impl.
+    if mentions(&context, &params) {
+        bounds.push(syn::parse_quote!(#context: 'static));
+    }
+
     for field in &fields.named {
         let field_ident = field.ident.as_ref().expect("named field");
         let attrs = FieldAttrs::parse(&field.attrs)?;
@@ -149,14 +158,12 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                     // The rendering half of `ParseCtx::nested`: the sub-form's
                     // own defaults read whatever this form's context provides
                     // in place of its own.
-                    context: unsafe {
-                        ::html_form::Provider::new(|__context| {
-                            ::html_form::__private::provide::<
-                                #context,
-                                <#ty as ::html_form::Form>::Context,
-                            >(__context)
-                        })
-                    },
+                    context: ::html_form::Provider::new(|__context| {
+                        ::html_form::__private::provide::<
+                            #context,
+                            <#ty as ::html_form::Form>::Context,
+                        >(__context)
+                    }),
                 })
             });
             parse_steps.push(quote! {
@@ -300,16 +307,13 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         #response
 
         #[automatically_derived]
-        // Each piece of glue in the spec is one `unsafe` call whose arguments
-        // are themselves `unsafe`. Only the outer block is load-bearing, and
-        // the inner ones say where the pointers are read.
-        #[allow(unused_unsafe)]
-        // SAFETY: the spec below is written for this form and for no other. Each
-        // `FieldDefault` in it is paired, right here, with glue that reads the
-        // erased pointer as `#context`, which is this impl's `Context`; each
+        // The spec below is written for this form and for no other. Each
+        // `FieldDefault` in it is paired, right here, with glue that names
+        // `#context` — this impl's `Context` — as what it downcasts to; each
         // flatten's `Provider` turns that same `#context` into the sub-form's
-        // own. Nothing in the spec came from another form.
-        unsafe impl #impl_generics ::html_form::Form for #ident #ty_generics #where_clause {
+        // own. Nothing in the spec came from another form, so no downcast in it
+        // can fail.
+        impl #impl_generics ::html_form::Form for #ident #ty_generics #where_clause {
             type Context = #context;
 
             // The whole description is one const-evaluated value. The reference
@@ -494,8 +498,8 @@ fn field_spec(
 /// can also hold it as a literal, so this settles those two and emits the
 /// wrapper once.
 ///
-/// The macro emits nothing unsafe of its own: each closure is a call into
-/// `__private`, where the pointer casts live and are documented.
+/// Each closure is a call into `__private`, where the downcast that names the
+/// context type back lives and is documented.
 fn default_glue(attrs: &FieldAttrs, shape: &Shape<'_>, context: &Type) -> TokenStream {
     let none = quote!(::core::option::Option::None);
     let Some(written) = &attrs.default else {
@@ -522,7 +526,7 @@ fn default_glue(attrs: &FieldAttrs, shape: &Shape<'_>, context: &Type) -> TokenS
         ),
         (DefaultAttr::Fn(path), Some(value)) => (
             quote! {
-                |__context| unsafe {
+                |__context| {
                     // The context type and the field type are what the macro
                     // knows. `DefaultSource` settles the rest: which of the two
                     // arities the function has, and what it gave back. The
@@ -538,9 +542,7 @@ fn default_glue(attrs: &FieldAttrs, shape: &Shape<'_>, context: &Type) -> TokenS
     };
 
     quote! {
-        ::core::option::Option::Some(unsafe {
-            ::html_form::FieldDefault::new(#produce, #literal)
-        })
+        ::core::option::Option::Some(::html_form::FieldDefault::new(#produce, #literal))
     }
 }
 

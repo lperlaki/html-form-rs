@@ -183,3 +183,46 @@ fn a_wrapper_fills_itself_in_from_an_existing_value() {
         Some("ada@example.com")
     );
 }
+
+// ─── A parameter that is the context ──────────────────────────────────────────
+
+/// A form may be generic over its own *context*, not only over the values it
+/// holds. `Form::Context` is `'static` — a render hands it to the spec's glue
+/// erased, and the glue names the type back — and the derive states that bound
+/// for a context that names a parameter, so `Dated<C>` needs nothing written on
+/// it beyond the trait its own default calls through.
+trait Clock {
+    fn today(&self) -> String;
+}
+
+fn stamp<C: Clock>(clock: &C) -> String {
+    clock.today()
+}
+
+#[derive(Form, Debug)]
+#[form(context = C)]
+struct Dated<C: Clock> {
+    #[field(type = "hidden", label = "", default = stamp)]
+    on: String,
+
+    #[field(skip)]
+    clock: std::marker::PhantomData<C>,
+}
+
+#[derive(Debug)]
+struct Wall;
+
+impl Clock for Wall {
+    fn today(&self) -> String {
+        "2026-08-07".to_owned()
+    }
+}
+
+#[test]
+fn a_form_generic_over_its_context_reaches_that_context_from_its_default() {
+    let view = Dated::<Wall>::render_with_context(&Wall);
+    assert_eq!(
+        view.field("on").unwrap().value.as_deref(),
+        Some("2026-08-07")
+    );
+}

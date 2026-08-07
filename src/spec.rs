@@ -16,9 +16,9 @@
 //! is `const` data all the same. A [`FieldDefault`] carries the glue that
 //! produces one field's default, and a [`Flattened`] carries the glue that
 //! hands a sub-form the context it asks for. Both take the render's context as
-//! an erased pointer, because one shared `const` cannot name the type of a
-//! context. `#[derive(Form)]` writes each function beside the spec that calls
-//! it.
+//! a [`&dyn Any`](std::any::Any), because one shared `const` cannot name the
+//! type of a context. `#[derive(Form)]` writes each function beside the spec
+//! that calls it, and the function names the type back.
 //!
 //! Every string a person reads is a [`Text`], such as a label, help text or a
 //! legend. A [`Text`] is either literal text or an i18n key. The crate never
@@ -38,9 +38,9 @@
 //! `aria-*`, goes into the [`Attr`] list both of them carry. The crate writes
 //! that list out as given.
 
+use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
-use std::ptr::NonNull;
 
 use serde::{Serialize, Serializer};
 
@@ -579,17 +579,18 @@ impl Control {
 
 /// The glue that produces one field's default.
 ///
-/// `context` points at the [`Context`](crate::Form::Context) of the form whose
-/// spec holds the default. It is an erased pointer because a [`FormSpec`] is
-/// one `const` that every render of every caller shares. It cannot name a
-/// context type, and it cannot hold a closure over one. `#[derive(Form)]`
-/// writes the two halves together: the function that reads the pointer as a
-/// `&Context`, and the spec that carries the function.
+/// `context` is the [`Context`](crate::Form::Context) of the form whose spec
+/// holds the default, erased. It arrives as a [`&dyn Any`](Any) because a
+/// [`FormSpec`] is one `const` that every render of every caller shares: it
+/// cannot name a context type, and it cannot hold a closure over one.
+/// `#[derive(Form)]` writes the two halves together — the function that names
+/// the context type back, and the spec that carries the function — so the
+/// downcast inside the glue always finds what it asks for.
 ///
 /// What comes back is the string the field renders, whatever type the value
 /// started as. That is the one type every default has in common, so the crate
 /// names it here in place of erasing it too.
-pub type Generate = unsafe fn(context: *const ()) -> Cow<'static, str>;
+pub type Generate = fn(context: &dyn Any) -> Cow<'static, str>;
 
 /// The value a field starts a render with.
 ///
@@ -619,13 +620,13 @@ impl FieldDefault {
     /// value is, which is what tells a value the form owns from one written
     /// down. See [`FieldDefault::is_generated`].
     ///
-    /// # Safety
-    ///
-    /// `generate` has to read its `context` as nothing but a shared reference
-    /// to the [`Context`](crate::Form::Context) of the form whose [`FormSpec`]
-    /// holds this default. One pointer reaches every field of one render, and
-    /// only that form knows what it points at.
-    pub const unsafe fn new(generate: Generate, literal: Option<&'static str>) -> Self {
+    /// `generate` should downcast its `context` to the
+    /// [`Context`](crate::Form::Context) of the form whose [`FormSpec`] holds
+    /// this default — one context reaches every field of one render, and only
+    /// that form knows what type it has. A default put in the spec of a form
+    /// with some *other* context is a panic when that form renders, not
+    /// undefined behaviour.
+    pub const fn new(generate: Generate, literal: Option<&'static str>) -> Self {
         Self { generate, literal }
     }
 
@@ -645,16 +646,12 @@ impl FieldDefault {
         self.literal.is_none()
     }
 
-    /// Run the glue.
+    /// Run the glue, with the context of the form this default belongs to.
     ///
-    /// # Safety
-    ///
-    /// `context` has to point at a live [`Context`](crate::Form::Context) of
-    /// the form this default belongs to, which is what [`FieldDefault::new`]
-    /// promised the glue would receive.
-    pub(crate) unsafe fn value(&self, context: *const ()) -> Cow<'static, str> {
-        // SAFETY: the caller vouches for the context, and `new` for the glue.
-        unsafe { (self.generate)(context) }
+    /// The glue panics if that is not the context it was written for. See
+    /// [`FieldDefault::new`].
+    pub(crate) fn value(&self, context: &dyn Any) -> Cow<'static, str> {
+        (self.generate)(context)
     }
 }
 
@@ -685,7 +682,7 @@ impl PartialEq for FieldDefault {
 /// for the reason [`Generate`] erases them: one `const` spec describes every
 /// render, and the two forms need not share a context type.
 #[derive(Clone, Copy)]
-pub struct Provider(unsafe fn(context: *const ()) -> *const ());
+pub struct Provider(fn(context: &dyn Any) -> &dyn Any);
 
 impl Provider {
     /// The enclosing context, handed down as it stands.
@@ -697,22 +694,17 @@ impl Provider {
 
     /// Declare a bridge, as the derive does for `#[field(flatten)]`.
     ///
-    /// # Safety
-    ///
-    /// The call has to read its argument as nothing but a shared reference to
-    /// the [`Context`](crate::Form::Context) of the form whose [`FormSpec`]
-    /// holds this flatten, and to give back a pointer to a live context of the
-    /// sub-form's own type.
-    pub const unsafe fn new(provide: unsafe fn(context: *const ()) -> *const ()) -> Self {
+    /// The call should downcast its argument to the
+    /// [`Context`](crate::Form::Context) of the form whose [`FormSpec`] holds
+    /// this flatten, and give back a context of the sub-form's own type. It
+    /// panics rather than misreads if it is handed some other form's context.
+    pub const fn new(provide: fn(context: &dyn Any) -> &dyn Any) -> Self {
         Self(provide)
     }
 
-    /// # Safety
-    ///
-    /// `context` has to point at a live context of the enclosing form.
-    pub(crate) unsafe fn provide(self, context: *const ()) -> *const () {
-        // SAFETY: the caller vouches for the context, and `new` for the bridge.
-        unsafe { (self.0)(context) }
+    /// The context to hand a flattened sub-form, out of the enclosing form's.
+    pub(crate) fn provide(self, context: &dyn Any) -> &dyn Any {
+        (self.0)(context)
     }
 }
 
@@ -936,7 +928,7 @@ impl FormSpec {
     /// This is what the renderer walks. A form that flattens nothing allocates
     /// nothing, because a resolved name *is* the borrowed name in the spec.
     /// Only a field reached through a non-empty prefix needs a new name.
-    pub fn walk(&self, mut visit: impl FnMut(ResolvedField)) {
+    pub fn walk<'ctx>(&self, mut visit: impl FnMut(ResolvedField<'ctx>)) {
         self.walk_in("", None, 0, None, &mut visit);
     }
 
@@ -944,29 +936,27 @@ impl FormSpec {
     /// receive. It is the walk a render makes, and the only one that can run a
     /// generated default.
     ///
-    /// # Safety
-    ///
-    /// `context` has to point at a live
-    /// [`Context`](crate::Form::Context) of the form this spec describes —
-    /// which is to say, of the form whose [`SPEC`](crate::Form::SPEC) this is.
-    /// [`Form`](crate::Form) is an unsafe trait so that the two can be paired.
-    pub(crate) unsafe fn walk_with_context(
+    /// `context` should be the [`Context`](crate::Form::Context) of the form
+    /// this spec describes — which is to say, of the form whose
+    /// [`SPEC`](crate::Form::SPEC) this is. The glue in the spec downcasts to
+    /// that type, and panics if it is handed another.
+    pub(crate) fn walk_with_context<'ctx>(
         &self,
-        context: NonNull<()>,
-        mut visit: impl FnMut(ResolvedField),
+        context: &'ctx dyn Any,
+        mut visit: impl FnMut(ResolvedField<'ctx>),
     ) {
         self.walk_in("", None, 0, Some(context), &mut visit);
     }
 
     // `dyn FnMut`, not a second generic parameter. The recursion would
     // otherwise build one copy of this function per nesting depth.
-    fn walk_in(
+    fn walk_in<'ctx>(
         &self,
         prefix: &str,
         group: Option<&'static Text>,
         depth: usize,
-        context: Option<NonNull<()>>,
-        visit: &mut dyn FnMut(ResolvedField),
+        context: Option<&'ctx dyn Any>,
+        visit: &mut dyn FnMut(ResolvedField<'ctx>),
     ) {
         assert!(
             depth < MAX_FLATTEN_DEPTH,
@@ -985,15 +975,10 @@ impl FormSpec {
                     let nested = join(prefix, flat.prefix);
                     let group = flat.legend.as_ref().or(group);
                     // The sub-form's defaults read the context its own `Form`
-                    // impl names, which the enclosing one supplies.
-                    let context = context.map(|context| {
-                        // SAFETY: the walk carries the context of the form
-                        // whose spec holds this flatten, which is what the
-                        // bridge was written to read.
-                        let provided = unsafe { flat.context.provide(context.as_ptr().cast()) };
-                        NonNull::new(provided.cast_mut())
-                            .expect("a context provider gives back a reference")
-                    });
+                    // impl names, which the enclosing one supplies. The walk
+                    // carries the context of the form whose spec holds this
+                    // flatten, which is what the bridge was written to read.
+                    let context = context.map(|context| flat.context.provide(context));
                     flat.spec.walk_in(&nested, group, depth + 1, context, visit);
                 }
             }
@@ -1002,14 +987,14 @@ impl FormSpec {
 
     /// Every field of this form and of any flattened sub-form, in render order,
     /// in one `Vec`. [`FormSpec::walk`] does the same without the `Vec`.
-    pub fn fields(&self) -> Vec<ResolvedField> {
+    pub fn fields(&self) -> Vec<ResolvedField<'static>> {
         let mut out = Vec::new();
         self.walk(|field| out.push(field));
         out
     }
 
     /// Find a resolved field by its full, prefixed name.
-    pub fn field(&self, full_name: &str) -> Option<ResolvedField> {
+    pub fn field(&self, full_name: &str) -> Option<ResolvedField<'static>> {
         let mut found = None;
         self.walk(|field| {
             if found.is_none() && field.name == full_name {
@@ -1033,8 +1018,12 @@ pub(crate) fn join(prefix: &str, name: &'static str) -> Cow<'static, str> {
 }
 
 /// A field with the full name the browser submits it under.
-#[derive(Debug, Clone)]
-pub struct ResolvedField {
+///
+/// The lifetime is the render's context, which a field's own default reads. It
+/// is `'static` for a walk that carries none — [`FormSpec::fields`] and
+/// [`FormSpec::field`] — because there is then nothing borrowed to outlive.
+#[derive(Clone)]
+pub struct ResolvedField<'ctx> {
     /// The fully qualified submitted name, with every flatten prefix. It is a
     /// [`Cow`] because a prefix has to join the name in the spec, and only when
     /// a prefix exists.
@@ -1045,10 +1034,22 @@ pub struct ResolvedField {
     /// The context this field's own default receives, which the walk resolved
     /// through every flatten it passed. It is `None` for a walk that carries
     /// none, which is every walk but a render's.
-    context: Option<NonNull<()>>,
+    context: Option<&'ctx dyn Any>,
 }
 
-impl ResolvedField {
+impl fmt::Debug for ResolvedField<'_> {
+    /// The three fields a reader can use. A context is a `dyn Any`, which has
+    /// nothing to show and no `Debug` to call.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedField")
+            .field("name", &self.name)
+            .field("spec", &self.spec)
+            .field("group", &self.group)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResolvedField<'_> {
     /// The value this field starts a render with.
     ///
     /// It runs the glue in the spec, once, here, and only where the render asks
@@ -1061,9 +1062,9 @@ impl ResolvedField {
     pub(crate) fn default(&self) -> Option<Cow<'static, str>> {
         let default = self.spec.default?;
         match self.context {
-            // SAFETY: the walk carried the context of the form this field
-            // belongs to, which is the one its glue was written to read.
-            Some(context) => Some(unsafe { default.value(context.as_ptr().cast()) }),
+            // The walk carried the context of the form this field belongs to,
+            // which is the one its glue was written to read.
+            Some(context) => Some(default.value(context)),
             None => default.literal().map(Cow::Borrowed),
         }
     }
