@@ -541,9 +541,13 @@ would ignore: `attr("class" = "x")` tells you to write `#[field(class = "x")]`.
 
 `FormView::set_attr` and `FieldView::set_attr` set attributes at render time,
 next to `set_choices`. A *value* set there may be anything, because the renderer
-escapes it. A **name** is written outside the quotes, so the built-in renderer
-writes only names made of what a name may be made of, and skips the rest: build
-one from a constant, not from input.
+escapes it. A **name** sits outside the quotes, where escaping cannot help, so
+both refuse a name markup could not carry and both refuse one the crate already
+renders — the two the derive rejects at compile time. They return `false` and
+set nothing in either case, so the refusal holds for a template engine reading
+`field.attrs` exactly as it does for `to_html`. Build a name from a constant,
+not from input; `html_form::is_attr_name` is the check itself, for a view you
+edit some other way.
 
 ## Types
 
@@ -1246,8 +1250,10 @@ and pass the text fields to `Values::from_pairs`.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option. Unless you explicitly state otherwise,
+Licensed under either of
+[Apache License, Version 2.0](https://github.com/lperlaki/html-form-rs/blob/main/LICENSE-APACHE)
+or [MIT license](https://github.com/lperlaki/html-form-rs/blob/main/LICENSE-MIT)
+at your option. Unless you explicitly state otherwise,
 any contribution intentionally submitted for inclusion in this crate by you, as
 defined in the Apache-2.0 license, shall be dual licensed as above, without any
 additional terms or conditions.

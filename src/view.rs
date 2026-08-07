@@ -412,12 +412,17 @@ impl FormView {
     /// Pass `None` as the value to get a bare boolean attribute.
     ///
     /// A *value* may be anything: the renderer escapes it, and a template
-    /// engine escapes it. A **name** is written outside the quotes, so the
-    /// built-in renderer writes only names made of what a name may be made of,
-    /// and silently skips the rest. Build a name from a constant, not from
-    /// input.
-    pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) {
-        set_attr(&mut self.attrs, name.into(), value);
+    /// engine escapes it. A **name** is written outside the quotes, where
+    /// escaping cannot help, so it has to be a name markup can carry. Build one
+    /// from a constant, not from input.
+    ///
+    /// Returns `false`, and sets nothing, if the name is one
+    /// [`is_attr_name`] rejects, or one the `<form>` already carries — `id`,
+    /// `name`, `action`, `method`, `enctype`, `class` or `novalidate`. Setting
+    /// those would render the attribute twice. `#[form(attr(...))]` rejects the
+    /// same names while the crate compiles.
+    pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) -> bool {
+        set_attr(&mut self.attrs, FORM_RESERVED, name.into(), value)
     }
 
     /// Add a form-level error, as text or as an i18n key.
@@ -653,12 +658,17 @@ impl FieldView {
     /// Pass `None` as the value to get a bare boolean attribute.
     ///
     /// A *value* may be anything: the renderer escapes it, and a template
-    /// engine escapes it. A **name** is written outside the quotes, so the
-    /// built-in renderer writes only names made of what a name may be made of,
-    /// and silently skips the rest. Build a name from a constant, not from
-    /// input.
-    pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) {
-        set_attr(&mut self.attrs, name.into(), value);
+    /// engine escapes it. A **name** is written outside the quotes, where
+    /// escaping cannot help, so it has to be a name markup can carry. Build one
+    /// from a constant, not from input.
+    ///
+    /// Returns `false`, and sets nothing, if the name is one
+    /// [`is_attr_name`] rejects, or one the control already carries — `name`,
+    /// `id`, `type`, `value`, `required` and the rest the crate renders from
+    /// the spec. Setting those would render the attribute twice.
+    /// `#[field(attr(...))]` rejects the same names while the crate compiles.
+    pub fn set_attr(&mut self, name: impl Into<Cow<'static, str>>, value: Option<&str>) -> bool {
+        set_attr(&mut self.attrs, FIELD_RESERVED, name.into(), value)
     }
 
     /// Add another error message to this field, as text or as an i18n key.
@@ -698,11 +708,102 @@ fn suffixed(base: &str, suffix: &str) -> Cow<'static, str> {
     Cow::Owned(out)
 }
 
+/// Whether `name` is a name that may be written out as one.
+///
+/// A *value* is safe however it was built: the built-in renderer escapes it, and
+/// a template engine escapes it. A name is not, because it sits outside the
+/// quotes. A space in one would end it and start a second attribute nobody
+/// declared — `set_attr("x onfocus=alert(1)", Some("…"))` would otherwise render
+/// a live event handler — and escaping does not help, because a space needs no
+/// escape.
+///
+/// So this is the HTML attribute-name production narrowed to what a real one
+/// uses: no whitespace, no quote, no `/`, `=`, `<`, `>` or `&`, and no control
+/// character. Every `data-*`, `aria-*`, `hx-*` and plain word passes untouched.
+///
+/// [`FieldView::set_attr`] and [`FormView::set_attr`] refuse a name this
+/// rejects, and `#[field(attr(...))]` is a compile error for the same set — the
+/// derive checks these very characters, so a name that compiles is a name that
+/// renders. It is public because [`AttrView::name`] is a public field: a view
+/// built or edited some other way can check a name the same way the crate does.
+///
+/// ```
+/// assert!(html_form::is_attr_name("data-tooltip"));
+/// assert!(!html_form::is_attr_name("x onfocus=alert(1)"));
+/// assert!(!html_form::is_attr_name(""));
+/// ```
+pub fn is_attr_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.chars().any(|ch| {
+            ch.is_whitespace()
+                || ch.is_control()
+                || matches!(ch, '"' | '\'' | '>' | '<' | '/' | '=' | '&')
+        })
+}
+
+/// The attribute names the built-in renderer writes on a `<form>` itself.
+///
+/// Setting one as a *custom* attribute would render it twice, which is invalid
+/// markup, and the browser would keep the crate's copy anyway. The derive
+/// rejects the same names at compile time, with a message naming the `#[form]`
+/// key that sets each one; this is the runtime half, and the two lists are
+/// meant to hold the same names.
+const FORM_RESERVED: &[&str] = &[
+    "id",
+    "name",
+    "action",
+    "method",
+    "enctype",
+    "class",
+    "novalidate",
+];
+
+/// The attribute names the built-in renderer writes on a control itself. See
+/// [`FORM_RESERVED`].
+const FIELD_RESERVED: &[&str] = &[
+    "name",
+    "id",
+    "type",
+    "value",
+    "class",
+    "required",
+    "disabled",
+    "readonly",
+    "autofocus",
+    "multiple",
+    "placeholder",
+    "autocomplete",
+    "pattern",
+    "min",
+    "max",
+    "step",
+    "accept",
+    "minlength",
+    "maxlength",
+    "rows",
+    "cols",
+    "checked",
+    "selected",
+    "aria-invalid",
+    "aria-describedby",
+];
+
 /// Overwrite an attribute in place and keep its position, or add it at the end.
-fn set_attr(attrs: &mut Vec<AttrView>, name: Cow<'static, str>, value: Option<&str>) {
+///
+/// Refuses a name markup could not carry, and one the renderer writes itself.
+fn set_attr(
+    attrs: &mut Vec<AttrView>,
+    reserved: &[&str],
+    name: Cow<'static, str>,
+    value: Option<&str>,
+) -> bool {
+    if !is_attr_name(&name) || reserved.contains(&name.to_ascii_lowercase().as_str()) {
+        return false;
+    }
     let value = value.map(|value| Cow::Owned(value.to_owned()));
     match attrs.iter_mut().find(|a| a.name == name) {
         Some(existing) => existing.value = value,
         None => attrs.push(AttrView { name, value }),
     }
+    true
 }

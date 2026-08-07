@@ -497,12 +497,16 @@ fn an_attribute_name_cannot_forge_a_second_attribute() {
     let field = view.field_mut("email").expect("the email field");
 
     // Each of these would render a live `onfocus` handler if the name went
-    // through as written.
-    field.set_attr(r#"x onfocus="alert(1)""#, Some("y"));
-    field.set_attr("x\tonfocus=alert(1)", None);
-    field.set_attr(r#"x">"#, Some("y"));
+    // through as written. `set_attr` says no and sets nothing, so the name
+    // never reaches the view — which is what a template engine reads.
+    assert!(!field.set_attr(r#"x onfocus="alert(1)""#, Some("y")));
+    assert!(!field.set_attr("x\tonfocus=alert(1)", None));
+    assert!(!field.set_attr(r#"x">"#, Some("y")));
+    assert!(!field.set_attr("", Some("y")));
+    assert!(field.attrs.is_empty(), "{:?}", field.attrs);
+
     // And the value is what may hold anything, because that one is escaped.
-    field.set_attr("data-note", Some(r#""><script>alert(1)</script>"#));
+    assert!(field.set_attr("data-note", Some(r#""><script>alert(1)</script>"#)));
 
     let html = view.to_html();
     assert!(!html.contains("onfocus"), "{html}");
@@ -515,9 +519,9 @@ fn an_attribute_name_cannot_forge_a_second_attribute() {
     // What a real attribute is made of still goes through untouched.
     let mut view = Signup::render();
     let field = view.field_mut("email").expect("the email field");
-    field.set_attr("data-role", Some("primary"));
-    field.set_attr("hx-trigger", Some("keyup changed delay:300ms"));
-    field.set_attr("autocorrect", None);
+    assert!(field.set_attr("data-role", Some("primary")));
+    assert!(field.set_attr("hx-trigger", Some("keyup changed delay:300ms")));
+    assert!(field.set_attr("autocorrect", None));
 
     let html = view.to_html();
     assert!(html.contains(r#"data-role="primary""#), "{html}");
@@ -526,4 +530,53 @@ fn an_attribute_name_cannot_forge_a_second_attribute() {
         "{html}"
     );
     assert!(html.contains(" autocorrect"), "{html}");
+}
+
+/// The guard is the view's, not the renderer's. A template engine reads the
+/// `attrs` list itself, so a name that only `to_html` refused would still reach
+/// a page through MiniJinja or Askama — writing `{{ a.name }}="{{ a.value }}"`
+/// re-creates the very injection above, and autoescaping cannot stop it because
+/// a space needs no escape. `set_attr` is where the name is refused, so every
+/// renderer gets the same answer.
+#[test]
+fn a_refused_attribute_never_reaches_a_template_either() {
+    let mut view = Signup::render();
+    let field = view.field_mut("email").expect("the email field");
+
+    assert!(!field.set_attr("x onfocus=alert(1)", Some("y")));
+
+    // What a template iterates over, and what `serde` hands it.
+    assert!(field.attrs.is_empty());
+    let json = serde_json::to_string(&view).expect("the view serializes");
+    assert!(!json.contains("onfocus"), "{json}");
+}
+
+/// A custom attribute the crate already writes from the spec would render
+/// twice. The derive rejects those names while the crate compiles; a name built
+/// at run time is refused here, in place of making invalid markup that browsers
+/// then read as the crate's own value anyway.
+#[test]
+fn an_attribute_the_renderer_writes_itself_cannot_be_set_a_second_time() {
+    let mut view = Signup::render();
+    let field = view.field_mut("email").expect("the email field");
+
+    for name in ["name", "id", "type", "required", "VALUE"] {
+        assert!(!field.set_attr(name, Some("forged")), "{name}");
+    }
+    assert!(field.attrs.is_empty(), "{:?}", field.attrs);
+
+    let html = view.to_html();
+    assert!(!html.contains("forged"), "{html}");
+    // The control still carries exactly one of each name it was given.
+    let input = html
+        .lines()
+        .find(|line| line.contains(r#"type="email""#))
+        .expect("the email control");
+    assert_eq!(input.matches(" name=").count(), 1, "{input}");
+    assert_eq!(input.matches(" required").count(), 1, "{input}");
+
+    // The `<form>` has its own set.
+    assert!(!view.set_attr("method", Some("get")));
+    assert!(!view.set_attr("novalidate", None));
+    assert!(view.set_attr("hx-boost", Some("true")));
 }

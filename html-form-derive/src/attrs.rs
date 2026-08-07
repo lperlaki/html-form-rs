@@ -211,10 +211,14 @@ fn check_attr_name(attr: &CustomAttr, owner: &str, reserved: &[Reserved]) -> Res
     if attr.name.is_empty() {
         return Err(Error::new(attr.span, "an attribute name cannot be empty"));
     }
+    // The same set `html_form::is_attr_name` holds a runtime name to. A name
+    // that compiles has to be one the renderer will write: anything this let
+    // through and that did not would compile clean and then be dropped from the
+    // markup, with nothing to say why.
     if let Some(bad) = attr
         .name
         .chars()
-        .find(|ch| ch.is_whitespace() || ch.is_control() || "\"'>/=".contains(*ch))
+        .find(|ch| ch.is_whitespace() || ch.is_control() || "\"'></=&".contains(*ch))
     {
         return Err(Error::new(
             attr.span,

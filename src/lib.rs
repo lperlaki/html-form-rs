@@ -64,7 +64,7 @@ pub use spec::{
 pub use validate::{FieldValidation, FieldValidator, FormValidation, FormValidator};
 pub use value::FormValue;
 pub use values::Values;
-pub use view::{AttrView, ChoiceView, FieldView, FormView};
+pub use view::{AttrView, ChoiceView, FieldView, FormView, is_attr_name};
 
 #[doc(hidden)]
 pub use runtime::__private;
