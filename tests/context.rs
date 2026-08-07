@@ -254,26 +254,25 @@ fn a_form_without_a_context_keeps_the_shorter_names() {
     );
 }
 
+/// A default sits in the spec, beside the field it belongs to. Nothing walks a
+/// form to collect the defaults first, so a form that declares none has nothing
+/// to say about them, and a flatten carries whatever the sub-form declared.
 #[test]
-fn a_form_that_generates_nothing_says_so_at_compile_time() {
-    const { assert!(!Address::GENERATES_DEFAULTS) };
-    const { assert!(Search::GENERATES_DEFAULTS) };
-    // And the answer is the whole flatten tree's, not just the outer form's.
-    const { assert!(<WithToken<Address> as Form>::GENERATES_DEFAULTS) };
-
-    #[derive(Form, Debug)]
-    struct Plain {
-        #[field(flatten)]
-        inner: Address,
-    }
-    const { assert!(!Plain::GENERATES_DEFAULTS) };
+fn a_default_belongs_to_the_field_that_declares_it_however_deep_it_sits() {
+    // Every field of this form says whether it has a default, and which kind.
+    let declared = |spec: &'static html_form::FormSpec, name: &str| {
+        spec.field(name).unwrap().spec.default.map(|d| d.literal())
+    };
+    assert_eq!(declared(Address::SPEC, "postcode"), None);
+    assert_eq!(declared(Search::SPEC, "token"), Some(None), "generated");
 
     #[derive(Form, Debug)]
     struct Wrapping {
         #[field(flatten, prefix = "s_")]
         inner: Search,
     }
-    const { assert!(Wrapping::GENERATES_DEFAULTS) };
+    // Under the flatten's prefix, and produced with the context that reached it.
+    assert_eq!(declared(Wrapping::SPEC, "s_token"), Some(None));
     assert_eq!(
         Wrapping::render()
             .field("s_token")

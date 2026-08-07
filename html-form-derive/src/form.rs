@@ -69,14 +69,6 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     let mut parse_steps = Vec::new();
     let mut construct = Vec::new();
     let mut fill_steps = Vec::new();
-    // The `default = path` calls, and the flag that says whether a walk is
-    // worth making. The flag is `false` unless something here, or in something
-    // flattened here, produces a default at render time. A field of this form
-    // settles it outright. A flattened field brings a const of the sub-form's
-    // own.
-    let mut default_steps = Vec::new();
-    let mut generates_here = false;
-    let mut generates: Vec<TokenStream> = Vec::new();
     // Bounds taken from how each field is used, so `struct WithCsrf<T>` needs
     // no bound written on it. Only a type that names a parameter gets one.
     // Adding `where Address: Form` for a concrete field would move the error
@@ -108,6 +100,15 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 }
                 false => syn::parse_quote!(#generic: ::html_form::FormValue),
             });
+        }
+
+        // `#[field(default)]` asks the field's type for a value, so a generic
+        // field asks its parameter for one.
+        let standard = shape
+            .value_type()
+            .filter(|ty| attrs.default_std && mentions(ty, &params));
+        if let Some(generic) = standard {
+            bounds.push(syn::parse_quote!(#generic: ::core::default::Default));
         }
 
         if matches!(shape, Shape::Flatten) {
@@ -144,6 +145,17 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                     // The sub-form's own `SPEC` constant. The compiler resolves
                     // it while it const-evaluates this one.
                     spec: <#ty as ::html_form::Form>::SPEC,
+                    // The rendering half of `ParseCtx::nested`: the sub-form's
+                    // own defaults read whatever this form's context provides
+                    // in place of its own.
+                    context: unsafe {
+                        ::html_form::Provider::new(|__context| {
+                            ::html_form::__private::provide::<
+                                #context,
+                                <#ty as ::html_form::Form>::Context,
+                            >(__context)
+                        })
+                    },
                 })
             });
             parse_steps.push(quote! {
@@ -160,23 +172,10 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                     &::std::format!("{}{}", __prefix, #prefix),
                 );
             });
-
-            generates.push(quote!(<#ty as ::html_form::Form>::GENERATES_DEFAULTS));
-            // One call, as on the parse side. The runtime decides which
-            // sub-forms are worth a walk, how to join the prefix, and which
-            // context the sub-form receives. This macro decides none of it.
-            default_steps.push(quote! {
-                ::html_form::__private::nested_defaults::<#ty, #context>(
-                    __values,
-                    __prefix,
-                    #prefix,
-                    __context,
-                );
-            });
             continue;
         }
 
-        entries.push(field_spec(field_ident, &attrs, &shape)?);
+        entries.push(field_spec(field_ident, &attrs, &shape, &context)?);
 
         let spec_ref = quote!(__spec.field_at(#index));
         // The crate reads a `from_str` field as the adapter and unwraps it here
@@ -231,27 +230,11 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             .clone()
             .unwrap_or_else(|| field_ident.to_string());
 
-        if let Some(path) = &attrs.default_fn {
-            generates_here = true;
-            // `DefaultSource` settles which of the two shapes the function has,
-            // with the context or without, because a macro cannot see a
-            // signature.
-            default_steps.push(quote! {
-                ::html_form::__private::generate_default(
-                    __values,
-                    __prefix,
-                    #name,
-                    #path,
-                    __context,
-                );
-            });
-        }
-
         let push_value = |value: TokenStream| {
             // The other half of the conversion the field uses.
             let written = match attrs.from_str {
                 true => quote!(::std::string::ToString::to_string(#value)),
-                false => quote!(::html_form::FormValue::to_form_value(#value).into_owned()),
+                false => quote!(::html_form::FormValue::to_form_value(#value)),
             };
             quote! {
                 __values.push(::std::format!("{}{}", __prefix, #name), #written);
@@ -302,27 +285,6 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         None => quote!(),
     };
 
-    // A form with nothing to generate keeps the trait's own empty body, and
-    // says so in the const the renderer branches on.
-    let generates_defaults = if generates_here {
-        quote!(true)
-    } else {
-        quote!(false #(|| #generates)*)
-    };
-    let generate_defaults = if default_steps.is_empty() {
-        TokenStream::new()
-    } else {
-        quote! {
-            fn generate_defaults(
-                __values: &mut ::html_form::Values,
-                __prefix: &str,
-                __context: &<Self as ::html_form::Form>::Context,
-            ) {
-                #(#default_steps)*
-            }
-        }
-    };
-
     if !bounds.is_empty() {
         generics.make_where_clause().predicates.extend(bounds);
     }
@@ -330,10 +292,12 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
 
     Ok(quote! {
         #[automatically_derived]
+        // Each piece of glue in the spec is one `unsafe` call whose arguments
+        // are themselves `unsafe`. Only the outer block is load-bearing, and
+        // the inner ones say where the pointers are read.
+        #[allow(unused_unsafe)]
         impl #impl_generics ::html_form::Form for #ident #ty_generics #where_clause {
             type Context = #context;
-
-            const GENERATES_DEFAULTS: bool = #generates_defaults;
 
             // The whole description is one const-evaluated value. The reference
             // points at memory the compiler laid out, so nothing here runs or
@@ -366,8 +330,6 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             fn fill_in(&self, __values: &mut ::html_form::Values, __prefix: &str) {
                 #(#fill_steps)*
             }
-
-            #generate_defaults
         }
     })
 }
@@ -428,7 +390,12 @@ fn value_type(attrs: &FieldAttrs, ty: &Type) -> TokenStream {
 }
 
 /// The `FieldSpec` const for one field.
-fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<TokenStream> {
+fn field_spec(
+    ident: &Ident,
+    attrs: &FieldAttrs,
+    shape: &Shape<'_>,
+    context: &Type,
+) -> Result<TokenStream> {
     let name = attrs.name.clone().unwrap_or_else(|| ident.to_string());
     // Where the field's control and default come from: the type you wrote, or
     // the adapter that stands in for it.
@@ -442,19 +409,18 @@ fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<To
     let id = opt_str(&attrs.id);
     let class = opt_str(&attrs.class);
     let (disabled, readonly, autofocus) = (attrs.disabled, attrs.readonly, attrs.autofocus);
+    let written_reset = match attrs.reset {
+        Some(reset) => quote!(::core::option::Option::Some(#reset)),
+        None => quote!(::core::option::Option::None),
+    };
     let custom = attrs.custom.iter().map(CustomAttr::tokens);
 
     // What the field says, then what its type says. The merge is a `const fn`
     // for the same reason the control's merge is. A type's own default is an
     // associated const, which the macro cannot read.
-    let written = opt_str(&attrs.default);
+    let written = default_glue(attrs, shape, context);
     let default = match &inner {
-        Some(ty) => quote! {
-            ::html_form::__private::or_default(
-                #written,
-                <#ty as ::html_form::FormValue>::DEFAULT,
-            )
-        },
+        Some(ty) => quote!(::html_form::__private::or_default::<#ty>(#written)),
         None => written,
     };
 
@@ -472,23 +438,109 @@ fn field_spec(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<To
     )?;
 
     Ok(quote! {
-        ::html_form::Entry::Field(::html_form::FieldSpec {
-            name: #name,
-            label: #label,
-            control: #control,
-            required: #required,
-            default: #default,
-            placeholder: #placeholder,
-            help: #help,
-            autocomplete: #autocomplete,
-            id: #id,
-            class: #class,
-            disabled: #disabled,
-            readonly: #readonly,
-            autofocus: #autofocus,
-            attrs: &[#(#custom),*],
+        ::html_form::Entry::Field({
+            // Bound, because `reset` is decided from the two of them, and a
+            // struct literal cannot read its own fields. Both are `Copy`.
+            let __control = #control;
+            let __default = #default;
+            ::html_form::FieldSpec {
+                name: #name,
+                label: #label,
+                control: __control,
+                required: #required,
+                default: __default,
+                reset: ::html_form::__private::or_reset(
+                    #written_reset,
+                    &__control,
+                    &__default,
+                ),
+                placeholder: #placeholder,
+                help: #help,
+                autocomplete: #autocomplete,
+                id: #id,
+                class: #class,
+                disabled: #disabled,
+                readonly: #readonly,
+                autofocus: #autofocus,
+                attrs: &[#(#custom),*],
+            }
         })
     })
+}
+
+/// The default a field declares, as the glue the spec calls for it.
+///
+/// A [`FieldDefault`] is one function pointer, whichever kind of default it
+/// holds, so the renderer makes one call and knows nothing of the three. A
+/// literal becomes a function that hands the literal over. A bare `default`
+/// becomes one that calls the field type's own `Default::default()`.
+/// `default = path` becomes one that reads the render's context, calls the
+/// function, and writes the value out the way this field writes out every other
+/// value it holds.
+///
+/// The macro emits nothing unsafe of its own: each closure is a call into
+/// `__private`, where the pointer casts live and are documented.
+fn default_glue(attrs: &FieldAttrs, shape: &Shape<'_>, context: &Type) -> TokenStream {
+    let none = quote!(::core::option::Option::None);
+
+    if let Some(literal) = &attrs.default {
+        return quote! {
+            ::core::option::Option::Some(unsafe {
+                ::html_form::FieldDefault::new(
+                    |_context| ::html_form::__private::default_literal(#literal),
+                    ::core::option::Option::Some(#literal),
+                )
+            })
+        };
+    }
+
+    // The type a default has to produce, which is the field's own. An
+    // `Option<T>` or a `Vec<T>` field asks for one `T`, because a default fills
+    // in one control.
+    let Some(value) = shape.value_type() else {
+        return none;
+    };
+    // A `from_str` field writes its values out with `Display`. Every other one
+    // has a `FormValue` impl to do it.
+    let from_str = attrs.from_str;
+
+    if attrs.default_std {
+        let produce = match from_str {
+            true => quote!(default_standard_displayed),
+            false => quote!(default_standard),
+        };
+        return quote! {
+            ::core::option::Option::Some(unsafe {
+                ::html_form::FieldDefault::new(
+                    |_context| ::html_form::__private::#produce::<#value>(),
+                    ::core::option::Option::None,
+                )
+            })
+        };
+    }
+
+    let Some(path) = &attrs.default_fn else {
+        return none;
+    };
+    let produce = match from_str {
+        true => quote!(default_displayed),
+        false => quote!(default_from),
+    };
+
+    quote! {
+        ::core::option::Option::Some(unsafe {
+            ::html_form::FieldDefault::new(
+                |__context| unsafe {
+                    // The context type and the field type are what the macro
+                    // knows. `DefaultSource` settles the rest: which of the two
+                    // arities the function has, and what it gave back. The
+                    // macro cannot see a signature.
+                    ::html_form::__private::#produce::<#context, #value, _, _>(__context, #path)
+                },
+                ::core::option::Option::None,
+            )
+        })
+    }
 }
 
 /// A label you wrote, or one derived from the field name.

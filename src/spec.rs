@@ -12,6 +12,14 @@
 //! render format borrow all of it in place of copying it. See
 //! [`FormView`](crate::FormView).
 //!
+//! The one thing a spec holds that is not data is a *function pointer*, which
+//! is `const` data all the same. A [`FieldDefault`] carries the glue that
+//! produces one field's default, and a [`Flattened`] carries the glue that
+//! hands a sub-form the context it asks for. Both take the render's context as
+//! an erased pointer, because one shared `const` cannot name the type of a
+//! context. `#[derive(Form)]` writes each function beside the spec that calls
+//! it.
+//!
 //! Every string a person reads is a [`Text`], such as a label, help text or a
 //! legend. A [`Text`] is either literal text or an i18n key. The crate never
 //! resolves a key itself. See [`FormView::localize`](crate::FormView::localize).
@@ -31,6 +39,8 @@
 //! that list out as given.
 
 use std::borrow::Cow;
+use std::fmt;
+use std::ptr::NonNull;
 
 use serde::{Serialize, Serializer};
 
@@ -565,6 +575,153 @@ impl Control {
     }
 }
 
+// ─── Defaults ─────────────────────────────────────────────────────────────────
+
+/// The glue that produces one field's default.
+///
+/// `context` points at the [`Context`](crate::Form::Context) of the form whose
+/// spec holds the default. It is an erased pointer because a [`FormSpec`] is
+/// one `const` that every render of every caller shares. It cannot name a
+/// context type, and it cannot hold a closure over one. `#[derive(Form)]`
+/// writes the two halves together: the function that reads the pointer as a
+/// `&Context`, and the spec that carries the function.
+///
+/// What comes back is the string the field renders, whatever type the value
+/// started as. That is the one type every default has in common, so the crate
+/// names it here in place of erasing it too.
+pub type Generate = unsafe fn(context: *const ()) -> Cow<'static, str>;
+
+/// The value a field starts a render with.
+///
+/// One slot holds every kind of default. `default = "web"` is a literal written
+/// into the spec, `default` alone is the field type's own `Default::default()`,
+/// and `default = fresh_token` is a function the form runs once per render, for
+/// the values a `const` cannot hold: a CSRF token, a nonce, today's date. Each
+/// becomes a [`Generate`] the derive writes for that one field, so the renderer
+/// makes one call and needs to know nothing about which kind of default it got,
+/// nor about the type the value started as.
+///
+/// A default belongs to *rendering* alone. It never stands in while parsing. If
+/// it did, a submission that left the CSRF token out would arrive holding a
+/// fresh and valid one.
+#[derive(Clone, Copy)]
+pub struct FieldDefault {
+    generate: Generate,
+    literal: Option<&'static str>,
+}
+
+impl FieldDefault {
+    /// Declare a default, as the derive does.
+    ///
+    /// `literal` is the text for a default written into the spec, and `None`
+    /// for one only a call can produce. The crate calls `generate` either way.
+    /// What it reads off `literal` is whether the spec already says what the
+    /// value is, which is what tells a value the form owns from one written
+    /// down. See [`FieldDefault::is_generated`].
+    ///
+    /// # Safety
+    ///
+    /// `generate` has to read its `context` as nothing but a shared reference
+    /// to the [`Context`](crate::Form::Context) of the form whose [`FormSpec`]
+    /// holds this default. One pointer reaches every field of one render, and
+    /// only that form knows what it points at.
+    pub const unsafe fn new(generate: Generate, literal: Option<&'static str>) -> Self {
+        Self { generate, literal }
+    }
+
+    /// The text of a default written into the spec, and `None` for one that
+    /// only a call produces.
+    pub const fn literal(&self) -> Option<&'static str> {
+        self.literal
+    }
+
+    /// Whether the form produces this value by calling something, rather than
+    /// reading it out of the spec.
+    ///
+    /// A field that holds such a value holds one nobody typed. A hidden one is
+    /// therefore the form's own on every path: the crate mints it again in
+    /// place of echoing what came in. See [`FieldSpec::reset`].
+    pub const fn is_generated(&self) -> bool {
+        self.literal.is_none()
+    }
+
+    /// Run the glue.
+    ///
+    /// # Safety
+    ///
+    /// `context` has to point at a live [`Context`](crate::Form::Context) of
+    /// the form this default belongs to, which is what [`FieldDefault::new`]
+    /// promised the glue would receive.
+    pub(crate) unsafe fn value(&self, context: *const ()) -> Cow<'static, str> {
+        // SAFETY: the caller vouches for the context, and `new` for the glue.
+        unsafe { (self.generate)(context) }
+    }
+}
+
+impl fmt::Debug for FieldDefault {
+    /// The literal, or `<generated>` for one only a call produces. The address
+    /// of the glue says nothing a reader of a spec can use.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.literal {
+            Some(literal) => literal.fmt(f),
+            None => f.write_str("<generated>"),
+        }
+    }
+}
+
+impl PartialEq for FieldDefault {
+    /// Two defaults are the same when the same glue produces them. A literal
+    /// says so outright, and for a generated one there is nothing to compare
+    /// but the function itself.
+    fn eq(&self, other: &Self) -> bool {
+        self.literal == other.literal && std::ptr::fn_addr_eq(self.generate, other.generate)
+    }
+}
+
+/// How an enclosing form's context becomes the one a flattened sub-form's own
+/// defaults receive.
+///
+/// It is [`Provides::provide`](crate::Provides::provide) with the types erased,
+/// for the reason [`Generate`] erases them: one `const` spec describes every
+/// render, and the two forms need not share a context type.
+#[derive(Clone, Copy)]
+pub struct Provider(unsafe fn(context: *const ()) -> *const ());
+
+impl Provider {
+    /// The enclosing context, handed down as it stands.
+    ///
+    /// That is what a sub-form which shares the enclosing form's context type
+    /// asks for, and it is the whole of what the blanket
+    /// `impl<C> Provides<C> for C` does.
+    pub const IDENTITY: Self = Self(|context| context);
+
+    /// Declare a bridge, as the derive does for `#[field(flatten)]`.
+    ///
+    /// # Safety
+    ///
+    /// The call has to read its argument as nothing but a shared reference to
+    /// the [`Context`](crate::Form::Context) of the form whose [`FormSpec`]
+    /// holds this flatten, and to give back a pointer to a live context of the
+    /// sub-form's own type.
+    pub const unsafe fn new(provide: unsafe fn(context: *const ()) -> *const ()) -> Self {
+        Self(provide)
+    }
+
+    /// # Safety
+    ///
+    /// `context` has to point at a live context of the enclosing form.
+    pub(crate) unsafe fn provide(self, context: *const ()) -> *const () {
+        // SAFETY: the caller vouches for the context, and `new` for the bridge.
+        unsafe { (self.0)(context) }
+    }
+}
+
+impl fmt::Debug for Provider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Provider")
+    }
+}
+
 // ─── Fields and forms ─────────────────────────────────────────────────────────
 
 /// Everything the crate knows about a single field at compile time.
@@ -578,17 +735,28 @@ pub struct FieldSpec {
     pub control: Control,
     /// The value must be present and not empty.
     pub required: bool,
-    /// The value a blank form starts with. It also applies when the submission
-    /// leaves the field out. It does *not* apply when the submission sends the
-    /// field empty, so that a user can still clear a field.
+    /// The value a blank form starts with, and the glue that produces it.
     ///
-    /// This is the *literal* default, the one a spec can hold. The other kind
-    /// is `#[field(default = path)]`, a value the form produces anew for every
-    /// render. That kind cannot live in a `const`, so
-    /// [`Form::generate_defaults`](crate::Form::generate_defaults) produces it
-    /// instead. That call is also the only one that may take the render's
-    /// context.
-    pub default: Option<&'static str>,
+    /// It applies to a render and to nothing else. A blank form shows it, and
+    /// so does a field that [resets](FieldSpec::reset). A parse never reads it:
+    /// a submission that left a field out left it out. See [`FieldDefault`],
+    /// which holds a literal and a generated default alike.
+    pub default: Option<FieldDefault>,
+    /// The field shows its default on *every* render, and never what the
+    /// submission or the record holds.
+    ///
+    /// It is what a field the form owns rather than the user needs: a CSRF
+    /// token, a nonce, a password box that must not come back filled in. The
+    /// value the form made is the only one worth showing, and a rejected token
+    /// sent back would make the retry fail exactly as the first attempt did.
+    ///
+    /// This is the whole answer by the time a spec exists, and the renderer
+    /// asks nothing else. `#[field(reset)]` writes it down. Where a field says
+    /// nothing, the derive decides it: a **hidden** control whose default is
+    /// [generated](FieldDefault::is_generated) resets on its own, because it
+    /// can hold nothing a caller would miss. `#[field(reset = false)]` turns
+    /// even that off.
+    pub reset: bool,
     pub placeholder: Option<Text>,
     /// Help text. The crate renders it next to the control and points
     /// `aria-describedby` at it.
@@ -612,6 +780,7 @@ impl FieldSpec {
         control: Control::TEXT,
         required: false,
         default: None,
+        reset: false,
         placeholder: None,
         help: None,
         autocomplete: None,
@@ -670,6 +839,11 @@ pub struct Flattened {
     /// A legend. The built-in renderer puts it above the group.
     pub legend: Option<Text>,
     pub spec: &'static FormSpec,
+    /// What the sub-form's own defaults receive in place of the enclosing
+    /// form's context. [`Provider::IDENTITY`] is right wherever the two forms
+    /// share a context type, which is every flatten the derive writes without
+    /// a [`Provides`](crate::Provides) impl of its own.
+    pub context: Provider,
 }
 
 /// One item in a form's field list.
@@ -763,7 +937,23 @@ impl FormSpec {
     /// nothing, because a resolved name *is* the borrowed name in the spec.
     /// Only a field reached through a non-empty prefix needs a new name.
     pub fn walk(&self, mut visit: impl FnMut(ResolvedField)) {
-        self.walk_in("", None, 0, &mut visit);
+        self.walk_in("", None, 0, None, &mut visit);
+    }
+
+    /// [`FormSpec::walk`], with the context that the fields' own defaults
+    /// receive. It is the walk a render makes, and the only one that can run a
+    /// generated default.
+    ///
+    /// # Safety
+    ///
+    /// `context` has to point at a live
+    /// [`Context`](crate::Form::Context) of the form this spec describes.
+    pub(crate) unsafe fn walk_with_context(
+        &self,
+        context: NonNull<()>,
+        mut visit: impl FnMut(ResolvedField),
+    ) {
+        self.walk_in("", None, 0, Some(context), &mut visit);
     }
 
     // `dyn FnMut`, not a second generic parameter. The recursion would
@@ -773,6 +963,7 @@ impl FormSpec {
         prefix: &str,
         group: Option<&'static Text>,
         depth: usize,
+        context: Option<NonNull<()>>,
         visit: &mut dyn FnMut(ResolvedField),
     ) {
         assert!(
@@ -786,11 +977,22 @@ impl FormSpec {
                     name: join(prefix, field.name),
                     spec: field,
                     group,
+                    context,
                 }),
                 Entry::Flatten(flat) => {
                     let nested = join(prefix, flat.prefix);
                     let group = flat.legend.as_ref().or(group);
-                    flat.spec.walk_in(&nested, group, depth + 1, visit);
+                    // The sub-form's defaults read the context its own `Form`
+                    // impl names, which the enclosing one supplies.
+                    let context = context.map(|context| {
+                        // SAFETY: the walk carries the context of the form
+                        // whose spec holds this flatten, which is what the
+                        // bridge was written to read.
+                        let provided = unsafe { flat.context.provide(context.as_ptr().cast()) };
+                        NonNull::new(provided.cast_mut())
+                            .expect("a context provider gives back a reference")
+                    });
+                    flat.spec.walk_in(&nested, group, depth + 1, context, visit);
                 }
             }
         }
@@ -838,6 +1040,31 @@ pub struct ResolvedField {
     pub spec: &'static FieldSpec,
     /// The legend of the innermost flattened group that holds this field.
     pub group: Option<&'static Text>,
+    /// The context this field's own default receives, which the walk resolved
+    /// through every flatten it passed. It is `None` for a walk that carries
+    /// none, which is every walk but a render's.
+    context: Option<NonNull<()>>,
+}
+
+impl ResolvedField {
+    /// The value this field starts a render with.
+    ///
+    /// It runs the glue in the spec, once, here, and only where the render asks
+    /// for it. A generated default is therefore never produced for a field that
+    /// is about to show what the user typed instead, which matters for a
+    /// generator that hands out something the server also records.
+    ///
+    /// A walk with no context can still answer for a literal, because no call
+    /// produces one. A generated default needs the render that asked for it.
+    pub(crate) fn default(&self) -> Option<Cow<'static, str>> {
+        let default = self.spec.default?;
+        match self.context {
+            // SAFETY: the walk carried the context of the form this field
+            // belongs to, which is the one its glue was written to read.
+            Some(context) => Some(unsafe { default.value(context.as_ptr().cast()) }),
+            None => default.literal().map(Cow::Borrowed),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1188,11 +1415,13 @@ mod tests {
                 prefix: "billing_",
                 legend: Some(Text::literal("Billing")),
                 spec: &ADDRESS,
+                context: Provider::IDENTITY,
             }),
             Entry::Flatten(Flattened {
                 prefix: "",
                 legend: None,
                 spec: &ADDRESS,
+                context: Provider::IDENTITY,
             }),
         ],
         ..FormSpec::DEFAULT
@@ -1267,6 +1496,7 @@ mod tests {
                 prefix: "x_",
                 legend: None,
                 spec: &LOOP,
+                context: Provider::IDENTITY,
             })],
             ..FormSpec::DEFAULT
         };

@@ -217,16 +217,16 @@ fn a_hand_written_form_fills_itself_in_and_renders_what_it_holds() {
     assert!(view.field("plan").unwrap().choices[1].selected);
 }
 
-/// The default body produces nothing. A form that says it generates defaults
-/// and then writes none simply renders its declared ones.
+/// Three members and a spec are the whole of the trait a hand-written form has
+/// to write. A default is part of the spec, so a form that has none writes
+/// nothing about defaults at all.
 #[test]
-fn a_form_that_promises_defaults_and_writes_none_gets_an_empty_set() {
+fn a_hand_written_form_writes_a_spec_and_two_methods_and_nothing_else() {
     struct Empty;
 
     impl Form for Empty {
         type Context = ();
         const SPEC: &'static FormSpec = &FormSpec::DEFAULT;
-        const GENERATES_DEFAULTS: bool = true;
 
         fn parse_in(_ctx: &mut ParseCtx<'_, Self::Context>) -> Option<Self> {
             Some(Empty)
@@ -235,17 +235,8 @@ fn a_form_that_promises_defaults_and_writes_none_gets_an_empty_set() {
         fn fill_in(&self, _values: &mut Values, _prefix: &str) {}
     }
 
-    let defaults = Empty::defaults_with_context(&()).expect("it promised some");
-    assert!(defaults.is_empty());
     assert!(Empty::render().fields.is_empty());
-}
-
-/// A form that promises none is not visited at all, which is what makes the
-/// mechanism free for nearly every form.
-#[test]
-fn a_form_that_promises_no_defaults_is_not_visited() {
-    const { assert!(!Signup::GENERATES_DEFAULTS) };
-    assert_eq!(Signup::defaults_with_context(&()), None);
+    assert!(Empty::submit(&Values::new()).is_valid());
 }
 
 // ─── The pairs of methods ─────────────────────────────────────────────────────

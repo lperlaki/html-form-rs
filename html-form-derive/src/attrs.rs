@@ -433,6 +433,16 @@ pub struct FieldAttrs {
     /// `default = path`: a function the crate calls once per render, not a
     /// value written into the spec.
     pub default_fn: Option<Path>,
+    /// `default` with nothing after it: the field type's own
+    /// `Default::default()`. A `const` cannot call that, so it too becomes glue
+    /// the spec holds.
+    pub default_std: bool,
+    /// `reset`: show the default on every render, and never what came in.
+    ///
+    /// Unwritten, so that the spec can fall back on the rule for a field the
+    /// form owns: a hidden control whose default the form produces resets
+    /// without being told to. `reset = false` turns that off.
+    pub reset: Option<bool>,
     pub placeholder: Option<TextAttr>,
     pub help: Option<TextAttr>,
     pub autocomplete: Option<String>,
@@ -491,28 +501,37 @@ impl FieldAttrs {
                     "label" => out.label = Some(meta.value()?.parse()?),
                     "required" => out.required = Some(parse_flag(&meta)?),
                     "optional" => out.required = Some(!parse_flag(&meta)?),
-                    // A literal is the value itself. Anything else names a
-                    // function that produces one at render time.
+                    // Bare, the field type's own `Default::default()`. With a
+                    // value, a literal is the value itself, and anything else
+                    // names a function that produces one at render time.
                     "default" => {
-                        let value = meta.value()?;
-                        if value.peek(Lit) {
-                            out.default = Some(lit_to_string(&value.parse()?)?);
+                        if !meta.input.peek(Token![=]) {
+                            out.default_std = true;
                         } else {
-                            out.default_fn = Some(value.parse().map_err(|e| {
-                                Error::new(
-                                    e.span(),
-                                    "expected a literal default or the path of a function \
-                                     returning one",
-                                )
-                            })?);
+                            let value = meta.value()?;
+                            if value.peek(Lit) {
+                                out.default = Some(lit_to_string(&value.parse()?)?);
+                            } else {
+                                out.default_fn = Some(value.parse().map_err(|e| {
+                                    Error::new(
+                                        e.span(),
+                                        "expected a literal default or the path of a function \
+                                         returning one",
+                                    )
+                                })?);
+                            }
                         }
-                        if out.default.is_some() && out.default_fn.is_some() {
+                        let written = usize::from(out.default.is_some())
+                            + usize::from(out.default_fn.is_some())
+                            + usize::from(out.default_std);
+                        if written > 1 {
                             return Err(meta.error(
-                                "`default` is either a literal or a function that produces one, \
-                                 not both",
+                                "`default` names one source: a literal, a function that produces \
+                                 one, or nothing at all for the field type's own `Default`",
                             ));
                         }
                     }
+                    "reset" => out.reset = Some(parse_flag(&meta)?),
                     "placeholder" => out.placeholder = Some(meta.value()?.parse()?),
                     "help" => out.help = Some(meta.value()?.parse()?),
                     "autocomplete" => {
@@ -533,9 +552,9 @@ impl FieldAttrs {
                     other => {
                         return Err(meta.error(format!(
                             "unknown `field` attribute `{other}`; expected one of: name, label, \
-                             required, optional, default, placeholder, help, autocomplete, id, \
-                             class, disabled, readonly, autofocus, validate, from_str, flatten, \
-                             prefix, legend, skip, attr, {}",
+                             required, optional, default, reset, placeholder, help, autocomplete, \
+                             id, class, disabled, readonly, autofocus, validate, from_str, \
+                             flatten, prefix, legend, skip, attr, {}",
                             Constraints::KEYS
                         )));
                     }

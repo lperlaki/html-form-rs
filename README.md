@@ -305,8 +305,10 @@ to build.
 | `label = t("key")` | `label`, `help`, `placeholder` and `legend` also take an i18n key |
 | `name = "e-mail"` | The submitted name. Defaults to the field name |
 | `required` / `optional` | Overrides the inferred default |
-| `default = "…"` | Value shown on a blank form |
-| `default = path::to::fn` | A new value for each render: a token, a nonce, today's date. Write `fn() -> impl Into<Cow<'static, str>>`, or `fn(&Context) -> …`. Never a fallback while parsing |
+| `default = "…"` | Value shown on a blank form. Never a fallback while parsing |
+| `default` | The same, taken from the field type's own `Default::default()` |
+| `default = path::to::fn` | A new value for each render: a token, a nonce, today's date. Write `fn() -> FieldType`, or `fn(&Context) -> FieldType`, or either one returning something that converts into it |
+| `reset` / `reset = false` | Show the default on every render, and never what was submitted or stored. For a field the form owns rather than the user: a token, a password box. A hidden field with `default = path::to::fn` resets untold, and `reset = false` turns that off |
 | `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept` | Validation |
 | `disabled`, `readonly`, `autofocus`, `multiple` | Flags |
 | `choices = SOME_CONST` | A `&'static [Choice]` |
@@ -489,14 +491,16 @@ impl FormValue for Slug {
         // …
     }
 
-    fn to_form_value(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.0)
+    fn to_form_value(&self) -> Cow<'static, str> {
+        Cow::Owned(self.0.clone())
     }
 }
 ```
 
-The derive fills in `DEFAULT` and `validate_form_value`. They default to "none"
-and "nothing to add".
+The derive fills in `DEFAULT`, `into_form_value` and `validate_form_value`. They
+default to "none", "borrow and copy" and "nothing to add". Write
+`into_form_value(self)` where the type has a `String` to move: the crate calls
+it wherever it owns the value, such as a default a form produced.
 
 `CONTROL` is one constant, not five. The control a type renders as *and* the
 constraints it implies travel together, so `u32` says
@@ -666,16 +670,38 @@ let view = article.render_filled();
 
 ## Defaults, blank values and checkboxes
 
-- `default` fills a blank form. It also applies when a field is **absent** from
-  a submission.
-- The default never replaces a field that is **present but empty**. That is how
-  a user clears a field.
+- `default` fills a blank form, and that is all it does. **Parsing never reads
+  it.** A field a submission left out is a field with no value: an optional one
+  parses as empty, and a required one is reported as missing.
 - An unchecked checkbox submits nothing at all, so absence means `false`. It
   never means "use the default". A user must check a `required` checkbox.
-- A **generated** default (`default = some_fn`) belongs to render time only. It
-  is never a fallback while parsing. Once there are values to show, such as a
-  submission to re-render or a record to edit, the crate mints only a hidden
-  field again. A visible field shows what it received, an empty value included.
+- A literal (`default = "web"`), the field type's own `Default` (`default` with
+  nothing after it) and a **generated** one (`default = some_fn`) share one slot
+  in the spec, and the derive writes the glue for all three. The last two hand
+  back the field's own type, or anything that converts into it, and the crate
+  writes it out as it writes out every other value.
+- Once there are values to show, such as a submission to re-render or a record
+  to edit, the crate mints only a hidden field whose default it generates. A
+  visible field shows what it received, an empty value included. Where a render
+  shows what it received, the generator is not called at all.
+- `#[field(reset)]` says the same about any other field. It shows its default on
+  every render, and never what was submitted or stored. The derive settles this
+  once, in the spec, so `reset = false` also turns off the rule above.
+
+```rust
+#[derive(Form)]
+#[form(context = Session)]
+struct ChangePassword {
+    // A hidden field the form generates resets already. `reset` says it where
+    // the crate cannot tell on its own: a literal default, or a visible control.
+    #[field(type = "hidden", default = issued_token)]
+    csrf_token: String,
+
+    // No default, so a rejected submission comes back with an empty box.
+    #[field(type = "password", reset, minlength = 12)]
+    new_password: String,
+}
+```
 
 ## Feature flags
 
@@ -683,7 +709,7 @@ let view = article.render_filled();
 |---|---|---|
 | `derive` | on | `#[derive(Form)]`, `#[derive(FormValue)]`, `#[derive(FormChoice)]` |
 | `pattern` | on | Server-side `pattern` checking with `regex-lite`. Without it, the crate still renders `pattern`, and the browser enforces it |
-| `axum` | off | `Outcome<T>` is an axum 0.8 extractor |
+| `axum` | off | `Outcome<T>` and `axum::Form<T, R>` are axum 0.8 extractors |
 
 ## Framework integration
 
@@ -717,7 +743,7 @@ An object is a submission, and so is a list of `[name, value]` pairs:
 | `{"email": "a@b.com"}` | one field |
 | `{"age": 36}`, `{"newsletter": true}` | the string a form would have submitted. A field is a string whatever type a client sent |
 | `{"tag": ["x", "y"]}` | a name submitted more than once, as a checkbox group submits it |
-| `{"age": null}` | a name the client did *not* submit, so `Option` sees nothing and a default still applies. To clear a field, a client sends `""`, as the browser does |
+| `{"age": null}` | a name the client did *not* submit, so `Option` sees nothing. To clear a field, a client sends `""`, as the browser does |
 | `[["tag", "x"], ["tag", "y"]]` | the same, and every repeat keeps its place |
 | `{"billing": {"street": "…"}}` | rejected. A form submits a flat list of names, so flatten the struct and send `billing_street` |
 
@@ -754,8 +780,77 @@ An extractor has nothing but the request, so `Outcome<T>` extracts only a form
 whose `Context` is `()`. Submit a form that asks for a context in the handler,
 where the context is: take the body, then call `T::submit_with_context`.
 
-The feature depends on `axum-core`, not `axum`. See `examples/axum_signup.rs`,
-run with `cargo run --example axum_signup --features axum`.
+#### Rejecting with the form
+
+`html_form::axum::Form<T, R>` is the other extractor. It rejects a failed
+validation with the form itself, so the handler runs only on a valid submission
+and holds nothing else. `R` is a `Renderer`: one type, written once, that turns
+a failed submission into the response for every form that shares a layout.
+
+```rust
+use html_form::axum::{Form, Renderer};
+
+struct Page;
+
+impl<T: html_form::Form<Context = ()>> Renderer<T> for Page {
+    fn render(view: FormView, _context: &()) -> impl IntoResponse {
+        Html(format!("<h1>Check the form</h1>{}", view.to_html()))
+    }
+}
+
+// No case left to match on: the submission is valid, or the handler never ran.
+async fn signup(form: Form<Signup, Page>) -> Html<String> {
+    Html(format!("Welcome, {}!", form.data.email))
+}
+```
+
+A renderer builds a page, not a status. `html_form::axum::Builtin` is the one
+around `view.to_html()`, for a form that is the whole answer.
+
+The rejection is not a response yet. `Rejection<T, R, C>` keeps each refusal in
+the type it refused as: `C` is whatever the context's own extractor rejects
+with, and the invalid case is an `Invalid<T, R>` holding the `FormView`, the
+`FormErrors` and the context. The renderer runs when a response is asked for, so
+a layer can log what failed, and a handler can map the rejection to something
+else without ever rendering the page:
+
+```rust
+let Rejection::Invalid(invalid) = rejection else { /* … */ };
+tracing::info!("{} field(s) rejected", invalid.errors.len());
+let response = invalid.into_response(); // `R` runs here.
+```
+
+The status is decided here too, because what went wrong is what a status is
+about:
+
+| Rejection | Status |
+|---|---|
+| A body that is not `application/x-www-form-urlencoded` | 415 Unsupported Media Type |
+| A body the server could not read | the one that rejection came with, 400 among them |
+| A context that turned the request down | whatever that extractor answers with |
+| A submission that failed validation | 400 Bad Request |
+
+`Form<T, R>` is also a response. A handler that returns one shows the form
+filled in from the value, through the same renderer, so the page a `GET` puts up
+and the page a failed `POST` puts up are the same page. Nothing rejected it, so
+it is a plain 200:
+
+```rust
+async fn edit(id: Id) -> Form<Signup, Page> {
+    Form::new(load(id).await)
+}
+```
+
+This extractor also reads the form's `Context` out of the request, which is what
+`Outcome<T>` cannot do. The context has to be an axum extractor of its own
+(`T::Context: FromRequestParts<S>`), which a session read from a cookie already
+is. A form that declares no context asks for `()`, and axum extracts that from
+any request, so a form that needs nothing needs nothing done to it.
+
+The feature depends on `axum-core`, not `axum`. `examples/axum_signup.rs` is a
+whole application on `Form<T, R>` — one `Renderer` for the layout, a blank form,
+a submission and an edit page — run with
+`cargo run --example axum_signup --features axum`.
 
 `multipart/form-data` bodies are out of scope. Parse them with a multipart crate
 and pass the text fields to `Values::from_pairs`.

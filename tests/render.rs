@@ -2,7 +2,7 @@
 
 //! Rendering a blank form: the spec, the view and the built-in HTML.
 
-use html_form::{FieldKind, Form};
+use html_form::{FieldKind, Form, Outcome};
 use std::borrow::Cow;
 
 #[derive(Form)]
@@ -179,10 +179,170 @@ fn a_generated_default_is_produced_afresh_for_every_render() {
     assert_eq!(Booking::render().field("seat").unwrap().value, None);
 }
 
+/// A generator hands back the field's own type, and the crate writes the value
+/// out the way the field writes out every other value it holds. Nothing has to
+/// make a string of it first, and nothing can make one of the wrong shape.
+#[test]
+fn a_generated_default_is_the_type_the_field_holds() {
+    use std::fmt;
+    use std::str::FromStr;
+
+    #[derive(Debug, PartialEq)]
+    struct Day(String);
+
+    impl FromStr for Day {
+        type Err = &'static str;
+        fn from_str(raw: &str) -> Result<Self, Self::Err> {
+            Ok(Day(raw.to_owned()))
+        }
+    }
+
+    impl fmt::Display for Day {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    fn usual_party() -> u32 {
+        2
+    }
+    fn today() -> Day {
+        Day("2026-08-07".to_owned())
+    }
+    // Anything the field's type is made from will do, so a value that already
+    // exists costs nothing to hand over.
+    fn walk_in() -> &'static str {
+        "walk-in"
+    }
+
+    #[derive(Form, Debug)]
+    struct Booking {
+        #[field(label = "Seats", default = usual_party)]
+        seats: u32,
+        // A field converted by its own `FromStr` takes its own type too, and
+        // `Display` writes it out, exactly as it does for a stored record.
+        #[field(from_str, type = "date", default = today)]
+        day: Day,
+        #[field(label = "Reference", default = walk_in)]
+        reference: String,
+        // An `Option<T>` field asks for one `T`: a default fills in one control.
+        #[field(label = "Table", default = usual_party)]
+        table: Option<u32>,
+    }
+
+    let view = Booking::render();
+    let value = |name: &str| view.field(name).unwrap().value.clone();
+    assert_eq!(value("seats").as_deref(), Some("2"));
+    assert_eq!(value("day").as_deref(), Some("2026-08-07"));
+    assert_eq!(value("reference").as_deref(), Some("walk-in"));
+    assert_eq!(value("table").as_deref(), Some("2"));
+}
+
+/// `default` with nothing after it is the field type's own `Default`. A `const`
+/// cannot call that either, so it is glue in the spec like every other default.
+#[test]
+fn a_bare_default_is_the_field_types_own() {
+    #[derive(Default, Debug, PartialEq)]
+    struct Size(String);
+
+    impl html_form::FormValue for Size {
+        const CONTROL: html_form::Control = html_form::Control::TEXT;
+
+        fn parse_form_value(raw: &str) -> Result<Self, html_form::ValueError> {
+            Ok(Size(raw.to_owned()))
+        }
+
+        fn to_form_value(&self) -> Cow<'static, str> {
+            Cow::Owned(self.0.clone())
+        }
+    }
+
+    impl Default for Order {
+        fn default() -> Self {
+            Order {
+                seats: 1,
+                size: Size("medium".to_owned()),
+                note: String::new(),
+                extras: Vec::new(),
+            }
+        }
+    }
+
+    #[derive(Form, Debug)]
+    struct Order {
+        #[field(label = "Seats", default)]
+        seats: u32,
+        // Whatever the type says its default is, whether or not the crate
+        // wrote the type.
+        #[field(label = "Size", default)]
+        size: Size,
+        #[field(label = "Note", default)]
+        note: String,
+        // One `T`, as any default is: it fills in one control.
+        #[field(label = "Extras", default)]
+        extras: Vec<u32>,
+    }
+
+    let view = Order::render();
+    let value = |name: &str| view.field(name).unwrap().value.clone();
+    assert_eq!(value("seats").as_deref(), Some("0"));
+    assert_eq!(value("size").as_deref(), Some(""));
+    assert_eq!(value("note").as_deref(), Some(""));
+    assert_eq!(value("extras").as_deref(), Some("0"));
+
+    // It is the *field type's* default, not the form's: `Order::default()` says
+    // one seat and a medium, and neither reaches the render.
+    assert_eq!(Order::default().seats, 1);
+
+    // And it fills a render only, as every default does.
+    assert!(Order::from_urlencoded("size=large&note=&extras=").is_err());
+}
+
+/// A generator may hand out something the server records as it goes, so the
+/// crate calls it where the render uses the value and nowhere else.
+#[test]
+fn a_generator_is_not_run_for_a_value_the_render_will_not_show() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static ISSUED: AtomicUsize = AtomicUsize::new(0);
+
+    fn ticket() -> String {
+        format!("t{}", ISSUED.fetch_add(1, Ordering::Relaxed))
+    }
+
+    #[derive(Form)]
+    struct Booking {
+        #[field(label = "Reference", default = ticket)]
+        reference: String,
+    }
+
+    // A blank form shows the value, so it is produced.
+    assert_eq!(
+        Booking::render()
+            .field("reference")
+            .unwrap()
+            .value
+            .as_deref(),
+        Some("t0")
+    );
+    assert_eq!(ISSUED.load(Ordering::Relaxed), 1);
+
+    // A re-render shows what the user typed, so there is nothing to produce.
+    let view = Booking::render_submitted(
+        &html_form::Values::parse("reference=mine"),
+        &html_form::FormErrors::new(),
+    );
+    assert_eq!(
+        view.field("reference").unwrap().value.as_deref(),
+        Some("mine")
+    );
+    assert_eq!(ISSUED.load(Ordering::Relaxed), 1, "no second ticket");
+}
+
 #[test]
 fn a_generated_default_is_the_forms_own_only_where_it_is_hidden() {
-    // A generator may hand back anything a `Cow<'static, str>` is made from,
-    // so a value that was already around costs nothing to return.
+    // A generator may hand back anything the field's type is made from, so a
+    // value that was already around costs nothing to return.
     fn fresh() -> &'static str {
         "fresh"
     }
@@ -264,6 +424,129 @@ fn an_edit_form_shows_what_the_record_holds_and_not_a_generated_default() {
         view.field("edited_on").unwrap().value.as_deref(),
         Some("2026-08-06")
     );
+}
+
+#[test]
+fn a_field_that_resets_shows_its_default_and_not_what_came_in() {
+    fn fresh() -> &'static str {
+        "fresh"
+    }
+
+    #[derive(Form)]
+    struct Renewal {
+        // Visible, so without `reset` the crate would echo the rejected one.
+        #[field(reset, default = fresh)]
+        token: String,
+        // A literal default resets just as a generated one does.
+        #[field(reset, default = "web")]
+        source: String,
+        // Nothing to fall back on, so the box comes back empty.
+        #[field(type = "password", reset)]
+        password: String,
+    }
+
+    let view = Renewal::render_submitted(
+        &html_form::Values::parse("token=stale&source=email&password=hunter2"),
+        &html_form::FormErrors::new(),
+    );
+    assert_eq!(view.field("token").unwrap().value.as_deref(), Some("fresh"));
+    assert_eq!(view.field("source").unwrap().value.as_deref(), Some("web"));
+    assert_eq!(view.field("password").unwrap().value, None);
+
+    // A record to edit is the same case: none of these fields is the record's.
+    let view = Renewal {
+        token: "stale".to_owned(),
+        source: "email".to_owned(),
+        password: "hunter2".to_owned(),
+    }
+    .render_filled();
+    assert_eq!(view.field("token").unwrap().value.as_deref(), Some("fresh"));
+    assert_eq!(view.field("source").unwrap().value.as_deref(), Some("web"));
+    assert_eq!(view.field("password").unwrap().value, None);
+}
+
+/// Resetting is settled where the form is declared, not where it renders. The
+/// spec carries the answer, and a field may write over the one the derive
+/// worked out for it.
+#[test]
+fn whether_a_field_resets_is_decided_in_the_spec() {
+    fn fresh() -> &'static str {
+        "fresh"
+    }
+
+    #[derive(Form)]
+    struct Renewal {
+        // Hidden and generated, so it is the form's own and resets untold.
+        #[field(type = "hidden", default = fresh)]
+        token: String,
+        // The same field, told to keep what it was sent.
+        #[field(type = "hidden", default = fresh, reset = false)]
+        echoed: String,
+        // Hidden, but the value is written into the spec: a literal is as much
+        // the record's to carry as any other value.
+        #[field(type = "hidden", default = "web")]
+        source: String,
+        #[field(label = "Reference")]
+        reference: String,
+    }
+
+    let resets = |name: &str| Renewal::SPEC.field(name).unwrap().spec.reset;
+    assert!(resets("token"));
+    assert!(!resets("echoed"));
+    assert!(!resets("source"));
+    assert!(!resets("reference"));
+
+    let view = Renewal::render_submitted(
+        &html_form::Values::parse("token=stale&echoed=stale&source=email&reference=mine"),
+        &html_form::FormErrors::new(),
+    );
+    let value = |name: &str| view.field(name).unwrap().value.clone();
+    assert_eq!(value("token").as_deref(), Some("fresh"));
+    assert_eq!(value("echoed").as_deref(), Some("stale"));
+    assert_eq!(value("source").as_deref(), Some("email"));
+    assert_eq!(value("reference").as_deref(), Some("mine"));
+}
+
+#[test]
+fn a_box_that_resets_returns_to_the_state_a_blank_form_starts_in() {
+    #[derive(Form)]
+    struct Preferences {
+        #[field(reset, default = "true")]
+        newsletter: bool,
+        #[field(default = "true")]
+        receipts: bool,
+    }
+
+    // An unchecked box submits nothing at all. The one that resets is ticked
+    // again all the same, and the one beside it stays as the user left it.
+    let view =
+        Preferences::render_submitted(&html_form::Values::parse(""), &html_form::FormErrors::new());
+    assert!(view.field("newsletter").unwrap().checked);
+    assert!(!view.field("receipts").unwrap().checked);
+}
+
+#[test]
+fn resetting_says_what_the_next_render_shows_and_nothing_about_parsing() {
+    #[derive(Form, Debug)]
+    struct ChangePassword {
+        #[field(type = "password", reset, minlength = 12)]
+        new_password: String,
+    }
+
+    let outcome = ChangePassword::submit_urlencoded("new_password=short");
+    let Outcome::Invalid { errors, view } = outcome else {
+        panic!("`short` is under the minimum length");
+    };
+
+    // The check read what the user sent, and its message is on the field.
+    assert!(errors.has_field("new_password"));
+    assert!(view.field("new_password").unwrap().has_errors);
+    // Only the value is gone.
+    assert_eq!(view.field("new_password").unwrap().value, None);
+
+    // And a submission that passes is parsed as any other.
+    let ok = ChangePassword::from_urlencoded("new_password=long-enough-here").unwrap();
+    assert_eq!(ok.new_password, "long-enough-here");
 }
 
 #[test]

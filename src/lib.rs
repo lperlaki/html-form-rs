@@ -371,24 +371,99 @@
 //! assert_eq!(view.field("csrf_token").unwrap().value.as_deref(), Some("3f9c…"));
 //! ```
 //!
-//! # Defaults the form produces itself
+//! # Defaults
 //!
-//! `default = "…"` is a value written into the spec. `default = some_fn` is a
-//! function the crate calls once per render, for the defaults a constant cannot
-//! hold: a CSRF token, a nonce, today's date. It may return any string type.
+//! A default is what a **render** starts a field with, and that is the whole of
+//! what it is. Parsing never reaches for one. A submission that left a field
+//! out left it out, and a form that filled the gap in would be answering its
+//! own question: a request carrying no CSRF token at all would arrive holding a
+//! valid one.
 //!
-//! A generated default belongs to *rendering* alone. It is never a fallback
-//! while parsing. If it were, a submission that left the CSRF token out would
-//! arrive with a fresh and valid one.
+//! There are three ways to write one, and one slot in the spec holds any of
+//! them:
 //!
-//! On a blank form it is the value, as any default is. Once there are values to
-//! show, such as a submission to re-render or a record to edit, the crate mints
-//! only a **hidden** field again. Nobody typed that field, so there is nothing
-//! of the caller's to keep. And a rejected token sent back would make the retry
-//! fail exactly as the first attempt did. Every other control shows what it
-//! received, an empty value included. A form that filled a visible field in
-//! would put a value the caller never had in front of the user. The user could
-//! then send it back without noticing.
+//! * `default = "…"` is a value written into the spec.
+//! * `default`, with nothing after it, is the field type's own
+//!   `Default::default()`.
+//! * `default = some_fn` is a function the crate calls once per render, for the
+//!   defaults a constant cannot hold: a CSRF token, a nonce, today's date.
+//!
+//! The last two hand back the field's own type, or anything that converts into
+//! it, and the crate writes the value out the way the field writes out every
+//! other value it holds.
+//!
+//! ```
+//! use html_form::Form;
+//!
+//! #[derive(Form, Debug)]
+//! struct Booking {
+//!     #[field(label = "Seats", default = usual_party)]
+//!     seats: u32,
+//!     #[field(label = "Reference", default = "walk-in")]
+//!     reference: String,
+//!     #[field(label = "Notes", default)]
+//!     notes: String,
+//! }
+//!
+//! fn usual_party() -> u32 {
+//!     2
+//! }
+//!
+//! let view = Booking::render();
+//! assert_eq!(view.field("seats").unwrap().value.as_deref(), Some("2"));
+//! assert_eq!(view.field("reference").unwrap().value.as_deref(), Some("walk-in"));
+//! assert_eq!(view.field("notes").unwrap().value.as_deref(), Some(""));
+//!
+//! // And a submission is read as it arrived, defaults or no defaults.
+//! assert!(Booking::from_urlencoded("reference=r-1").is_err());
+//! ```
+//!
+//! On a blank form the default is the value, whichever kind it is. Once there
+//! are values to show, such as a submission to re-render or a record to edit,
+//! the crate mints only a **hidden** field whose default it *generates*. Nobody
+//! typed that field, so there is nothing of the caller's to keep, and a rejected
+//! token sent back would make the retry fail exactly as the first attempt did.
+//! Every other control shows what it received, an empty value included. A form
+//! that filled a visible field in would put a value the caller never had in
+//! front of the user. The user could then send it back without noticing.
+//!
+//! Where a render shows what it received, the crate does not call the generator
+//! at all. A function that hands out a token the server also records therefore
+//! runs once for each render that uses its value, and not once more.
+//!
+//! # Fields that reset
+//!
+//! `#[field(reset)]` says that of any field. The field shows its default on
+//! every render — a blank form, a submission to re-render, a record to edit —
+//! and never what came in. Declare it on a field the form owns rather than the
+//! user: a token in a control the user sees, a password box that must not come
+//! back filled in, a literal the retry has to start over from.
+//!
+//! A **hidden** field whose default the form *generates* resets without being
+//! told to, because it can hold nothing a caller would miss. That is the one
+//! case the crate decides for you, it decides it where the form is declared,
+//! and `#[field(reset = false)]` turns it off. Everything the renderer needs is
+//! then in one place: [`FieldSpec::reset`].
+//!
+//! ```
+//! use html_form::Form;
+//!
+//! #[derive(Form)]
+//! struct ChangePassword {
+//!     #[field(type = "password", reset, minlength = 12)]
+//!     new_password: String,
+//! }
+//!
+//! // The submission was rejected, and the box comes back empty all the same.
+//! let outcome = ChangePassword::submit_urlencoded("new_password=short");
+//! let view = outcome.view().unwrap();
+//! assert_eq!(view.field("new_password").unwrap().value, None);
+//! assert!(view.field("new_password").unwrap().has_errors);
+//! ```
+//!
+//! The field still *parses* as any other does. Resetting is about what the next
+//! render shows, so a validator sees the value the user sent, and the error it
+//! reports stays on the field.
 //!
 //! # What the form's own functions receive
 //!
@@ -512,9 +587,11 @@
 //! # Framework integration
 //!
 //! Nothing here depends on an HTTP stack. [`Values::from_pairs`] takes whatever
-//! a framework's body parser produced. With the `axum` feature, [`Outcome<T>`]
-//! is also an axum 0.8 extractor. See `FormRejection` and
-//! `examples/axum_signup.rs`.
+//! a framework's body parser produced. The `axum` feature adds two axum 0.8
+//! extractors, and they differ in who answers a failed validation:
+//! [`Outcome<T>`] hands it to the handler, and
+//! [`axum::Form<T, R>`](axum::Form) rejects with the form again, rendered by
+//! `R`. See the [`axum`] module and `examples/axum_signup.rs`.
 //!
 //! A submission also does not have to be a form. [`Values`] is `Serialize` and
 //! `Deserialize`, so a JSON body is a submission too. You get the same struct,
@@ -573,14 +650,15 @@
 //! from the spec, and only a `#[field(flatten, prefix = "…")]` makes a name
 //! that the crate has to build.
 //!
-//! A context costs one reference passed down the walk, and nothing else. The
-//! defaults a form generates are the one thing the crate has to produce before
-//! it builds the view. [`Form::GENERATES_DEFAULTS`] is const-evaluated through
-//! the whole flatten tree, so a form that declares no such default pays nothing
-//! for the mechanism.
+//! A context costs one pointer passed down the walk, and nothing else. A
+//! default costs one indirect call, made where the render reads the value and
+//! nowhere else. There is no pass over the form to collect defaults first, and
+//! no `Values` built to carry them, so a form that declares none pays nothing
+//! for the mechanism and a form that declares one pays for that one field. See
+//! [`FieldDefault`].
 
 #[cfg(feature = "axum")]
-mod axum;
+pub mod axum;
 mod context;
 mod error;
 #[cfg(feature = "html")]
@@ -602,9 +680,10 @@ pub use html::escape;
 pub use kind::FieldKind;
 pub use runtime::ParseCtx;
 pub use spec::{
-    Attr, Bounds, Choice, ChoiceStyle, ChooseControl, Control, Entry, FieldSpec, FileControl,
-    Flattened, FormEncType, FormMethod, FormSpec, NumberControl, NumberFormat, ResolvedField,
-    TemporalControl, TemporalFormat, Text, TextControl, TextFormat, TextareaControl,
+    Attr, Bounds, Choice, ChoiceStyle, ChooseControl, Control, Entry, FieldDefault, FieldSpec,
+    FileControl, Flattened, FormEncType, FormMethod, FormSpec, Generate, NumberControl,
+    NumberFormat, Provider, ResolvedField, TemporalControl, TemporalFormat, Text, TextControl,
+    TextFormat, TextareaControl,
 };
 pub use validate::{FieldValidation, FieldValidator, FormValidation, FormValidator};
 pub use value::FormValue;
@@ -700,15 +779,6 @@ pub trait Form: Sized {
     /// `const` context can read `SPEC`.
     const SPEC: &'static FormSpec;
 
-    /// Whether this form, or anything it flattens, has a default it produces at
-    /// render time rather than one written into the spec.
-    ///
-    /// The crate const-evaluates this through the whole flatten tree. A form
-    /// that has no such default — nearly every form — therefore pays nothing
-    /// for the mechanism, because the walk in
-    /// [`generate_defaults`](Self::generate_defaults) never runs.
-    const GENERATES_DEFAULTS: bool = false;
-
     /// Parse the form out of `ctx`, and honor the flatten prefix in scope.
     ///
     /// Returns `None` when it could not produce a value. It pushes errors into
@@ -720,30 +790,9 @@ pub trait Form: Sized {
     /// existing record into the form it came from.
     fn fill_in(&self, values: &mut Values, prefix: &str);
 
-    /// Produce the defaults this form makes anew for one render, under fully
-    /// qualified field names. That is every `#[field(default = path)]`.
-    ///
-    /// Rendering is the whole of it. A generated default never stands in while
-    /// *parsing*. If it did, a submission that left the CSRF token out would
-    /// arrive with a fresh and valid one.
-    fn generate_defaults(values: &mut Values, prefix: &str, context: &Self::Context) {
-        let _ = (values, prefix, context);
-    }
-
     /// [`Form::SPEC`], for a call site that would rather not name the type.
     fn spec() -> &'static FormSpec {
         Self::SPEC
-    }
-
-    /// What this form generates for one render, ready for
-    /// [`FormView::build`]. A form that declares no generated default gets
-    /// `None`, and the crate does not visit it.
-    fn defaults_with_context(context: &Self::Context) -> Option<Values> {
-        Self::GENERATES_DEFAULTS.then(|| {
-            let mut values = Values::new();
-            Self::generate_defaults(&mut values, "", context);
-            values
-        })
     }
 
     /// Parse and validate a submission.
@@ -824,12 +873,7 @@ pub trait Form: Sized {
 
     /// A blank form, with each field showing its declared default.
     fn render_with_context(context: &Self::Context) -> FormView {
-        FormView::build(
-            Self::SPEC,
-            None,
-            Self::defaults_with_context(context).as_ref(),
-            &FormErrors::new(),
-        )
+        FormView::build::<Self>(None, &FormErrors::new(), context)
     }
 
     /// A blank form, for a form that needs no context.
@@ -871,12 +915,7 @@ pub trait Form: Sized {
         errors: &FormErrors,
         context: &Self::Context,
     ) -> FormView {
-        FormView::build(
-            Self::SPEC,
-            Some(values),
-            Self::defaults_with_context(context).as_ref(),
-            errors,
-        )
+        FormView::build::<Self>(Some(values), errors, context)
     }
 
     /// [`render_submitted_with_context`](Form::render_submitted_with_context),
@@ -890,12 +929,7 @@ pub trait Form: Sized {
 
     /// The form filled in from an existing value — an edit form.
     fn render_filled_with_context(&self, context: &Self::Context) -> FormView {
-        FormView::build(
-            Self::SPEC,
-            Some(&self.to_values()),
-            Self::defaults_with_context(context).as_ref(),
-            &FormErrors::new(),
-        )
+        FormView::build::<Self>(Some(&self.to_values()), &FormErrors::new(), context)
     }
 
     /// [`render_filled_with_context`](Form::render_filled_with_context), for

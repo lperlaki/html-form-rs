@@ -33,12 +33,14 @@
 //! a template sees exactly what it always did.
 
 use std::borrow::Cow;
+use std::ptr::NonNull;
 
 use serde::Serialize;
 
+use crate::Form;
 use crate::error::{FieldError, FormErrors};
 use crate::kind::FieldKind;
-use crate::spec::{Attr, Choice, FormEncType, FormMethod, FormSpec, Text, sanitize_id};
+use crate::spec::{Attr, Choice, FormEncType, FormMethod, ResolvedField, Text, sanitize_id};
 use crate::values::Values;
 
 /// Split a spec [`Text`] into the string to render now and the key that still
@@ -274,37 +276,34 @@ fn enctype_str(enctype: Option<FormEncType>) -> Option<&'static str> {
 }
 
 impl FormView {
-    /// Build the view for `spec`.
+    /// Build the view of the form `F`.
     ///
     /// Pass `values` to re-render a submission, usually with the errors it
     /// produced. Pass `None` for a blank form, where each field shows its
     /// declared default.
     ///
-    /// `generated` is what the form produced for *this* render. It comes from
-    /// [`Form::defaults_with_context`](crate::Form::defaults_with_context),
-    /// under fully qualified field names, and it is `None` for a form that
-    /// declares no generated default. It stays apart from `values` because the
-    /// two differ. On a re-render, the crate mints a value the form made itself
-    /// again. It sends a value the user typed back as it was.
-    pub fn build(
-        spec: &FormSpec,
+    /// `context` is what the form's own defaults receive, and it is `&()` for a
+    /// form that asks for none. The form supplies both halves — the spec and
+    /// the type of the context its glue reads — which is what lets this stay a
+    /// safe call over the erased pointer a [`FieldDefault`](crate::FieldDefault)
+    /// holds.
+    pub fn build<F: Form>(
         values: Option<&Values>,
-        generated: Option<&Values>,
         errors: &FormErrors,
+        context: &F::Context,
     ) -> FormView {
         // The walk goes straight into the view. It does not collect the
         // flattened field list first, so it builds only the `FieldView`s.
         let mut fields = Vec::new();
-        spec.walk(|resolved| {
-            fields.push(FieldView::build(
-                resolved.name,
-                resolved.spec,
-                resolved.group,
-                values,
-                generated,
-                errors,
-            ));
-        });
+        // SAFETY: the context is `F::Context`, and the spec is `F::SPEC`. The
+        // derive writes each field's glue to read exactly that, and a
+        // hand-written `FieldDefault` promised the same of the form it went in.
+        unsafe {
+            F::SPEC.walk_with_context(NonNull::from(context).cast(), |resolved| {
+                fields.push(FieldView::build(resolved, values, errors));
+            });
+        }
+        let spec = F::SPEC;
 
         let (form_errors, form_error_keys) = split_messages(errors.form_errors().iter());
 
@@ -427,26 +426,39 @@ impl FormView {
 }
 
 impl FieldView {
-    fn build(
-        name: Cow<'static, str>,
-        spec: &'static crate::spec::FieldSpec,
-        group: Option<&Text>,
-        values: Option<&Values>,
-        generated: Option<&Values>,
-        errors: &FormErrors,
-    ) -> FieldView {
+    fn build(resolved: ResolvedField, values: Option<&Values>, errors: &FormErrors) -> FieldView {
+        let spec = resolved.spec;
         let control = &spec.control;
         let kind = control.kind();
-        let full_name = &name;
 
-        // What the form generated for this render, if anything, wins over the
-        // literal in the spec. The crate produced it once, before the walk. A
-        // generator called twice would give out two different tokens.
-        let generated = generated
-            .and_then(|generated| generated.get(full_name))
-            .map(|value| Cow::Owned(value.to_owned()));
-        let is_generated = generated.is_some();
-        let default = generated.or_else(|| spec.default.map(Cow::Borrowed));
+        // A field that resets belongs to the form, not to the user. Nobody
+        // typed it, and a rejected token sent back would make the retry fail
+        // exactly as the first attempt did. So the field renders as it does on
+        // a blank form, and drops what came in. Dropping it here, before
+        // anything reads it, is also what keeps the crate from copying a
+        // submission it is about to throw away.
+        //
+        // The spec is the whole answer. A hidden field whose default the form
+        // produces already resets there, without being told to. See
+        // `FieldSpec::reset`.
+        let values = if spec.reset { None } else { values };
+
+        // The default is what a blank form starts with, so it is wanted only
+        // where there is nothing else to show. Asking for it any later would
+        // run a generator whose value the render is about to drop, and a
+        // generator may be handing out something the server also records.
+        //
+        // A checkable control asks all the same: for a radio or a checkbox
+        // group the default *is* the value the control carries, and the
+        // submission only says whether that value came back.
+        let default = match values.is_none() || control.is_checkable() {
+            true => resolved.default(),
+            false => None,
+        };
+
+        // Everything from here on reads the name, which the view keeps.
+        let ResolvedField { name, group, .. } = resolved;
+        let full_name = &name;
 
         let checked = if control.is_checkable() {
             match values {
@@ -473,30 +485,15 @@ impl FieldView {
         // A literal default comes from the spec, borrowed. Only what the user
         // typed has to be copied out of the submission.
         let current: Vec<Cow<'static, str>> = match values {
-            Some(values) => {
-                // A hidden field with a generated default belongs to the form,
-                // not to the user. Nobody typed it, and a rejected token sent
-                // back would make the retry fail exactly as the first attempt
-                // did. So the crate mints it again.
-                //
-                // Nothing else is. Once there are values to show, such as a
-                // submission to re-render or a record to edit, an empty field
-                // is empty because that is what it holds. A form that filled it
-                // in would put a value the caller never had in front of the
-                // user, for them to save without noticing.
-                let regenerate = is_generated && kind == FieldKind::Hidden;
-                if regenerate {
-                    default.into_iter().collect()
-                } else {
-                    // The crate decides this before it copies anything, so it
-                    // never collects the submission that a regenerated field is
-                    // about to drop.
-                    values
-                        .all(full_name)
-                        .map(|value| Cow::Owned(value.to_owned()))
-                        .collect()
-                }
-            }
+            // Once there are values to show, such as a submission to re-render
+            // or a record to edit, an empty field is empty because that is what
+            // it holds. A form that filled it in would put a value the caller
+            // never had in front of the user, for them to save without
+            // noticing.
+            Some(values) => values
+                .all(full_name)
+                .map(|value| Cow::Owned(value.to_owned()))
+                .collect(),
             // A checkbox default says whether the box starts checked. It does
             // not say what to put in a `value` attribute, because a box with no
             // value submits "on".

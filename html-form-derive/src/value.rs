@@ -27,6 +27,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         implied,
         parse,
         render,
+        render_owned,
         inherited,
     } = match attrs.from_str {
         true => {
@@ -78,7 +79,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
             const CONTROL: ::html_form::Control = #control;
 
             const DEFAULT: ::core::option::Option<&'static str> =
-                ::html_form::__private::or_default(#written, #inherited);
+                ::html_form::__private::or_literal(#written, #inherited);
 
             fn parse_form_value(
                 __raw: &str,
@@ -86,8 +87,12 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 #parse
             }
 
-            fn to_form_value(&self) -> ::std::borrow::Cow<'_, str> {
+            fn to_form_value(&self) -> ::std::borrow::Cow<'static, str> {
                 #render
+            }
+
+            fn into_form_value(self) -> ::std::borrow::Cow<'static, str> {
+                #render_owned
             }
 
             #validate
@@ -95,7 +100,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
     })
 }
 
-/// The four things the choice of conversion settles.
+/// The five things the choice of conversion settles.
 struct Conversion {
     /// The control the conversion implies, before `#[value(...)]` applies.
     implied: TokenStream,
@@ -103,6 +108,10 @@ struct Conversion {
     parse: TokenStream,
     /// The body of `to_form_value`.
     render: TokenStream,
+    /// The body of `into_form_value`, which writes the same string out of a
+    /// value nothing else holds. A wrapper hands the whole value on, so the one
+    /// type that has a string to move can move it.
+    render_owned: TokenStream,
     /// The default this type has before `#[value(default = ...)]`. It is the
     /// wrapped type's default, where there is one to take.
     inherited: TokenStream,
@@ -130,6 +139,10 @@ impl Conversion {
             render: quote!(::std::borrow::Cow::Owned(
                 ::std::string::ToString::to_string(self)
             )),
+            // `Display` reads the value either way, so owning it saves nothing.
+            render_owned: quote!(::std::borrow::Cow::Owned(
+                ::std::string::ToString::to_string(&self)
+            )),
             inherited: quote!(::core::option::Option::None),
         }
     }
@@ -146,6 +159,9 @@ impl Conversion {
             implied: quote!(<#inner as ::html_form::FormValue>::CONTROL),
             parse: quote!(::core::result::Result::Ok(#construct)),
             render: quote!(<#inner as ::html_form::FormValue>::to_form_value(&self.#member)),
+            render_owned: quote!(<#inner as ::html_form::FormValue>::into_form_value(
+                self.#member
+            )),
             inherited: quote!(<#inner as ::html_form::FormValue>::DEFAULT),
         }
     }

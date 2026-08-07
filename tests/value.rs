@@ -76,10 +76,21 @@ fn a_field_of_the_type_needs_none_of_it_repeated() {
     assert_eq!(progress.max.as_deref(), Some("100"));
 }
 
+/// A type's default is the field's default, so it follows the same rule: it
+/// fills a blank form, and a parse still reads what arrived.
 #[test]
-fn the_types_default_fills_a_blank_form_and_stands_in_for_an_absent_field() {
-    let invite = Invite::from_urlencoded("colleague=ada@example.com&handle=ada")
-        .expect("progress is absent");
+fn the_types_default_fills_a_blank_form_and_no_more() {
+    assert_eq!(
+        Invite::render().field("progress").unwrap().value.as_deref(),
+        Some("50")
+    );
+
+    let errors = Invite::from_urlencoded("colleague=ada@example.com&handle=ada")
+        .expect_err("progress is absent");
+    assert!(errors.has_field("progress"));
+
+    let invite = Invite::from_urlencoded("colleague=ada@example.com&handle=ada&progress=50")
+        .expect("every field arrived");
     assert_eq!(invite.progress, Percent { value: 50 });
 }
 
@@ -240,8 +251,8 @@ fn a_hand_written_impl_still_needs_only_the_two_conversions() {
             Ok(Bare(raw.to_owned()))
         }
 
-        fn to_form_value(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed(&self.0)
+        fn to_form_value(&self) -> std::borrow::Cow<'static, str> {
+            std::borrow::Cow::Owned(self.0.clone())
         }
     }
 

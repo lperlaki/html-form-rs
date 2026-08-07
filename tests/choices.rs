@@ -215,8 +215,8 @@ impl FormValue for Slug {
         }
     }
 
-    fn to_form_value(&self) -> Cow<'_, str> {
-        Cow::Borrowed(&self.0)
+    fn to_form_value(&self) -> Cow<'static, str> {
+        Cow::Owned(self.0.clone())
     }
 }
 

@@ -76,8 +76,9 @@ fn a_valid_submission_round_trips_into_the_struct() {
     assert_eq!(form.age, Some(36));
     assert!(form.accept_terms);
     assert_eq!(form.languages, ["rust", "go"]);
-    // Absent, so the declared default applies.
-    assert_eq!(form.source, "web");
+    // Absent from the body, and a default fills in a *render*, so what the
+    // struct holds is what arrived: nothing.
+    assert_eq!(form.source, "");
 }
 
 #[test]
@@ -176,18 +177,32 @@ fn blank_and_absent_optionals_are_both_none() {
     assert_eq!(Signup::from_urlencoded(&absent).unwrap().age, None);
 }
 
+/// A default says what a blank *form* shows. A parse reads what arrived, and a
+/// field the submission left out arrived as nothing.
 #[test]
-fn a_default_applies_when_absent_but_not_when_cleared() {
-    let with_default = Signup::from_urlencoded(&good_body()).unwrap();
-    assert_eq!(with_default.source, "web");
+fn a_default_fills_a_render_and_never_a_parse() {
+    // The blank form offers it…
+    assert_eq!(
+        Signup::render().field("source").unwrap().value.as_deref(),
+        Some("web")
+    );
+    // …and the parse of a body without it gets nothing.
+    let absent = Signup::from_urlencoded(&good_body()).unwrap();
+    assert_eq!(absent.source, "");
 
-    // Submitting the field empty must be able to clear it, default or not.
+    // Submitting the field empty is the same answer, and submitting a value is
+    // the only way to hold one.
     let cleared = Signup::from_urlencoded(&format!("{}&source=", good_body())).unwrap();
     assert_eq!(cleared.source, "");
+    let sent = Signup::from_urlencoded(&format!("{}&source=email", good_body())).unwrap();
+    assert_eq!(sent.source, "email");
 }
 
+/// The rule holds whichever kind of default it is, which is what keeps a form
+/// from answering its own question. A submission carrying no token at all must
+/// not arrive holding a valid one.
 #[test]
-fn a_generated_default_never_stands_in_while_parsing() {
+fn a_default_never_stands_in_for_a_field_a_submission_left_out() {
     fn issued() -> String {
         "issued".to_owned()
     }
@@ -196,17 +211,26 @@ fn a_generated_default_never_stands_in_while_parsing() {
     struct Ticket {
         #[field(type = "hidden", default = issued)]
         token: String,
+        #[field(type = "hidden", default = "web")]
+        source: String,
     }
 
-    // Where a literal default is a fallback for an absent field, a generated
-    // one must not be: the form would be answering its own question, and a
-    // submission carrying no token at all would arrive holding a valid one.
-    let errors = Ticket::from_urlencoded("").unwrap_err();
-    assert!(matches!(
-        errors.field("token").next().unwrap().kind,
-        ErrorKind::Required
-    ));
-    assert_eq!(Ticket::from_urlencoded("token=abc").unwrap().token, "abc");
+    // A body missing one of them is a body missing a required field, whether
+    // the form could have produced the value or had it written down already.
+    for (missing, body) in [("token", "source=web"), ("source", "token=abc")] {
+        let errors = Ticket::from_urlencoded(body).unwrap_err();
+        assert!(
+            matches!(
+                errors.field(missing).next().unwrap().kind,
+                ErrorKind::Required
+            ),
+            "{missing} was not reported as missing"
+        );
+    }
+
+    let ticket = Ticket::from_urlencoded("token=abc&source=email").unwrap();
+    assert_eq!(ticket.token, "abc");
+    assert_eq!(ticket.source, "email");
 }
 
 #[test]

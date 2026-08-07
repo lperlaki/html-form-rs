@@ -41,8 +41,14 @@ use crate::spec::{Bounds, Control, NumberControl};
 ///         }
 ///     }
 ///
-///     fn to_form_value(&self) -> Cow<'_, str> {
-///         Cow::Borrowed(&self.0)
+///     fn to_form_value(&self) -> Cow<'static, str> {
+///         Cow::Owned(self.0.clone())
+///     }
+///
+///     // Optional. The crate calls it where it owns the value, so the string
+///     // this type already holds moves out in place of being copied.
+///     fn into_form_value(self) -> Cow<'static, str> {
+///         Cow::Owned(self.0)
 ///     }
 /// }
 /// ```
@@ -91,7 +97,28 @@ pub trait FormValue: Sized {
 
     /// Render the value back into the string a browser would submit, so you can
     /// show an existing record in the form it came from.
-    fn to_form_value(&self) -> Cow<'_, str>;
+    ///
+    /// The string outlives the value it came from. Everything the crate does
+    /// with one — a [`Values`](crate::Values) entry, a
+    /// [`FieldView`](crate::FieldView), a default a form produced — outlives the
+    /// borrow a value could lend, so a `Cow` tied to `&self` would only be
+    /// copied at once. A type that has a `&'static str` to give still gives it
+    /// without copying anything.
+    fn to_form_value(&self) -> Cow<'static, str>;
+
+    /// The same string, from a value the caller is done with.
+    ///
+    /// The crate calls this wherever it owns the value, which is every default
+    /// a form produces. A type that holds a `String` can then move it out in
+    /// place of copying it. That is the whole of what this is for, so the
+    /// default body simply borrows and copies, and a type with nothing to save
+    /// leaves it alone.
+    ///
+    /// It has to give back the same string
+    /// [`to_form_value`](FormValue::to_form_value) would.
+    fn into_form_value(self) -> Cow<'static, str> {
+        self.to_form_value()
+    }
 
     /// The check the *type* makes of a value, after it decides whether the
     /// submitted string converts at all.
@@ -125,8 +152,14 @@ impl FormValue for String {
         Ok(raw.to_owned())
     }
 
-    fn to_form_value(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self)
+    fn to_form_value(&self) -> Cow<'static, str> {
+        Cow::Owned(self.clone())
+    }
+
+    /// A `String` *is* the string a submission carries, so where the crate owns
+    /// one it moves rather than copies.
+    fn into_form_value(self) -> Cow<'static, str> {
+        Cow::Owned(self)
     }
 }
 
@@ -141,7 +174,7 @@ impl FormValue for char {
         }
     }
 
-    fn to_form_value(&self) -> Cow<'_, str> {
+    fn to_form_value(&self) -> Cow<'static, str> {
         Cow::Owned(self.to_string())
     }
 }
@@ -160,7 +193,7 @@ impl FormValue for bool {
         }
     }
 
-    fn to_form_value(&self) -> Cow<'_, str> {
+    fn to_form_value(&self) -> Cow<'static, str> {
         Cow::Borrowed(if *self { "true" } else { "false" })
     }
 }
@@ -190,7 +223,7 @@ macro_rules! impl_int {
                 })
             }
 
-            fn to_form_value(&self) -> Cow<'_, str> {
+            fn to_form_value(&self) -> Cow<'static, str> {
                 Cow::Owned(self.to_string())
             }
         }
@@ -232,7 +265,7 @@ macro_rules! impl_float {
                 }
             }
 
-            fn to_form_value(&self) -> Cow<'_, str> {
+            fn to_form_value(&self) -> Cow<'static, str> {
                 Cow::Owned(self.to_string())
             }
         }
@@ -262,11 +295,19 @@ mod tests {
         );
         assert_eq!(String::parse_form_value(""), Ok(String::new()));
         assert_eq!(String::from("ada").to_form_value(), "ada");
-        // Borrowed, because a string is already what a submission carries.
-        assert!(matches!(
-            String::from("ada").to_form_value(),
-            Cow::Borrowed(_)
-        ));
+    }
+
+    /// The string a value writes itself out as outlives the value, because
+    /// everything the crate does with one does. A type with a `&'static str` to
+    /// give still gives it without copying anything.
+    #[test]
+    fn a_written_value_outlives_the_value_it_came_from() {
+        fn escapes<T: FormValue>(value: T) -> Cow<'static, str> {
+            value.to_form_value()
+        }
+        assert_eq!(escapes(String::from("ada")), "ada");
+        assert_eq!(escapes(36u32), "36");
+        assert!(matches!(escapes(true), Cow::Borrowed("true")));
     }
 
     #[test]

@@ -96,7 +96,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
                 }
             }
 
-            fn to_form_value(&self) -> ::std::borrow::Cow<'_, str> {
+            fn to_form_value(&self) -> ::std::borrow::Cow<'static, str> {
                 ::std::borrow::Cow::Borrowed(match self {
                     #(#render_arms,)*
                 })

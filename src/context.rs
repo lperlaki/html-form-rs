@@ -41,8 +41,6 @@
 //! }
 //! ```
 
-use std::borrow::Cow;
-
 /// Marker: the function ignores the context.
 ///
 /// You never write it down. The crate infers it from the function's own arity.
@@ -85,11 +83,16 @@ impl<C> Provides<C> for C {
 ///
 /// | Signature | The crate calls it with |
 /// |---|---|
-/// | `fn() -> impl Into<Cow<'static, str>>` | nothing |
-/// | `fn(&Context) -> impl Into<Cow<'static, str>>` | the render's context |
+/// | `fn() -> impl Into<Field>` | nothing |
+/// | `fn(&Context) -> impl Into<Field>` | the render's context |
 ///
-/// The return type is any string: `String` for a token you mint on the spot,
-/// `&'static str` for one that already exists.
+/// `Field` is the field's own type, so a date field takes the date type it
+/// holds, and the crate writes it out with the conversion the field already
+/// uses. Anything that converts into that type works too, which is what lets a
+/// `String` field take a `&'static str` for a value that already exists.
+///
+/// A `Vec<T>` or an `Option<T>` field asks for one `T`, because a default fills
+/// in one control.
 ///
 /// ```
 /// use html_form::Form;
@@ -115,27 +118,27 @@ impl<C> Provides<C> for C {
 /// let view = Comment::render_with_context(&session);
 /// assert_eq!(view.field("csrf_token").unwrap().value.as_deref(), Some("3f9c"));
 /// ```
-pub trait DefaultSource<C, M> {
+pub trait DefaultSource<C, V, M> {
     /// The value this field starts with, produced anew for one render.
-    fn generate(&self, context: &C) -> Cow<'static, str>;
+    fn generate(&self, context: &C) -> V;
 }
 
-impl<F, S, C> DefaultSource<C, WithoutContext> for F
+impl<F, S, C, V> DefaultSource<C, V, WithoutContext> for F
 where
     F: Fn() -> S,
-    S: Into<Cow<'static, str>>,
+    S: Into<V>,
 {
-    fn generate(&self, _context: &C) -> Cow<'static, str> {
+    fn generate(&self, _context: &C) -> V {
         self().into()
     }
 }
 
-impl<F, S, C> DefaultSource<C, WithContext> for F
+impl<F, S, C, V> DefaultSource<C, V, WithContext> for F
 where
     F: Fn(&C) -> S,
-    S: Into<Cow<'static, str>>,
+    S: Into<V>,
 {
-    fn generate(&self, context: &C) -> Cow<'static, str> {
+    fn generate(&self, context: &C) -> V {
         self(context).into()
     }
 }

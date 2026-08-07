@@ -10,11 +10,9 @@ use serde::{Deserialize, Serialize, Serializer};
 ///
 /// Most often these come from a submission, and [`Values::parse`] builds one
 /// exactly as it came off the wire. It is also the crate's one carrier for
-/// "fully qualified field name to value". So it is what
+/// "fully qualified field name to value", so it is what
 /// [`Form::to_values`](crate::Form::to_values) writes an existing record out
-/// as, and what
-/// [`Form::generate_defaults`](crate::Form::generate_defaults) produces for a
-/// render.
+/// as, for an edit form to render.
 ///
 /// The order stays, and a name may repeat. That is how a checkbox group and a
 /// `<select multiple>` submit their values.

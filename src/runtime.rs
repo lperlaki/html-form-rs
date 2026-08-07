@@ -24,26 +24,18 @@ enum Raw<'a> {
     Present(&'a str),
 }
 
-/// Read a field's single raw value. Use its declared default when the name is
-/// absent.
+/// Read a field's single raw value.
 ///
-/// A name that *is* present but empty never uses the default, so a user can
-/// still clear a field that has one.
-///
-/// Only the *literal* default is a fallback. A generated one, `default =
-/// some_fn`, belongs to rendering alone. Using it here would let a form answer
-/// its own question. A submission that left the CSRF token out would then
-/// arrive with a fresh one.
-fn read<'r>(values: &'r Values, spec: &'r FieldSpec, full_name: &str) -> Raw<'r> {
+/// A default never stands in here. It describes what a *render* starts with,
+/// and a parse reads what arrived. A field left out of the submission was left
+/// out: if the crate filled it in, a form would answer its own question, and a
+/// submission carrying no CSRF token at all would arrive holding a valid one.
+/// See [`FieldSpec::default`](crate::FieldSpec::default).
+fn read<'r>(values: &'r Values, full_name: &str) -> Raw<'r> {
     match values.get(full_name) {
         Some(value) if !is_blank(value) => Raw::Present(value),
         Some(_) => Raw::Blank,
-        None => match spec.default {
-            // A checkbox default describes the blank form only. An absent
-            // checkbox means "unchecked", never "use the checked default".
-            Some(default) if !spec.control.is_checkable() => Raw::Present(default),
-            _ => Raw::Absent,
-        },
+        None => Raw::Absent,
     }
 }
 
@@ -143,7 +135,7 @@ impl<'a, C> ParseCtx<'a, C> {
     /// truly optional field as an `Option<T>`.
     pub fn field<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<T> {
         let full = self.full_name(spec.name);
-        match read(self.values, spec, &full) {
+        match read(self.values, &full) {
             Raw::Present(raw) => self.convert::<T>(spec, &full, raw),
             Raw::Absent | Raw::Blank => {
                 if spec.required {
@@ -165,7 +157,7 @@ impl<'a, C> ParseCtx<'a, C> {
     /// `None`.
     pub fn optional<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<Option<T>> {
         let full = self.full_name(spec.name);
-        match read(self.values, spec, &full) {
+        match read(self.values, &full) {
             Raw::Present(raw) => self.convert::<T>(spec, &full, raw).map(Some),
             Raw::Absent | Raw::Blank => {
                 if spec.required {
@@ -333,16 +325,14 @@ pub mod __private {
     use std::fmt::Display;
     use std::str::FromStr;
 
-    use crate::Form;
     use crate::context::{DefaultSource, Provides};
     use crate::error::{FieldError, ValueError};
     use crate::spec::{
-        Bounds, Choice, ChoiceStyle, ChooseControl, Control, FileControl, NumberControl,
-        TextControl, TextFormat, TextareaControl, join,
+        Bounds, Choice, ChoiceStyle, ChooseControl, Control, FieldDefault, FileControl,
+        NumberControl, TextControl, TextFormat, TextareaControl,
     };
     use crate::validate::FieldValidation;
     use crate::value::FormValue;
-    use crate::values::Values;
 
     /// A value converted by its own [`FromStr`] and [`Display`], not by a
     /// [`FormValue`](crate::FormValue) impl. `#[field(from_str)]` wraps a
@@ -377,46 +367,100 @@ pub mod __private {
             }
         }
 
-        fn to_form_value(&self) -> Cow<'_, str> {
+        fn to_form_value(&self) -> Cow<'static, str> {
             Cow::Owned(self.0.to_string())
         }
     }
 
-    /// Record what a `#[field(default = path)]` function produced for one
-    /// render, under the field's fully qualified name.
+    // ─── The glue behind a default ────────────────────────────────────────────
+    //
+    // A `FieldDefault` is one function pointer, and the derive writes the
+    // function it points at. These are the bodies of those functions: the crate
+    // holds the unsafe halves, and the macro emits nothing but a call. Each one
+    // takes the render's context as an erased pointer, reads it as the type the
+    // form declared, and gives back the string the field renders. See
+    // [`FieldDefault`](crate::FieldDefault).
+
+    /// The glue for a default written into the spec.
     ///
-    /// The function may take the context or ignore it, and it may return
-    /// whichever string type suits it. [`DefaultSource`] joins the two, so the
-    /// derive emits the same call either way. The derive cannot see a
-    /// signature.
-    pub fn generate_default<C, M>(
-        values: &mut Values,
-        prefix: &str,
-        name: &'static str,
-        source: impl DefaultSource<C, M>,
-        context: &C,
-    ) {
-        values.push(join(prefix, name), source.generate(context));
+    /// This reads no context, so a literal fits a form of any kind. It is a
+    /// function all the same, because a spec holds one slot for a default and a
+    /// function pointer cannot close over the text.
+    pub fn default_literal(literal: &'static str) -> Cow<'static, str> {
+        Cow::Borrowed(literal)
     }
 
-    /// The defaults of a flattened sub-form, under the prefix the flatten adds.
-    /// This is the rendering half of
-    /// [`ParseCtx::nested`](super::ParseCtx::nested), and it follows the same
-    /// rules. The sub-form receives whatever this form's context [`Provides`]
-    /// in place of its own.
+    /// The glue for `#[field(default = path)]`.
     ///
-    /// A sub-form that generates nothing gets no walk, and the crate never
-    /// builds its prefix. The const decides that per instantiation, so a form
-    /// with no generated default anywhere compiles this down to nothing.
-    pub fn nested_defaults<T: Form, C: Provides<T::Context>>(
-        values: &mut Values,
-        prefix: &str,
-        nested: &'static str,
-        context: &C,
-    ) {
-        if T::GENERATES_DEFAULTS {
-            T::generate_defaults(values, &join(prefix, nested), Provides::provide(context));
-        }
+    /// The function may take the context or ignore it, and it may give back the
+    /// field's own type or anything that converts into it. [`DefaultSource`]
+    /// joins those, so the derive emits the same call whichever one you wrote.
+    /// The derive cannot see a signature.
+    ///
+    /// The value is written out the way the field writes out every other value
+    /// it holds, so a default and a filled-in record reach the render as the
+    /// same string.
+    ///
+    /// # Safety
+    ///
+    /// `context` has to point at a live `C`.
+    pub unsafe fn default_from<C, V: FormValue, M, S: DefaultSource<C, V, M>>(
+        context: *const (),
+        source: S,
+    ) -> Cow<'static, str> {
+        // SAFETY: the derive pairs this call with the form whose context is
+        // `C`, and the renderer passes that form's context.
+        let context = unsafe { read_context::<C>(context) };
+        // The value was made for this call and nothing else holds it, so a type
+        // that can hand its string over does.
+        source.generate(context).into_form_value()
+    }
+
+    /// [`default_from`], for a `#[field(from_str)]` field, which writes its
+    /// values out with `Display` in place of a [`FormValue`] impl.
+    ///
+    /// # Safety
+    ///
+    /// The same as [`default_from`].
+    pub unsafe fn default_displayed<C, V: Display, M, S: DefaultSource<C, V, M>>(
+        context: *const (),
+        source: S,
+    ) -> Cow<'static, str> {
+        // SAFETY: the same as `default_from`.
+        let context = unsafe { read_context::<C>(context) };
+        Cow::Owned(source.generate(context).to_string())
+    }
+
+    /// The glue for a default that a *type* declares, which is a literal the
+    /// macro cannot read: [`FormValue::DEFAULT`] is an associated const.
+    fn default_of_type<V: FormValue>(_context: *const ()) -> Cow<'static, str> {
+        default_literal(V::DEFAULT.expect("`or_default` only reaches for a default the type has"))
+    }
+
+    /// The glue for `#[field(default)]`, which is the field type's own
+    /// `Default::default()`.
+    ///
+    /// It reads no context. It is a function for the reason a literal is one:
+    /// a `const` cannot call `Default::default`, and the spec holds one slot.
+    pub fn default_standard<V: Default + FormValue>() -> Cow<'static, str> {
+        V::default().into_form_value()
+    }
+
+    /// [`default_standard`], for a `#[field(from_str)]` field.
+    pub fn default_standard_displayed<V: Default + Display>() -> Cow<'static, str> {
+        Cow::Owned(V::default().to_string())
+    }
+
+    /// A *type's* default: the one `#[value(...)]` wrote, or the one the type
+    /// it wraps carries. Both are literals, because
+    /// [`FormValue::DEFAULT`](crate::FormValue::DEFAULT) is a `const` and a
+    /// `const` cannot call a function. A default produced per render belongs to
+    /// a field, which is what [`or_default`] merges.
+    pub const fn or_literal(
+        written: Option<&'static str>,
+        inherited: Option<&'static str>,
+    ) -> Option<&'static str> {
+        or_str(written, inherited)
     }
 
     /// A field's default: the one written on the field, or, where the field
@@ -425,11 +469,77 @@ pub mod __private {
     /// [`control`] makes the same trade for the control, in the same place. The
     /// macro cannot see what
     /// [`FormValue::DEFAULT`](crate::FormValue::DEFAULT) is either.
-    pub const fn or_default(
-        explicit: Option<&'static str>,
-        implied: Option<&'static str>,
-    ) -> Option<&'static str> {
-        or_str(explicit, implied)
+    pub const fn or_default<V: FormValue>(written: Option<FieldDefault>) -> Option<FieldDefault> {
+        match written {
+            Some(default) => Some(default),
+            None => match V::DEFAULT {
+                // SAFETY: this glue reads no context, so it holds for a form of
+                // any kind.
+                Some(literal) => {
+                    Some(unsafe { FieldDefault::new(default_of_type::<V>, Some(literal)) })
+                }
+                None => None,
+            },
+        }
+    }
+
+    /// Whether a field shows its default on every render.
+    ///
+    /// `#[field(reset)]` settles it outright, and `reset = false` settles it
+    /// the other way. Where the field says nothing, one kind of field resets on
+    /// its own: a hidden control whose default the form *produces*. Nobody
+    /// typed such a field, it can hold nothing a caller would miss, and a
+    /// rejected token sent back would make the retry fail exactly as the first
+    /// attempt did.
+    ///
+    /// This is a `const fn` because the macro cannot see either half of that
+    /// rule. A control can come from the field's Rust type, and so can a
+    /// default. [`FieldSpec::reset`](crate::FieldSpec::reset) is what the
+    /// renderer reads, and it is the whole answer by the time a spec exists.
+    pub const fn or_reset(
+        written: Option<bool>,
+        control: &Control,
+        default: &Option<FieldDefault>,
+    ) -> bool {
+        match written {
+            Some(reset) => reset,
+            None => match default {
+                Some(default) => {
+                    default.is_generated() && matches!(control.kind(), crate::FieldKind::Hidden)
+                }
+                None => false,
+            },
+        }
+    }
+
+    /// The bridge a `#[field(flatten)]` puts in its [`Flattened`], which turns
+    /// the enclosing form's context into the one the sub-form's own defaults
+    /// read. It is the rendering half of
+    /// [`ParseCtx::nested`](super::ParseCtx::nested), and it follows the same
+    /// rule: the sub-form receives whatever this form's context [`Provides`] in
+    /// place of its own.
+    ///
+    /// # Safety
+    ///
+    /// `context` has to point at a live `C`.
+    pub unsafe fn provide<C: Provides<I>, I>(context: *const ()) -> *const () {
+        // SAFETY: the derive pairs this call with the form whose context is
+        // `C`, and the walk passes that form's context.
+        let context = unsafe { read_context::<C>(context) };
+        std::ptr::from_ref(Provides::provide(context)).cast()
+    }
+
+    /// Read an erased context pointer as the concrete type the caller
+    /// promises it holds. The three functions above each did this cast
+    /// separately; this is the one place the pointer punning happens.
+    ///
+    /// # Safety
+    ///
+    /// `context` has to point at a live `C`, for the lifetime `'a` the caller
+    /// gives back.
+    unsafe fn read_context<'a, C>(context: *const ()) -> &'a C {
+        // SAFETY: the caller vouches for the pointer and its type.
+        unsafe { &*context.cast::<C>() }
     }
 
     /// Run a `#[value(validate = ...)]` function over a value of the type that
@@ -704,7 +814,7 @@ pub mod __private {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::spec::{NumberFormat, TemporalControl};
+        use crate::spec::{Generate, NumberFormat, TemporalControl};
 
         const CHOICES: &[Choice] = &[Choice::new("de", "Germany"), Choice::new("ch", "Swiss")];
 
@@ -1193,15 +1303,101 @@ pub mod __private {
 
         // ─── The two helpers the derive calls alongside it ────────────────────
 
+        /// A type whose values a blank form starts with, which is what only an
+        /// associated const can say and only the compiler can read.
+        struct Preset(String);
+
+        impl FormValue for Preset {
+            const CONTROL: Control = Control::TEXT;
+            const DEFAULT: Option<&'static str> = Some("from the type");
+
+            fn parse_form_value(raw: &str) -> Result<Self, ValueError> {
+                Ok(Preset(raw.to_owned()))
+            }
+
+            fn to_form_value(&self) -> Cow<'static, str> {
+                Cow::Owned(self.0.clone())
+            }
+        }
+
+        /// The glue a derived form writes for `default = "from the field"`.
+        const FROM_THE_FIELD: Generate = |_context| default_literal("from the field");
+        const WRITTEN: FieldDefault =
+            unsafe { FieldDefault::new(FROM_THE_FIELD, Some("from the field")) };
+
+        /// Run a default the way a render does, with a context it ignores.
+        fn produced(default: FieldDefault) -> Cow<'static, str> {
+            unsafe { default.value(std::ptr::from_ref(&()).cast()) }
+        }
+
         /// The macro cannot see what a type's `DEFAULT` is, so the same trade
         /// the control makes is made here for the value a blank form starts
         /// with.
         #[test]
         fn a_field_default_falls_back_to_the_one_its_type_carries() {
-            assert_eq!(or_default(Some("field"), Some("type")), Some("field"));
-            assert_eq!(or_default(None, Some("type")), Some("type"));
-            assert_eq!(or_default(Some("field"), None), Some("field"));
-            assert_eq!(or_default(None, None), None);
+            let written = or_default::<Preset>(Some(WRITTEN)).expect("the field wrote one");
+            assert_eq!(written.literal(), Some("from the field"));
+            assert_eq!(produced(written), "from the field");
+
+            let implied = or_default::<Preset>(None).expect("the type carries one");
+            assert_eq!(implied.literal(), Some("from the type"));
+            assert_eq!(produced(implied), "from the type");
+
+            // A field that says nothing, of a type that carries nothing.
+            assert_eq!(or_default::<String>(None), None);
+            assert_eq!(
+                or_default::<String>(Some(WRITTEN)).map(produced),
+                Some(Cow::Borrowed("from the field"))
+            );
+        }
+
+        /// The other half: a default the form runs. Either arity works, and the
+        /// value comes back written the way the field writes every other one.
+        #[test]
+        fn a_generated_default_reaches_the_render_through_the_glue_the_macro_writes() {
+            struct Session {
+                seats: u32,
+            }
+            fn booked(session: &Session) -> u32 {
+                session.seats
+            }
+            fn free() -> u8 {
+                7
+            }
+
+            // What the derive emits for `#[field(default = booked)]` on a `u32`
+            // field of a form whose context is `Session`.
+            const BOOKED: Generate =
+                |context| unsafe { default_from::<Session, u32, _, _>(context, booked) };
+            const TAKEN: FieldDefault = unsafe { FieldDefault::new(BOOKED, None) };
+            // And for a function that ignores the context and hands back
+            // something the field's type is made from.
+            const FREE: Generate =
+                |context| unsafe { default_from::<Session, u32, _, _>(context, free) };
+            const SPARE: FieldDefault = unsafe { FieldDefault::new(FREE, None) };
+
+            assert!(TAKEN.is_generated());
+            assert_eq!(TAKEN.literal(), None);
+            assert_eq!(format!("{TAKEN:?}"), "<generated>");
+
+            let session = Session { seats: 12 };
+            let context = std::ptr::from_ref(&session).cast();
+            assert_eq!(unsafe { TAKEN.value(context) }, "12");
+            assert_eq!(unsafe { SPARE.value(context) }, "7");
+        }
+
+        /// A `#[field(from_str)]` field writes its values out with `Display`,
+        /// and its default takes the same road.
+        #[test]
+        fn a_default_of_a_foreign_type_is_written_out_the_way_the_field_is() {
+            fn loopback() -> std::net::Ipv4Addr {
+                std::net::Ipv4Addr::LOCALHOST
+            }
+            const LOOPBACK: Generate = |context| unsafe {
+                default_displayed::<(), std::net::Ipv4Addr, _, _>(context, loopback)
+            };
+            const HOST: FieldDefault = unsafe { FieldDefault::new(LOOPBACK, None) };
+            assert_eq!(produced(HOST), "127.0.0.1");
         }
 
         /// A `#[value(validate = ...)]` function takes no context, but returns
@@ -1220,7 +1416,7 @@ pub mod __private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::{Control, TextControl};
+    use crate::spec::{Control, FieldDefault, Generate, TextControl};
 
     fn spec(name: &'static str) -> FieldSpec {
         FieldSpec {
@@ -1238,29 +1434,17 @@ mod tests {
 
     // ─── Reading one raw value ────────────────────────────────────────────────
 
-    /// A name that *is* present but empty never uses the default, so a user can
-    /// still clear a field that has one.
+    /// A parse reads what arrived and nothing else. A name that came back empty
+    /// is a field the user cleared, and a name that did not come back at all is
+    /// a field the submission does not carry.
     #[test]
-    fn a_default_stands_in_for_an_absent_name_but_not_for_a_cleared_one() {
-        let with_default = FieldSpec {
-            default: Some("ada"),
-            ..spec("name")
-        };
-
-        let absent = Values::new();
+    fn a_value_is_present_blank_or_absent_and_nothing_else() {
         assert!(matches!(
-            read(&absent, &with_default, "name"),
-            Raw::Present("ada")
-        ));
-
-        let cleared = Values::parse("name=");
-        assert!(matches!(read(&cleared, &with_default, "name"), Raw::Blank));
-
-        let filled = Values::parse("name=grace");
-        assert!(matches!(
-            read(&filled, &with_default, "name"),
+            read(&Values::parse("name=grace"), "name"),
             Raw::Present("grace")
         ));
+        assert!(matches!(read(&Values::parse("name="), "name"), Raw::Blank));
+        assert!(matches!(read(&Values::new(), "name"), Raw::Absent));
     }
 
     /// Whitespace alone is not an answer, so it reads as blank rather than as
@@ -1268,31 +1452,8 @@ mod tests {
     #[test]
     fn a_whitespace_only_value_reads_as_blank() {
         assert!(matches!(
-            read(&Values::parse("name=+++"), &spec("name"), "name"),
+            read(&Values::parse("name=+++"), "name"),
             Raw::Blank
-        ));
-    }
-
-    /// A checkbox default describes the blank form only. An absent checkbox
-    /// means "unchecked", never "use the checked default".
-    #[test]
-    fn a_checkbox_default_never_stands_in_for_an_absent_box() {
-        let box_on = FieldSpec {
-            control: Control::Checkbox,
-            default: Some("true"),
-            ..spec("agree")
-        };
-        assert!(matches!(
-            read(&Values::new(), &box_on, "agree"),
-            Raw::Absent
-        ));
-    }
-
-    #[test]
-    fn a_field_with_no_default_is_simply_absent() {
-        assert!(matches!(
-            read(&Values::new(), &spec("name"), "name"),
-            Raw::Absent
         ));
     }
 
@@ -1391,6 +1552,34 @@ mod tests {
         assert_eq!(parsed, None);
         assert_eq!(
             errors.field("age").next().unwrap().kind,
+            crate::ErrorKind::Required
+        );
+    }
+
+    /// A default describes what a render starts with. A parse that reached for
+    /// one would let a form answer its own question.
+    #[test]
+    fn a_default_never_stands_in_for_a_value_that_did_not_arrive() {
+        // The glue a derived form writes for `default = "ada"`.
+        const ADA_GLUE: Generate = |_context| __private::default_literal("ada");
+        const ADA: FieldDefault = unsafe { FieldDefault::new(ADA_GLUE, Some("ada")) };
+        let with_default = FieldSpec {
+            default: Some(ADA),
+            ..spec("name")
+        };
+
+        let (parsed, errors) = parse("", |ctx| ctx.field::<String>(&with_default));
+        assert_eq!(parsed, Some(String::new()), "absent, so nothing arrived");
+        assert!(errors.is_empty());
+
+        // And a required one is missing, rather than filled in for the user.
+        let required = FieldSpec {
+            required: true,
+            ..with_default
+        };
+        let (_, errors) = parse("", |ctx| ctx.field::<String>(&required));
+        assert_eq!(
+            errors.field("name").next().unwrap().kind,
             crate::ErrorKind::Required
         );
     }
@@ -1561,7 +1750,7 @@ mod tests {
                     .map_err(|_| crate::ValueError::new("a number"))
             }
 
-            fn to_form_value(&self) -> Cow<'_, str> {
+            fn to_form_value(&self) -> Cow<'static, str> {
                 Cow::Owned(self.0.to_string())
             }
 
