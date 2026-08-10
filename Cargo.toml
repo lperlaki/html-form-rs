@@ -47,8 +47,9 @@ axum = ["dep:axum-core", "dep:bytes", "dep:http", "html-form-derive?/axum"]
 # integration, so they need those two features whether or not they are in the
 # default set: `cargo test` would otherwise fail to compile them.
 #
-# `axum` is here because the crate's documentation is the README, and the README
-# documents the extractors. A doc comment can be `#[cfg]`-gated; a line of an
+# `axum` is here because the crate's documentation is the README and
+# `docs/guide.md`, and the guide documents the extractors. A doc comment can be
+# `#[cfg]`-gated; a line of an
 # included file cannot, so the feature is on wherever doctests run. This changes
 # nothing about what a dependent gets — `axum` is still off by default.
 html-form = { path = ".", features = ["html", "axum"] }

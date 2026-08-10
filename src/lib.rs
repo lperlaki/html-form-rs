@@ -5,14 +5,16 @@
 // spec with a context a checked one — and leaves the whole crate, generated
 // code included, with nothing to write `unsafe` for.
 #![forbid(unsafe_code)]
-// The crate's documentation is the README, so the two cannot drift: every Rust
-// block in it is a doctest that `cargo test` runs.
+// The crate's front page is the README, so the two cannot drift: every Rust
+// block in it is a doctest that `cargo test` runs. The long form is
+// `docs/guide.md`, included by the `guide` module below on the same terms.
 #![doc = include_str!("../README.md")]
 //!
 //! # Where to look next
 //!
-//! The README above is the tour. These are the items it names, for jumping
-//! straight to one:
+//! The README above is the tour, and the [`guide`] is the long form of it:
+//! every attribute, every type, and the whole of the framework integration.
+//! These are the items both name, for jumping straight to one:
 //!
 //! Each bullet names items this build has. A feature that is off takes its own
 //! bullet out of the list, because a link to an item that is not compiled is a
@@ -45,6 +47,17 @@
 
 #[cfg(feature = "axum")]
 pub mod axum;
+
+/// The long form of the README: every attribute, every type, and the whole of
+/// the framework integration.
+///
+/// It is a page of its own so the crate root stays a tour rather than a manual.
+/// Nothing is declared here — every Rust block in it is a doctest that
+/// `cargo test` runs, so the guide and the crate cannot drift.
+pub mod guide {
+    #![doc = include_str!("../docs/guide.md")]
+}
+
 mod context;
 mod error;
 #[cfg(feature = "html")]

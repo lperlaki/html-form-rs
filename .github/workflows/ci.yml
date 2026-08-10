@@ -18,7 +18,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features --workspace
-      # The crate's documentation is the README, so its examples are doctests.
+      # The crate's documentation is the README and `docs/guide.md`, so the
+      # examples in both are doctests.
       # They have to pass on the default feature set too, which is what somebody
       # running a bare `cargo test` gets.
       - run: cargo test --workspace
