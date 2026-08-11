@@ -459,8 +459,7 @@ fn field_spec(
     Ok(quote! {
         ::html_form::Entry::Field({
             // Bound, because an unwritten `reset` is decided from the two of
-            // them, and a struct literal cannot read its own fields. Both are
-            // `Copy`.
+            // them. Both are `Copy`.
             let __control = #control;
             let __default = #default;
             ::html_form::FieldSpec {

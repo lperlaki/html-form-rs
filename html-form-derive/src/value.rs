@@ -139,7 +139,6 @@ impl Conversion {
             render: quote!(::std::borrow::Cow::Owned(
                 ::std::string::ToString::to_string(self)
             )),
-            // `Display` reads the value either way, so owning it saves nothing.
             render_owned: quote!(::std::borrow::Cow::Owned(
                 ::std::string::ToString::to_string(&self)
             )),

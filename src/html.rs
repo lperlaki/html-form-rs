@@ -391,7 +391,7 @@ fn attr_num(out: &mut String, name: &str, value: Option<impl fmt::Display>) {
         out.push(' ');
         out.push_str(name);
         out.push_str("=\"");
-        // A write to a `String` cannot fail, and a number never needs escaping.
+        // A number never needs escaping.
         let _ = write!(out, "{value}");
         out.push('"');
     }

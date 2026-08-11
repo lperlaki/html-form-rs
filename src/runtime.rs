@@ -428,8 +428,6 @@ pub mod __private {
         source: S,
     ) -> Cow<'static, str> {
         let context = read_context::<C>(context);
-        // The value was made for this call and nothing else holds it, so a type
-        // that can hand its string over does.
         source.generate(context).into_form_value()
     }
 
@@ -859,8 +857,6 @@ pub mod __private {
             );
         }
 
-        /// Declared options alone mean "this is a chooser", whatever the Rust
-        /// type would otherwise say.
         #[test]
         fn declared_options_make_a_chooser_out_of_any_type() {
             let built = control(Control::TEXT, None, Some(CHOICES), Overrides::NONE);
@@ -881,8 +877,6 @@ pub mod __private {
             assert_eq!(radio, choose(ChoiceStyle::Radio, false));
         }
 
-        /// `type = "checkbox"` next to options means one box per option, not
-        /// the single boolean control.
         #[test]
         fn a_checkbox_next_to_options_is_a_group_of_boxes() {
             let group = control(
@@ -891,7 +885,6 @@ pub mod __private {
                 Some(CHOICES),
                 Overrides::NONE,
             );
-            // A checkbox group carries many values whatever the field type is.
             assert_eq!(group, choose(ChoiceStyle::Checkbox, true));
         }
 
@@ -913,12 +906,9 @@ pub mod __private {
             };
             assert_eq!(choose.style, ChoiceStyle::Radio);
             assert_eq!(choose.choices.len(), 2);
-            // A radio group carries one value however many the type holds.
             assert!(!choose.multiple);
         }
 
-        /// `type = "checkbox"` on something that already chooses between
-        /// variants is a checkbox *group*, not a single boolean box.
         #[test]
         fn a_checkbox_on_a_chooser_is_a_group_and_not_a_boolean_box() {
             let group = merged(
@@ -929,8 +919,6 @@ pub mod __private {
             assert_eq!(group, choose(ChoiceStyle::Checkbox, true));
         }
 
-        /// In the same way, `type = "range"` on a `u32` keeps the bounds the
-        /// integer type implies.
         #[test]
         fn restyling_a_number_keeps_the_bounds_the_integer_type_implies() {
             let implied = Control::Number(NumberControl {
@@ -1152,8 +1140,6 @@ pub mod __private {
         /// error where the form is written.
         #[test]
         fn an_attribute_the_control_cannot_hold_is_refused() {
-            // Each case builds its own `Overrides`, which is not `Copy`, so
-            // the list holds the calls rather than the arguments.
             type Refusal = (&'static str, fn() -> Control);
             let cases: &[Refusal] = &[
                 ("`pattern` applies only to a text input", || {
@@ -1822,8 +1808,6 @@ mod tests {
         let Str(parsed) = <Str<std::net::Ipv4Addr>>::parse_form_value("10.0.0.1").unwrap();
         assert_eq!(parsed, std::net::Ipv4Addr::new(10, 0, 0, 1));
         assert_eq!(Str(parsed).to_form_value(), "10.0.0.1");
-
-        // A plain text input, because a foreign type has no `CONTROL` to give.
         assert_eq!(<Str<std::net::Ipv4Addr>>::CONTROL, Control::TEXT);
     }
 

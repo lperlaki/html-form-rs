@@ -272,7 +272,6 @@ impl Submitted {
             Submitted::Many(many) => {
                 for Scalar(value) in many {
                     if let Some(value) = value {
-                        // Cloned per value, because each repeat is its own pair.
                         values.push(name.clone(), value);
                     }
                 }
