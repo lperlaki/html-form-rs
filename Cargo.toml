@@ -1,17 +1,24 @@
 [workspace]
 members = ["html-form-derive"]
 
-[package]
-name = "html-form"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 # Let-chains, which the crate uses throughout. Edition 2024 alone would be 1.85.
 rust-version = "1.88"
-description = "Declarative HTML forms: render, parse and validate the same struct"
 license = "MIT OR Apache-2.0"
 authors = ["Liam Perlaki <liam@perlaki.org>"]
 repository = "https://github.com/lperlaki/html-form-rs"
-documentation = "https://docs.rs/html-form"
+
+[package]
+name = "html-form"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Declarative HTML forms: render, parse and validate the same struct"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
 readme = "README.md"
 keywords = ["html", "form", "validation", "forms", "web"]
 categories = ["web-programming", "template-engine"]
