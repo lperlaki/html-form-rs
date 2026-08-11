@@ -2,7 +2,7 @@
 members = ["html-form-derive"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # Let-chains, which the crate uses throughout. Edition 2024 alone would be 1.85.
 rust-version = "1.88"
