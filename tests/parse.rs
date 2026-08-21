@@ -578,3 +578,53 @@ fn date_and_time_formats_are_checked_as_calendars_not_just_digits() {
     rejects("week=2025-W53"); // 2025 is not
     rejects("week=2026-W54");
 }
+
+/// A field the browser submits several times under one name reports which
+/// input each problem came from, counted over every value sent — the blank ones
+/// a user leaves behind included, so the index is the row on the page.
+#[test]
+fn an_error_on_a_repeated_field_names_the_input_it_came_from() {
+    #[derive(Form, Debug)]
+    struct Allowlist {
+        #[field(minlength = 3)]
+        ip: Vec<String>,
+    }
+
+    let body = "ip=203.0.113.7&ip=no&ip=&ip=x&ip=2001:db8::1";
+    let Outcome::Invalid { errors, view } = Allowlist::submit_urlencoded(body) else {
+        panic!("unexpectedly accepted");
+    };
+
+    let at: Vec<Option<usize>> = errors.field("ip").map(|error| error.index).collect();
+    assert_eq!(at, [Some(1), Some(3)]);
+
+    // The view carries the same, in step with its messages and its values.
+    let field = view.field("ip").unwrap();
+    assert_eq!(field.error_indexes, at);
+    assert_eq!(field.errors.len(), field.error_indexes.len());
+    assert_eq!(field.values[1], "no");
+    assert_eq!(field.values[3], "x");
+}
+
+/// A problem with the field as a whole belongs to no one input, and a field
+/// with one input never has more than that one.
+#[test]
+fn a_field_wide_error_carries_no_index() {
+    let body = "email=nope&password=short&confirm=short&username=ada&accept_terms=on";
+    let Outcome::Invalid { errors, .. } = Signup::submit_urlencoded(body) else {
+        panic!("unexpectedly accepted");
+    };
+    assert!(errors.iter().all(|(_, error)| error.index.is_none()));
+
+    #[derive(Form, Debug)]
+    struct Rules {
+        #[field(required)]
+        ip: Vec<String>,
+    }
+
+    let Outcome::Invalid { errors, .. } = Rules::submit_urlencoded("ip=&ip=") else {
+        panic!("unexpectedly accepted");
+    };
+    let at: Vec<Option<usize>> = errors.field("ip").map(|error| error.index).collect();
+    assert_eq!(at, [None]);
+}

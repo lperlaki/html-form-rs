@@ -107,13 +107,27 @@ pub struct FieldError {
     /// [`FormView::localize`](crate::FormView::localize) resolves a key with
     /// the labels. Or leave the key in place and translate it from the view.
     pub message: Text,
+    /// Which input this error came from, for a field that submits more than
+    /// one under the same name — a `Vec<T>` behind a row of text inputs.
+    ///
+    /// It counts *every* value the browser sent under the name, blank ones
+    /// included, so it is the position of the input on the page. `None` for a
+    /// field with one input, and for an error about the field as a whole, such
+    /// as a required list that arrived empty or the verdict of a
+    /// `#[field(validate = ...)]` function, which sees the whole `Vec`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
 }
 
 impl FieldError {
     /// An error that carries the built-in message for its kind.
     pub fn new(kind: ErrorKind) -> Self {
         let message = kind.default_message().into();
-        Self { kind, message }
+        Self {
+            kind,
+            message,
+            index: None,
+        }
     }
 
     /// An error with a message the caller supplies.
@@ -121,6 +135,7 @@ impl FieldError {
         Self {
             kind,
             message: message.into(),
+            index: None,
         }
     }
 
@@ -136,6 +151,7 @@ impl FieldError {
         Self {
             kind: ErrorKind::Custom { code },
             message,
+            index: None,
         }
     }
 
@@ -149,6 +165,13 @@ impl FieldError {
             },
             message,
         )
+    }
+
+    /// Pin this error to one input of a field that has several under the same
+    /// name. See [`index`](FieldError::index).
+    pub fn at(mut self, index: usize) -> Self {
+        self.index = Some(index);
+        self
     }
 
     /// Replace the message and keep the kind.

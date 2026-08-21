@@ -72,6 +72,10 @@ futures-util = { version = "0.3.33", default-features = false }
 name = "axum_signup"
 required-features = ["axum", "html", "derive"]
 
+[[example]]
+name = "multi_ip"
+required-features = ["axum", "html", "derive"]
+
 [package.metadata.docs.rs]
 all-features = true
 # Turns on `doc_cfg`, so each item says which feature gates it. The gate is

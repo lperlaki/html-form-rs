@@ -19,6 +19,10 @@
 //! `error_keys[i]` belongs to `errors[i]`, and the two lists always have the
 //! same length. A template that only prints the messages can ignore this.
 //!
+//! [`FieldView::error_indexes`] runs alongside them the same way. It says which
+//! input each message came from, for a field that renders a row of inputs under
+//! one name.
+//!
 //! # Why every string here is a `Cow`
 //!
 //! Nearly everything in a view comes from a [`FormSpec`], where it is already a
@@ -195,6 +199,26 @@ pub struct FieldView {
     /// the same length. An entry is set while its message is still an
     /// unresolved i18n key.
     pub error_keys: Vec<Option<Cow<'static, str>>>,
+    /// One entry per [`FieldView::errors`] message, in the same order and of
+    /// the same length: the index into [`values`](FieldView::values) of the
+    /// input the message belongs to, or `None` for a message about the field as
+    /// a whole. See [`FieldError::index`](crate::FieldError::index).
+    ///
+    /// A field with one input leaves every entry `None`. A field the browser
+    /// submits several times — a `Vec<T>` behind a row of text inputs — uses it
+    /// to put each message under the input that caused it:
+    ///
+    /// ```jinja
+    /// {% for value in field.values %}{% set row = loop.index0 %}
+    ///   <input name="{{ field.name }}" value="{{ value }}">
+    ///   {% for message in field.errors %}
+    ///     {% if field.error_indexes[loop.index0] == row %}
+    ///       <p class="error">{{ message }}</p>
+    ///     {% endif %}
+    ///   {% endfor %}
+    /// {% endfor %}
+    /// ```
+    pub error_indexes: Vec<Option<usize>>,
     pub has_errors: bool,
     /// The legend of the flattened group that holds this field, if there is one.
     pub group: Option<Cow<'static, str>>,
@@ -541,6 +565,7 @@ impl FieldView {
             .collect();
 
         let (messages, message_keys) = split_messages(errors.field(full_name));
+        let message_indexes = errors.field(full_name).map(|error| error.index).collect();
 
         let base = sanitize_id(full_name);
         let id = spec.id_for(full_name);
@@ -589,6 +614,7 @@ impl FieldView {
             has_errors: !messages.is_empty(),
             errors: messages,
             error_keys: message_keys,
+            error_indexes: message_indexes,
             group,
             group_key,
         }
@@ -673,9 +699,21 @@ impl FieldView {
 
     /// Add another error message to this field, as text or as an i18n key.
     pub fn add_error(&mut self, message: impl Into<Text>) {
+        self.push_error(message, None);
+    }
+
+    /// The same, against one input of a field that has several under the same
+    /// name: the address on row two is already in the allowlist, and only the
+    /// database knew. See [`error_indexes`](FieldView::error_indexes).
+    pub fn add_error_at(&mut self, index: usize, message: impl Into<Text>) {
+        self.push_error(message, Some(index));
+    }
+
+    fn push_error(&mut self, message: impl Into<Text>, index: Option<usize>) {
         let (message, key) = parts(message.into());
         self.errors.push(message);
         self.error_keys.push(key);
+        self.error_indexes.push(index);
         self.has_errors = true;
     }
 

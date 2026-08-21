@@ -136,7 +136,7 @@ impl<'a, C> ParseCtx<'a, C> {
     pub fn field<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<T> {
         let full = self.full_name(spec.name);
         match read(self.values, &full) {
-            Raw::Present(raw) => self.convert::<T>(spec, &full, raw),
+            Raw::Present(raw) => self.convert::<T>(spec, &full, raw, None),
             Raw::Absent | Raw::Blank => {
                 if spec.required {
                     self.errors.push(full, validate::required_error(spec));
@@ -158,7 +158,7 @@ impl<'a, C> ParseCtx<'a, C> {
     pub fn optional<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<Option<T>> {
         let full = self.full_name(spec.name);
         match read(self.values, &full) {
-            Raw::Present(raw) => self.convert::<T>(spec, &full, raw).map(Some),
+            Raw::Present(raw) => self.convert::<T>(spec, &full, raw, None).map(Some),
             Raw::Absent | Raw::Blank => {
                 if spec.required {
                     self.errors.push(full, validate::required_error(spec));
@@ -179,8 +179,15 @@ impl<'a, C> ParseCtx<'a, C> {
         let values = self.values;
         let mut out = Vec::new();
         let mut ok = true;
-        for raw in values.all(&full).filter(|value| !is_blank(value)) {
-            match self.convert::<T>(spec, &full, raw) {
+        // Every value under the name is counted, blank ones included, so an
+        // error's index is the position of the input that carries it. A blank
+        // input is one the user added and left empty: it is not a value, but it
+        // is still a row on the page, and the rows after it moved.
+        for (index, raw) in values.all(&full).enumerate() {
+            if is_blank(raw) {
+                continue;
+            }
+            match self.convert::<T>(spec, &full, raw, Some(index)) {
                 Some(value) => out.push(value),
                 None => ok = false,
             }
@@ -293,24 +300,31 @@ impl<'a, C> ParseCtx<'a, C> {
         spec: &FieldSpec,
         full: &Cow<'static, str>,
         raw: &str,
+        index: Option<usize>,
     ) -> Option<T> {
+        // Which input the value came from, on a field that has more than one.
+        // Every error this conversion produces belongs to that one input.
+        let at = |mut error: FieldError| {
+            error.index = index;
+            error
+        };
         let violations = validate::check(spec, raw);
         let had_violations = !violations.is_empty();
         for error in violations {
-            self.errors.push(full.clone(), error);
+            self.errors.push(full.clone(), at(error));
         }
 
         match T::parse_form_value(raw) {
             Ok(value) => match value.validate_form_value() {
                 Ok(()) => Some(value),
                 Err(error) => {
-                    self.errors.push(full.clone(), error);
+                    self.errors.push(full.clone(), at(error));
                     None
                 }
             },
             Err(e) => {
                 if !had_violations {
-                    self.errors.push(full.clone(), FieldError::from(e));
+                    self.errors.push(full.clone(), at(FieldError::from(e)));
                 }
                 None
             }
