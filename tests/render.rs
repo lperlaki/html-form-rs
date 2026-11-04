@@ -717,3 +717,145 @@ fn escaping_copies_only_what_it_changes() {
     // Non-ASCII is left alone, and not cut in half by the search for entities.
     assert_eq!(html_form::escape("Grüße <hier>"), "Grüße &lt;hier&gt;");
 }
+
+// ─── Passwords ────────────────────────────────────────────────────────────────
+
+mod passwords {
+    use html_form::{Form, Outcome};
+
+    #[derive(Form, Debug)]
+    struct Login {
+        user: String,
+        #[field(type = "password")]
+        password: String,
+        #[field(min = 5)]
+        attempts: u32,
+    }
+
+    #[derive(Form, Debug)]
+    struct Echoing {
+        #[field(type = "password", reset = false, minlength = 8)]
+        password: String,
+    }
+
+    #[test]
+    fn a_password_never_travels_back_into_the_page() {
+        let Outcome::Invalid { view, .. } =
+            Login::submit_urlencoded("user=ada&password=hunter2&attempts=1")
+        else {
+            panic!("too few attempts");
+        };
+        assert!(!view.to_html().contains("hunter2"));
+        assert_eq!(view.field("user").unwrap().value.as_deref(), Some("ada"));
+
+        let login = Login {
+            user: "ada".into(),
+            password: "hunter2".into(),
+            attempts: 9,
+        };
+        assert!(!login.render_filled().to_html().contains("hunter2"));
+    }
+
+    #[test]
+    fn it_still_parses_and_a_form_can_ask_for_the_echo() {
+        let login = Login::from_urlencoded("user=ada&password=hunter2&attempts=9").unwrap();
+        assert_eq!(login.password, "hunter2");
+
+        let Outcome::Invalid { view, .. } = Echoing::submit_urlencoded("password=short") else {
+            panic!("too short");
+        };
+        assert!(view.to_html().contains("short"));
+    }
+
+    /// Write-only, with an empty submission meaning "keep what is stored".
+    #[test]
+    fn an_optional_secret_keeps_what_is_stored_on_a_blank() {
+        #[derive(Form, Debug)]
+        struct Token {
+            #[field(type = "password", placeholder = "unchanged")]
+            token: Option<String>,
+        }
+
+        assert_eq!(Token::from_urlencoded("token=").unwrap().token, None);
+        assert_eq!(
+            Token::from_urlencoded("token=abc")
+                .unwrap()
+                .token
+                .as_deref(),
+            Some("abc")
+        );
+        let stored = Token {
+            token: Some("s3cret".into()),
+        };
+        let html = stored.render_filled().to_html();
+        assert!(!html.contains("s3cret"));
+        assert!(html.contains("placeholder=\"unchanged\""));
+    }
+}
+
+// ─── Disabled controls ────────────────────────────────────────────────────────
+
+mod disabled {
+    use html_form::{Form, Values};
+
+    #[derive(Form, Debug, PartialEq)]
+    struct Port {
+        #[field(disabled)]
+        enabled: bool,
+        #[field(disabled)]
+        #[option("a", "A")]
+        #[option("b", "B")]
+        mode: String,
+        #[field(disabled)]
+        name: String,
+    }
+
+    /// What a browser posts: the named inputs that are not disabled.
+    fn posted(html: &str) -> Values {
+        let mut values = Values::new();
+        for tag in html.split('<').filter(|tag| tag.starts_with("input")) {
+            let read = |key: &str| {
+                let (_, rest) = tag.split_once(&format!(" {key}=\""))?;
+                rest.split('"').next()
+            };
+            if !tag.contains(" disabled") {
+                values.push(read("name").unwrap(), read("value").unwrap_or_default());
+            }
+        }
+        values
+    }
+
+    #[test]
+    fn a_form_with_disabled_controls_survives_a_browser_round_trip() {
+        let port = Port {
+            enabled: true,
+            mode: "b".into(),
+            name: "wan".into(),
+        };
+        let html = port.render_filled().to_html();
+        assert_eq!(Port::from_values(&posted(&html)).unwrap(), port);
+    }
+
+    #[test]
+    fn an_unticked_box_has_nothing_to_post() {
+        let port = Port {
+            enabled: false,
+            mode: "a".into(),
+            name: "lan".into(),
+        };
+        let view = port.render_filled();
+        assert!(view.field("enabled").unwrap().companion_values().is_empty());
+        assert_eq!(view.field("name").unwrap().companion_values(), ["lan"]);
+    }
+
+    #[test]
+    fn a_control_that_is_not_disabled_needs_no_companion() {
+        #[derive(Form, Debug)]
+        struct Open {
+            name: String,
+        }
+        let view = Open { name: "x".into() }.render_filled();
+        assert!(view.field("name").unwrap().companion_values().is_empty());
+        assert!(!view.to_html().contains("type=\"hidden\""));
+    }
+}

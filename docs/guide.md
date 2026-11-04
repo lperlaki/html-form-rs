@@ -154,8 +154,30 @@ crate resolves the message with everything else. The key is also the error's
 code, so a caller that would rather build its own message can match on that
 instead. The messages of the *built-in* checks are English and carry no key on
 purpose: every `ErrorKind` names the constraint the value broke, so a caller that
-needs a translation matches on the kind and writes its own text. There is no key
-to guess at, and no message table to keep in step.
+needs a translation writes its own text from the kind. There is no key to guess
+at, and no message table to keep in step.
+
+`FormView::localize_errors` does that over a whole view, and the view keeps the
+kind of each message in `error_kinds`. `ErrorKind::name` and `ErrorKind::args`
+are what a message catalogue such as Fluent takes, so one call covers every kind:
+
+```rust
+# use html_form::{Form, Outcome};
+# #[derive(Form, Debug)]
+# struct Signup {
+#     #[field(minlength = 12)]
+#     name: String,
+# }
+# fn catalogue(id: &str, args: &[(&'static str, std::borrow::Cow<'static, str>)]) -> Option<String> {
+#     (id == "form-too-short").then(|| format!("Mindestens {} Zeichen.", args[0].1))
+# }
+let Outcome::Invalid { mut view, .. } = Signup::submit_urlencoded("name=ada") else {
+    panic!("too short");
+};
+view.localize_errors(|kind| catalogue(&format!("form-{}", kind.name()), &kind.args()));
+
+assert_eq!(view.field("name").unwrap().errors[0], "Mindestens 12 Zeichen.");
+```
 
 ## Reuse: flattening one form into another
 
@@ -352,6 +374,30 @@ assert_eq!(view.field("room").unwrap().choices[0].label, "Attic");
 `view.add_field_error("email", "That address is already registered.")` adds the
 errors that only your database knows about.
 
+### Several copies of one form
+
+A table with an edit dialog per row renders one form many times. `scoped` gives
+every id of a view a prefix, so labels and `aria-*` keep pointing at their own
+copy. Names stay as they are.
+
+```rust
+# use html_form::Form;
+# #[derive(Form)]
+# struct Rule { name: String }
+let view = Rule::render().scoped("row-7");
+assert_eq!(view.field("name").unwrap().id, "row-7-name");
+assert_eq!(view.field("name").unwrap().error_id, "row-7-name-error");
+```
+
+### Disabled controls
+
+A browser does not submit a disabled control, so left alone an unchanged box
+would read as unticked, and an unchanged required field as missing. The built-in
+renderer therefore writes a hidden input of the same name next to a disabled
+control. A renderer of your own gets the values from
+`FieldView::companion_values`. A client can change what a hidden input holds, so
+a value the user may not change is one the server refuses to change.
+
 ### What rendering costs
 
 A spec is `const`. `Form::SPEC` is one const-evaluated value, flattened
@@ -410,8 +456,10 @@ first, so a form that declares none pays nothing for the mechanism.
 | `default = "…"` | Value shown on a blank form. Never a fallback while parsing |
 | `default` | The same, taken from the field type's own `Default::default()` |
 | `default = path::to::fn` | A new value for each render: a token, a nonce, today's date. Write `fn() -> FieldType`, or `fn(&Context) -> FieldType`, or either one returning something that converts into it |
-| `reset` / `reset = false` | Show the default on every render, and never what was submitted or stored. For a field the form owns rather than the user: a token, a password box. A hidden field with `default = path::to::fn` resets untold, and `reset = false` turns that off |
-| `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept` | Validation |
+| `reset` / `reset = false` | Show the default on every render, and never what was submitted or stored. For a field the form owns rather than the user: a token, a secret. A password box and a hidden field with `default = path::to::fn` reset untold, and `reset = false` turns that off |
+| `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept` | Validation. All but `accept` also take a constant or any expression a `const` can evaluate: `min = MTU_MIN`, `max = *MTU_RANGE.end()`. For `min`, `max` and `step` that means an integer; a date or a fraction stays a literal |
+| `list(min = 1, max = 5, distinct, split)` | The rules of a `Vec<T>` field. See [Lists](#lists) |
+| `when(field = "mode", is_one_of = ["static"])` | The field applies only while `mode` holds one of these values. See [Fields that do not always apply](#fields-that-do-not-always-apply) |
 | `disabled`, `readonly`, `autofocus`, `multiple` | Flags |
 | `choices = SOME_CONST` | A `&'static [Choice]` |
 | `validate = path::to::fn` | Per-field check: `fn(&FieldType) -> Result<(), E>`, or `fn(&FieldType, &Context) -> Result<(), E>` |
@@ -487,7 +535,7 @@ edit some other way.
 | `f32`, `f64` | `number`, `step="any"` | yes |
 | `bool` | `checkbox`. An absent value means `false` | no |
 | `Option<T>` | as `T` | no |
-| `Vec<T>` | As `T`. The crate collects every value submitted under the name, and renders `multiple` on the controls that accept it (`select`, `email`, `file`) | no |
+| `Vec<T>` | As `T`. The crate collects every value submitted under the name, renders `multiple` on the controls that accept it (`select`, `email`, `file`), and one control per value on the rest. See [Lists](#lists) | no |
 | `Vec<T>` + `type = "checkbox"` | one checkbox per option, sharing the name | no |
 | `#[derive(FormChoice)] enum` | `select` with the variants as options | yes |
 | `#[derive(FormValue)] struct Wrapper(T)` | as `T`, plus whatever `#[value(...)]` adds | yes |
@@ -665,6 +713,40 @@ impl fmt::Display for Version {
 }
 ```
 
+An enum of another crate works the same way. `FormChoice` needs the definition,
+but `from_str` and a list of `Choice`s need only `FromStr` and `Display`, and the
+list is what the server checks a value against:
+
+```rust
+# use std::{fmt, str::FromStr};
+use html_form::{Choice, Form};
+# #[derive(Debug, PartialEq)]
+# enum Chain { Input, Output }
+# impl FromStr for Chain {
+#     type Err = ();
+#     fn from_str(s: &str) -> Result<Self, ()> {
+#         match s { "input" => Ok(Chain::Input), "output" => Ok(Chain::Output), _ => Err(()) }
+#     }
+# }
+# impl fmt::Display for Chain {
+#     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+#         f.write_str(if *self == Chain::Input { "input" } else { "output" })
+#     }
+# }
+
+const CHAINS: &[Choice] = &[Choice::keyed("input", "chain.input"), Choice::keyed("output", "chain.output")];
+
+#[derive(Form, Debug)]
+struct Rule {
+    #[field(from_str, choices = CHAINS)]
+    chain: Chain,
+}
+
+assert_eq!(Rule::from_urlencoded("chain=output").unwrap().chain, Chain::Output);
+assert!(Rule::from_urlencoded("chain=nope").is_err());
+assert_eq!(Rule::render().field("chain").unwrap().choices.len(), 2);
+```
+
 ### By hand
 
 The trait is small enough to write out. It requires only the two conversions:
@@ -777,6 +859,161 @@ follow from HTML rather than from this crate:
   group therefore renders `aria-required`, and the server enforces the
   requirement.
 
+## Lists
+
+A `Vec<T>` behind a control that holds one value renders one input per value,
+all under the field's name. That is what the browser submits, and it needs no
+`tags[0]` in the name. The view says so with `repeated`, and every row carries
+the field's constraints, in the markup as much as on the server.
+
+```rust
+use html_form::{Form, Outcome};
+
+#[derive(Form, Debug)]
+struct Tags {
+    #[field(pattern = "[a-z]+", list(min = 1, max = 3, distinct))]
+    tags: Vec<String>,
+}
+
+let Outcome::Invalid { errors, view } = Tags::submit_urlencoded("tags=a&tags=&tags=B") else {
+    panic!("`B` is not lowercase");
+};
+
+// A blank row is no value, but it stays on the page, and it counts as a row.
+let field = view.field("tags").unwrap();
+assert_eq!(field.values, ["a", "", "B"]);
+assert_eq!(errors.field("tags").next().unwrap().index, Some(2));
+assert_eq!(field.error_indexes, [Some(2)]);
+```
+
+`list(...)` takes four keys:
+
+| | |
+|---|---|
+| `min = 1`, `max = 5` | How many values, not counting blank rows. An error on the field as a whole. A `min` of 1 or more makes the field required, unless it says `optional` |
+| `distinct` | A value may appear once. A repeat is an error on the row that repeats |
+| `split` | One submitted value may hold several. The crate splits each at whitespace, commas and semicolons, and silently drops a repeat. For short values typed or pasted into one control, where a row is an item and `dns=9.9.9.9,+8.8.8.8` is two of them |
+
+A `list` on a `Vec` of options renders a row per value too, each with its own
+`<select>`, in place of one `<select multiple>`. On a checkbox group the rules
+apply and the group stays a group: its controls belong to the options, so a
+position among the boxes that came back says nothing about the page, and its
+errors carry no row.
+
+`to_html` does all of this. A renderer of your own has two ways to get there.
+`FieldView::rows` gives one ordinary field per row, with its own value, id and
+messages, so whatever renders one control renders a row. It ends with a blank
+row, so a page without a script can grow the list, unless the last row is blank
+already or the list is at its `max`. `FieldView::field_errors` is what belongs
+around the rows. A template, which sees the view as data, reads
+`field.error_indexes[i]` next to `field.errors[i]`; `examples/multi_ip.rs` shows
+it, and `field.list` holds the rules for a script that adds rows.
+
+An error's `index` is a row on the page. A `validate` function holds the parsed
+`Vec`, which has no blank rows, so there `FieldError::at` takes a position in that
+`Vec` and the crate turns it into the row:
+
+```rust
+use html_form::{FieldError, Form, Outcome};
+
+fn no_root(names: &Vec<String>) -> Result<(), FieldError> {
+    match names.iter().position(|name| name == "root") {
+        Some(position) => Err(FieldError::custom("Not root.").at(position)),
+        None => Ok(()),
+    }
+}
+
+#[derive(Form, Debug)]
+struct Users {
+    #[field(validate = no_root)]
+    names: Vec<String>,
+}
+
+let Outcome::Invalid { view, .. } = Users::submit_urlencoded("names=ada&names=&names=root") else {
+    panic!("root is refused");
+};
+assert_eq!(view.field("names").unwrap().error_indexes, [Some(2)]);
+```
+
+A handler that finds a problem after the parse uses `Values::row_of(name,
+position)` for the same translation, then `FieldError::at` or
+`FieldView::add_error_at` with the row. A hand-written `errors.push` on a view
+leaves `error_indexes` shorter than `errors`; such a message reads as one about
+the field. Use `add_error`.
+
+## Fields that do not always apply
+
+A static address means nothing while the mode is DHCP. `when` says so once, and
+both halves follow: the field is not parsed or validated while it does not apply,
+whatever a stale client still sends, and `required` holds only while it does.
+
+```rust
+use html_form::Form;
+
+#[derive(Form, Debug)]
+struct Interface {
+    #[option("dhcp", "DHCP")]
+    #[option("static", "Static")]
+    #[field(default = "dhcp")]
+    mode: String,
+
+    #[field(required, when(field = "mode", is_one_of = ["static"]))]
+    address: Option<String>,
+}
+
+let form = Interface::from_urlencoded("mode=dhcp&address=stale").unwrap();
+assert_eq!(form.address, None);
+assert!(Interface::from_urlencoded("mode=static").is_err());
+
+let view = Interface::render();
+assert!(!view.field("address").unwrap().applies);
+```
+
+The field has to be an `Option<T>`, a `Vec<T>` or a `bool`, because it holds
+nothing while it does not apply. `#[field(required)]` is what makes it required
+when it does. A checkbox decides with `on`, and a field left blank or a box left
+unticked with `""`.
+
+The view carries `when`, naming the field that decides and the values, and
+`applies`, its answer for what this view holds. The built-in renderer wraps the
+field in a `<fieldset class="html-form__when">` with `data-when-field` and
+`data-when-values`, `disabled` and `hidden` while it does not apply, which keeps
+it out of the submission and keeps the browser from enforcing `required`. Opening
+it when the other field changes takes a few lines of script, or a framework's
+binding. Without one, the fieldset stays as the server rendered it.
+
+## Saving one field at a time
+
+Autosave sends a form while another field is still half typed, and `submit`
+would refuse the whole form for it. `submit_partial` changes only the fields you
+name, on top of a value you hold:
+
+```rust
+use html_form::{Form, Outcome, Values};
+
+#[derive(Form, Debug)]
+struct Settings {
+    greeting: String,
+    #[field(min = 1024)]
+    listen_port: u16,
+}
+
+let current = Settings { greeting: "hello".into(), listen_port: 8080 };
+let values = Values::parse("greeting=&listen_port=9000");
+
+let Outcome::Valid(saved) = current.submit_partial(&values, &["listen_port"]) else {
+    panic!("only the port was named");
+};
+assert_eq!(saved.listen_port, 9000);
+assert_eq!(saved.greeting, "hello");
+```
+
+Fields are full names, with any flatten prefix. A named field that `values` does
+not hold is cleared, as an unticked box is. A `#[form(validate = ...)]` check still
+runs on the whole value. The result is parsed like any other, so a
+`#[field(skip)]` field comes back as its `Default`: copy it over from the value
+you held.
+
 ## Server-side validation
 
 The server checks again everything the markup asks the browser to enforce,
@@ -817,6 +1054,10 @@ because a submission can come from anywhere:
 - `#[field(reset)]` says the same about any other field. It shows its default on
   every render, and never what was submitted or stored. The derive settles this
   once, in the spec, so `reset = false` also turns off the rule above.
+- A `type = "password"` field resets without being told to, so a password never
+  travels back into a page, in a rejected form or an edit form. On an
+  `Option<String>` a blank submission is then `None`, which is how to write a
+  secret that stays as it is unless the user types a new one.
 
 ```rust
 use html_form::Form;

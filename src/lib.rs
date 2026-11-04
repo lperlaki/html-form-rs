@@ -80,14 +80,14 @@ pub use kind::FieldKind;
 pub use runtime::ParseCtx;
 pub use spec::{
     Attr, Bounds, Choice, ChoiceStyle, ChooseControl, Control, Entry, FieldDefault, FieldSpec,
-    FileControl, Flattened, FormEncType, FormMethod, FormSpec, Generate, NumberControl,
+    FileControl, Flattened, FormEncType, FormMethod, FormSpec, Generate, ListSpec, NumberControl,
     NumberFormat, Provider, ResolvedField, TemporalControl, TemporalFormat, Text, TextControl,
-    TextFormat, TextareaControl,
+    TextFormat, TextareaControl, When,
 };
 pub use validate::{FieldValidation, FieldValidator, FormValidation, FormValidator};
 pub use value::FormValue;
 pub use values::Values;
-pub use view::{AttrView, ChoiceView, FieldView, FormView, is_attr_name};
+pub use view::{AttrView, ChoiceView, FieldView, FormView, WhenView, is_attr_name};
 
 #[doc(hidden)]
 pub use runtime::__private;
@@ -297,6 +297,43 @@ pub trait Form: Sized {
         Self::Context: EmptyContext,
     {
         Self::submit_urlencoded_with_context(body, empty::<Self>())
+    }
+
+    /// Change `fields` of this value to what `values` holds, and validate.
+    ///
+    /// This is for autosave: one field changes while another is still being
+    /// typed, and the half-typed one must not block the save. Every field not
+    /// named keeps the value it has here, so only a named field, or a
+    /// `#[form(validate = ...)]` check across fields, can fail. A named field
+    /// that `values` does not hold is cleared, as an unticked box is.
+    ///
+    /// `fields` are full names, with any flatten prefix.
+    ///
+    /// The result is parsed like any other, so a `#[field(skip)]` field comes
+    /// back as its `Default`. Copy it over from `self`.
+    fn submit_partial_with_context(
+        &self,
+        values: &Values,
+        fields: &[&str],
+        context: &Self::Context,
+    ) -> Outcome<Self> {
+        let mut merged = self.to_values();
+        for name in fields {
+            merged.remove(name);
+            for value in values.all(name) {
+                merged.push(*name, value);
+            }
+        }
+        Self::submit_with_context(&merged, context)
+    }
+
+    /// [`submit_partial_with_context`](Form::submit_partial_with_context), for
+    /// a form that needs no context.
+    fn submit_partial(&self, values: &Values, fields: &[&str]) -> Outcome<Self>
+    where
+        Self::Context: EmptyContext,
+    {
+        self.submit_partial_with_context(values, fields, empty::<Self>())
     }
 
     /// A blank form, with each field showing its declared default.

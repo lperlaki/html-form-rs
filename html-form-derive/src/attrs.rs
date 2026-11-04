@@ -95,6 +95,101 @@ pub fn lit_to_string(lit: &Lit) -> Result<String> {
     })
 }
 
+/// What `min`, `max` and `step` hold. A spec keeps these three as strings, so a
+/// literal is written in as one. Anything else is an integer a `const` can
+/// evaluate, which the spec formats while it is built.
+pub enum BoundAttr {
+    Literal(String),
+    Expr(syn::Expr),
+}
+
+impl BoundAttr {
+    fn parse(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<Self> {
+        let value = meta.value()?;
+        // `min = 5 + 1` starts with a literal too, so one has to end the value.
+        let ahead = value.fork();
+        if ahead.parse::<Lit>().is_ok() && (ahead.is_empty() || ahead.peek(Token![,])) {
+            return Ok(BoundAttr::Literal(lit_to_string(&value.parse()?)?));
+        }
+        Ok(BoundAttr::Expr(value.parse()?))
+    }
+}
+
+/// `list(...)` on a `Vec<T>` field.
+#[derive(Default)]
+pub struct ListAttr {
+    pub min: Option<syn::Expr>,
+    pub max: Option<syn::Expr>,
+    pub distinct: bool,
+    pub split: bool,
+}
+
+impl ListAttr {
+    fn parse(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<Self> {
+        let mut out = ListAttr::default();
+        meta.parse_nested_meta(|meta| {
+            let key = meta
+                .path
+                .get_ident()
+                .map(Ident::to_string)
+                .unwrap_or_default();
+            match key.as_str() {
+                "min" => out.min = Some(meta.value()?.parse()?),
+                "max" => out.max = Some(meta.value()?.parse()?),
+                "distinct" => out.distinct = parse_flag(&meta)?,
+                "split" => out.split = parse_flag(&meta)?,
+                other => {
+                    return Err(meta.error(format!(
+                        "unknown `list` key `{other}`; expected `min`, `max`, `distinct` or \
+                         `split`"
+                    )));
+                }
+            }
+            Ok(())
+        })?;
+        Ok(out)
+    }
+}
+
+/// `when(field = "mode", is_one_of = ["static"])` on a field.
+pub struct WhenAttr {
+    pub field: String,
+    pub is_one_of: Vec<String>,
+}
+
+impl WhenAttr {
+    fn parse(meta: &syn::meta::ParseNestedMeta<'_>) -> Result<Self> {
+        let (mut field, mut is_one_of) = (None, None);
+        meta.parse_nested_meta(|meta| {
+            let key = meta
+                .path
+                .get_ident()
+                .map(Ident::to_string)
+                .unwrap_or_default();
+            match key.as_str() {
+                "field" => field = Some(meta.value()?.parse::<LitStr>()?.value()),
+                "is_one_of" => {
+                    let value = meta.value()?;
+                    let content;
+                    syn::bracketed!(content in value);
+                    let values = content.parse_terminated(<LitStr as Parse>::parse, Token![,])?;
+                    is_one_of = Some(values.iter().map(LitStr::value).collect());
+                }
+                other => {
+                    return Err(meta.error(format!(
+                        "unknown `when` key `{other}`; expected `field` or `is_one_of`"
+                    )));
+                }
+            }
+            Ok(())
+        })?;
+        match (field, is_one_of) {
+            (Some(field), Some(is_one_of)) => Ok(WhenAttr { field, is_one_of }),
+            _ => Err(meta.error("`when` names a `field` and the values in `is_one_of`")),
+        }
+    }
+}
+
 /// One entry of an `attr(...)` list: something the crate has no opinion about.
 /// The crate writes it onto the element exactly as you gave it.
 pub struct CustomAttr {
@@ -452,12 +547,13 @@ pub struct Constraints {
     /// where you wrote it.
     pub kind: Option<(String, Span)>,
     pub multiple: Option<bool>,
-    pub pattern: Option<String>,
-    pub minlength: Option<usize>,
-    pub maxlength: Option<usize>,
-    pub min: Option<String>,
-    pub max: Option<String>,
-    pub step: Option<String>,
+    /// An expression, so a `const` can hold it. A string literal is one too.
+    pub pattern: Option<syn::Expr>,
+    pub minlength: Option<syn::Expr>,
+    pub maxlength: Option<syn::Expr>,
+    pub min: Option<BoundAttr>,
+    pub max: Option<BoundAttr>,
+    pub step: Option<BoundAttr>,
     pub accept: Option<String>,
     pub rows: Option<u32>,
     pub cols: Option<u32>,
@@ -479,16 +575,12 @@ impl Constraints {
                 self.kind = Some((lit.value(), lit.span()));
             }
             "multiple" => self.multiple = Some(parse_flag(meta)?),
-            "pattern" => self.pattern = Some(meta.value()?.parse::<LitStr>()?.value()),
-            "minlength" => {
-                self.minlength = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?)
-            }
-            "maxlength" => {
-                self.maxlength = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?)
-            }
-            "min" => self.min = Some(lit_to_string(&meta.value()?.parse()?)?),
-            "max" => self.max = Some(lit_to_string(&meta.value()?.parse()?)?),
-            "step" => self.step = Some(lit_to_string(&meta.value()?.parse()?)?),
+            "pattern" => self.pattern = Some(meta.value()?.parse()?),
+            "minlength" => self.minlength = Some(meta.value()?.parse()?),
+            "maxlength" => self.maxlength = Some(meta.value()?.parse()?),
+            "min" => self.min = Some(BoundAttr::parse(meta)?),
+            "max" => self.max = Some(BoundAttr::parse(meta)?),
+            "step" => self.step = Some(BoundAttr::parse(meta)?),
             "accept" => self.accept = Some(meta.value()?.parse::<LitStr>()?.value()),
             "rows" => self.rows = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?),
             "cols" => self.cols = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?),
@@ -545,6 +637,10 @@ pub struct FieldAttrs {
     pub prefix: Option<String>,
     pub legend: Option<TextAttr>,
     pub skip: bool,
+    /// `list(...)`: the rules of a `Vec<T>` field.
+    pub list: Option<ListAttr>,
+    /// `when(...)`: the field applies only while another one holds a value.
+    pub when: Option<WhenAttr>,
     pub options: Vec<OptionAttr>,
     /// Which control the field is, and what it accepts.
     pub constraints: Constraints,
@@ -631,13 +727,15 @@ impl FieldAttrs {
                     "prefix" => out.prefix = Some(meta.value()?.parse::<LitStr>()?.value()),
                     "legend" => out.legend = Some(meta.value()?.parse()?),
                     "skip" => out.skip = parse_flag(&meta)?,
+                    "list" => out.list = Some(ListAttr::parse(&meta)?),
+                    "when" => out.when = Some(WhenAttr::parse(&meta)?),
                     "attr" => parse_custom_attrs(&meta, "field", FIELD_RESERVED, &mut out.custom)?,
                     other => {
                         return Err(meta.error(format!(
                             "unknown `field` attribute `{other}`; expected one of: name, label, \
                              required, optional, default, reset, placeholder, help, autocomplete, \
                              id, class, disabled, readonly, autofocus, validate, from_str, \
-                             flatten, prefix, legend, skip, attr, {}",
+                             flatten, prefix, legend, skip, list, when, attr, {}",
                             Constraints::KEYS
                         )));
                     }
@@ -781,10 +879,23 @@ pub fn opt_text(value: &Option<TextAttr>) -> TokenStream {
     }
 }
 
-/// `Option<usize>`
-pub fn opt_usize(value: &Option<usize>) -> TokenStream {
+/// `Option<T>` of an expression, which is what the compiler types.
+pub fn opt_expr(value: &Option<syn::Expr>) -> TokenStream {
     match value {
         Some(value) => quote!(::core::option::Option::Some(#value)),
+        None => quote!(::core::option::Option::None),
+    }
+}
+
+/// `Option<&'static str>` of a bound. An integer the compiler evaluates has to
+/// become the string a spec holds, and a `const` block is what gives the text a
+/// `'static` home.
+pub fn opt_bound(value: &Option<BoundAttr>) -> TokenStream {
+    match value {
+        Some(BoundAttr::Literal(value)) => quote!(::core::option::Option::Some(#value)),
+        Some(BoundAttr::Expr(value)) => quote!(::core::option::Option::Some(
+            const { &::html_form::__private::Int::new((#value) as i128) }.as_str()
+        )),
         None => quote!(::core::option::Option::None),
     }
 }

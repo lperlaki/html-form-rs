@@ -4,7 +4,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Error, Fields, Ident, Result, Type};
 
-use crate::attrs::{CustomAttr, DefaultAttr, FieldAttrs, FormAttrs, opt_str, opt_text};
+use crate::attrs::{CustomAttr, DefaultAttr, FieldAttrs, FormAttrs, opt_expr, opt_str, opt_text};
 use crate::control::control_tokens;
 use crate::response::response_tokens;
 
@@ -89,6 +89,7 @@ pub fn derive(input: DeriveInput) -> Result<TokenStream> {
         let field_ident = field.ident.as_ref().expect("named field");
         let attrs = FieldAttrs::parse(&field.attrs)?;
         let shape = shape_of(field_ident, &field.ty, &attrs)?;
+        check_shape(field_ident, &attrs, &shape)?;
 
         if matches!(shape, Shape::Skip) {
             construct.push(quote!(#field_ident: ::core::default::Default::default()));
@@ -392,6 +393,24 @@ fn shape_of<'a>(ident: &Ident, ty: &'a Type, attrs: &FieldAttrs) -> Result<Shape
     Ok(Shape::Scalar(ty))
 }
 
+/// Refuse the two attributes that only make sense on some shapes of field.
+fn check_shape(ident: &Ident, attrs: &FieldAttrs, shape: &Shape<'_>) -> Result<()> {
+    if attrs.list.is_some() && !matches!(shape, Shape::Many(_)) {
+        return Err(Error::new(
+            ident.span(),
+            "`list(...)` describes the values of a `Vec<T>` field",
+        ));
+    }
+    if attrs.when.is_some() && matches!(shape, Shape::Skip | Shape::Flatten | Shape::Scalar(_)) {
+        return Err(Error::new(
+            ident.span(),
+            "a field under `when(...)` holds nothing while it does not apply, so it has to be an \
+             `Option<T>`, a `Vec<T>` or a `bool`; `required` still holds while it applies",
+        ));
+    }
+    Ok(())
+}
+
 /// The type whose `FormValue` impl drives a field. That is the type you wrote,
 /// or, for `#[field(from_str)]`, the adapter that converts it with its own
 /// `FromStr` and `Display`.
@@ -418,7 +437,13 @@ fn field_spec(
     // the adapter that stands in for it.
     let inner = shape.value_type().map(|ty| value_type(attrs, ty));
 
-    let required = attrs.required.unwrap_or(matches!(shape, Shape::Scalar(_)));
+    // What you wrote settles it. A list that needs a first entry is required
+    // too, which only the compiler can read off an expression.
+    let required = match attrs.required {
+        Some(required) => quote!(#required),
+        None if matches!(shape, Shape::Scalar(_)) => quote!(true),
+        None => quote!(::html_form::__private::needs_entry(&__list)),
+    };
     let label = label_tokens(attrs, ident);
     let placeholder = opt_text(&attrs.placeholder);
     let help = opt_text(&attrs.help);
@@ -433,6 +458,31 @@ fn field_spec(
         None => quote!(::html_form::__private::or_reset(&__control, &__default)),
     };
     let custom = attrs.custom.iter().map(CustomAttr::tokens);
+
+    let many = matches!(shape, Shape::Many(_));
+    let written_list = match &attrs.list {
+        Some(list) => {
+            let (min, max) = (opt_expr(&list.min), opt_expr(&list.max));
+            let (distinct, split) = (list.distinct, list.split);
+            quote!(::core::option::Option::Some(::html_form::ListSpec {
+                min: #min,
+                max: #max,
+                distinct: #distinct,
+                split: #split,
+            }))
+        }
+        None => quote!(::core::option::Option::None),
+    };
+    let when = match &attrs.when {
+        Some(when) => {
+            let (field, is_one_of) = (&when.field, &when.is_one_of);
+            quote!(::core::option::Option::Some(::html_form::When {
+                field: #field,
+                is_one_of: &[#(#is_one_of),*],
+            }))
+        }
+        None => quote!(::core::option::Option::None),
+    };
 
     // What the field says, then what its type says. The merge is a `const fn`
     // for the same reason the control's merge is. A type's own default is an
@@ -462,6 +512,7 @@ fn field_spec(
             // them. Both are `Copy`.
             let __control = #control;
             let __default = #default;
+            let __list = ::html_form::__private::or_list(&__control, #many, #written_list);
             ::html_form::FieldSpec {
                 name: #name,
                 label: #label,
@@ -477,6 +528,8 @@ fn field_spec(
                 disabled: #disabled,
                 readonly: #readonly,
                 autofocus: #autofocus,
+                list: __list,
+                when: #when,
                 attrs: &[#(#custom),*],
             }
         })

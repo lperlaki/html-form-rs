@@ -45,6 +45,8 @@ use std::fmt;
 use serde::{Serialize, Serializer};
 
 use crate::FieldKind;
+use crate::error::ErrorKind;
+use crate::values::Values;
 
 /// A custom attribute. The crate renders it onto the `<form>` or the control
 /// as written.
@@ -716,6 +718,70 @@ impl fmt::Debug for Provider {
 
 // ─── Fields and forms ─────────────────────────────────────────────────────────
 
+/// The rules of a list: a field that holds a `Vec<T>`.
+///
+/// `#[field(list(...))]` writes one. A `Vec<T>` behind a control that holds one
+/// value gets one without being told to, because that is what says it renders a
+/// row per value. See [`FieldSpec::list`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ListSpec {
+    /// The fewest values. A blank row is not a value.
+    pub min: Option<usize>,
+    /// The most values.
+    pub max: Option<usize>,
+    /// A value may appear once. A repeat is an error on the row that repeats.
+    pub distinct: bool,
+    /// One submitted value may hold several: the crate splits each at
+    /// whitespace, commas and semicolons, and drops a repeat without a word.
+    /// The list is short values the user types or pastes into one control.
+    pub split: bool,
+}
+
+impl ListSpec {
+    pub const DEFAULT: Self = Self {
+        min: None,
+        max: None,
+        distinct: false,
+        split: false,
+    };
+
+    /// The error for holding `count` values, if that is too few or too many.
+    pub(crate) fn count_error(&self, count: usize) -> Option<ErrorKind> {
+        match (self.min, self.max) {
+            (Some(min), _) if count < min => Some(ErrorKind::TooFew { min, count }),
+            (_, Some(max)) if count > max => Some(ErrorKind::TooMany { max, count }),
+            _ => None,
+        }
+    }
+}
+
+/// When a field applies: while the field it names holds one of some values.
+///
+/// While it does not, the crate does not parse or validate the field, whatever
+/// a stale client still sends, and `required` does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct When {
+    /// The field that decides, *relative* to any enclosing flatten prefix, as
+    /// [`FieldSpec::name`] is.
+    pub field: &'static str,
+    /// What it has to hold. `""` is a field left blank or a box left unchecked.
+    pub is_one_of: &'static [&'static str],
+}
+
+impl When {
+    /// Whether `value`, the raw value of [`When::field`], makes the field apply.
+    pub fn matches(&self, value: &str) -> bool {
+        is_one_of(self.is_one_of.iter().copied(), value)
+    }
+}
+
+/// Whether `value` is one of `values`. A checked box submits `on` and a filled-in
+/// record writes `true`, so to a condition the two are the same word.
+pub(crate) fn is_one_of<'a>(mut values: impl Iterator<Item = &'a str>, value: &str) -> bool {
+    let checked = |value: &str| matches!(value, "on" | "true");
+    values.any(|one| one == value || (checked(one) && checked(value)))
+}
+
 /// Everything the crate knows about a single field at compile time.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldSpec {
@@ -760,6 +826,12 @@ pub struct FieldSpec {
     pub disabled: bool,
     pub readonly: bool,
     pub autofocus: bool,
+    /// Set on a field that holds a list. It is what tells a `Vec<T>` behind a
+    /// row of inputs from the same `Vec<T>` behind a `<select multiple>`, which
+    /// the Rust type cannot. See [`FieldSpec::repeats`].
+    pub list: Option<ListSpec>,
+    /// Set on a field that only applies while another one holds a value.
+    pub when: Option<When>,
     /// Attributes the crate has no opinion about. The crate renders them onto
     /// the control as written. Declare them with `#[field(attr(...))]`.
     pub attrs: &'static [Attr],
@@ -781,8 +853,40 @@ impl FieldSpec {
         disabled: false,
         readonly: false,
         autofocus: false,
+        list: None,
+        when: None,
         attrs: &[],
     };
+
+    /// Whether this field renders one control per value, all under one name.
+    ///
+    /// A checkbox group holds a list too, but it has one control per *option*,
+    /// so a position among the values it sent says nothing about the page.
+    pub const fn repeats(&self) -> bool {
+        self.list.is_some() && !self.control.is_checkable()
+    }
+
+    /// What arrived for this field, one entry per row.
+    ///
+    /// Every value counts, a blank one included, because a blank row is still a
+    /// row on the page. A [`split`](ListSpec::split) list has a row per item
+    /// instead, so it has no blank rows and no repeats.
+    pub(crate) fn rows<'v>(&self, values: &'v Values, full_name: &'v str) -> Vec<&'v str> {
+        let submitted = values.all(full_name);
+        if !self.list.is_some_and(|list| list.split) {
+            return submitted.collect();
+        }
+        let mut items: Vec<&str> = Vec::new();
+        for item in submitted
+            .flat_map(|value| value.split(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';'))
+            .filter(|item| !item.is_empty())
+        {
+            if !items.contains(&item) {
+                items.push(item);
+            }
+        }
+        items
+    }
 
     /// The `id` of the control. It defaults to the prefixed field name.
     // Not `&str`. The point is to give back the name itself when the name is

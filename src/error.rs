@@ -18,6 +18,7 @@ use crate::spec::Text;
 /// its own translated message in place of the built-in English one.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ErrorKind {
     /// Required, but missing or blank.
     Required,
@@ -37,6 +38,12 @@ pub enum ErrorKind {
     Step { step: Cow<'static, str> },
     /// Not one of the field's declared choices.
     NotAChoice,
+    /// A list with fewer values than `list(min = ...)`.
+    TooFew { min: usize, count: usize },
+    /// A list with more values than `list(max = ...)`.
+    TooMany { max: usize, count: usize },
+    /// The same value twice in a `list(distinct)`.
+    Duplicate,
     /// A `#[field(validate = ...)]` or `#[form(validate = ...)]` function
     /// produced this error.
     ///
@@ -85,7 +92,72 @@ impl ErrorKind {
             ErrorKind::TooLarge { max } => format!("Must be {max} or earlier.").into(),
             ErrorKind::Step { step } => format!("Must be a multiple of {step}.").into(),
             ErrorKind::NotAChoice => "Select one of the available options.".into(),
+            ErrorKind::TooFew { min, count } => format!(
+                "Enter at least {min} value{} (currently {count}).",
+                plural(*min)
+            )
+            .into(),
+            ErrorKind::TooMany { max, count } => format!(
+                "Enter at most {max} value{} (currently {count}).",
+                plural(*max)
+            )
+            .into(),
+            ErrorKind::Duplicate => "This value is already in the list.".into(),
             ErrorKind::Custom { .. } => "This value is not valid.".into(),
+        }
+    }
+
+    /// A stable name for this kind, such as `too-short`, for a catalogue to key
+    /// its messages on.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ErrorKind::Required => "required",
+            ErrorKind::Invalid { .. } => "invalid",
+            ErrorKind::Pattern { .. } => "pattern",
+            ErrorKind::TooShort { .. } => "too-short",
+            ErrorKind::TooLong { .. } => "too-long",
+            ErrorKind::TooSmall { .. } => "too-small",
+            ErrorKind::TooLarge { .. } => "too-large",
+            ErrorKind::Step { .. } => "step",
+            ErrorKind::NotAChoice => "not-a-choice",
+            ErrorKind::TooFew { .. } => "too-few",
+            ErrorKind::TooMany { .. } => "too-many",
+            ErrorKind::Duplicate => "duplicate",
+            ErrorKind::Custom { .. } => "custom",
+        }
+    }
+
+    /// The constraint this kind carries, as the named arguments a message
+    /// catalogue takes. With [`ErrorKind::name`] it is everything a Fluent
+    /// lookup needs, so a translation is one call and not a `match`.
+    ///
+    /// ```
+    /// let kind = html_form::ErrorKind::TooShort { minlength: 12, length: 5 };
+    /// assert_eq!(kind.name(), "too-short");
+    /// assert_eq!(kind.args()[0], ("minlength", "12".into()));
+    /// ```
+    pub fn args(&self) -> Vec<(&'static str, Cow<'static, str>)> {
+        let number = |n: &usize| Cow::Owned(n.to_string());
+        match self {
+            ErrorKind::Invalid { expected } => vec![("expected", expected.clone())],
+            ErrorKind::Pattern { pattern } => vec![("pattern", pattern.clone())],
+            ErrorKind::TooShort { minlength, length } => {
+                vec![("minlength", number(minlength)), ("length", number(length))]
+            }
+            ErrorKind::TooLong { maxlength, length } => {
+                vec![("maxlength", number(maxlength)), ("length", number(length))]
+            }
+            ErrorKind::TooSmall { min } => vec![("min", min.clone())],
+            ErrorKind::TooLarge { max } => vec![("max", max.clone())],
+            ErrorKind::Step { step } => vec![("step", step.clone())],
+            ErrorKind::TooFew { min, count } => {
+                vec![("min", number(min)), ("count", number(count))]
+            }
+            ErrorKind::TooMany { max, count } => {
+                vec![("max", number(max)), ("count", number(count))]
+            }
+            ErrorKind::Required | ErrorKind::NotAChoice | ErrorKind::Duplicate => Vec::new(),
+            ErrorKind::Custom { code } => code.iter().map(|code| ("code", code.clone())).collect(),
         }
     }
 }
@@ -107,14 +179,13 @@ pub struct FieldError {
     /// [`FormView::localize`](crate::FormView::localize) resolves a key with
     /// the labels. Or leave the key in place and translate it from the view.
     pub message: Text,
-    /// Which input this error came from, for a field that submits more than
-    /// one under the same name — a `Vec<T>` behind a row of text inputs.
+    /// Which row this error came from, on a field that renders a control per
+    /// value: a `Vec<T>` behind a row of text inputs.
     ///
     /// It counts *every* value the browser sent under the name, blank ones
     /// included, so it is the position of the input on the page. `None` for a
-    /// field with one input, and for an error about the field as a whole, such
-    /// as a required list that arrived empty or the verdict of a
-    /// `#[field(validate = ...)]` function, which sees the whole `Vec`.
+    /// field with one control, for a checkbox group, and for an error about the
+    /// field as a whole, such as a required list that arrived empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<usize>,
 }
@@ -167,8 +238,13 @@ impl FieldError {
         )
     }
 
-    /// Pin this error to one input of a field that has several under the same
-    /// name. See [`index`](FieldError::index).
+    /// Pin this error to one row of a field that has several under one name.
+    /// See [`index`](FieldError::index).
+    ///
+    /// Inside a `validate` function, `index` is a position in the `Vec` the
+    /// function received. That `Vec` holds no blank rows, so the crate turns the
+    /// position into the row on the page. Anywhere else it already is the row,
+    /// and [`Values::row_of`](crate::Values::row_of) makes one from a position.
     pub fn at(mut self, index: usize) -> Self {
         self.index = Some(index);
         self
@@ -332,6 +408,11 @@ impl FormErrors {
         }));
     }
 
+    /// Every field error with its field name, to change in place.
+    pub(crate) fn fields_mut(&mut self) -> impl Iterator<Item = (&str, &mut FieldError)> {
+        self.fields.iter_mut().map(|(name, error)| (&**name, error))
+    }
+
     /// Every error as `(field name, message)`. Form-level errors use `None`.
     ///
     /// A message that is still an i18n key comes back as the key. That is also
@@ -419,23 +500,33 @@ impl std::error::Error for FormErrors {}
 impl Serialize for FormErrors {
     /// Serializes as `{"form": [...], "fields": {"name": [...]}}`, so a
     /// template can find a message by field name.
+    ///
+    /// A field with errors on its rows also has an entry in `"indexes"`, one row
+    /// or `null` per message of `"fields"`, in the same order. With none, the key
+    /// is left out.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(Serialize)]
         struct Repr<'a> {
             form: Vec<&'a str>,
             fields: BTreeMap<&'a str, Vec<&'a str>>,
+            #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+            indexes: BTreeMap<&'a str, Vec<Option<usize>>>,
         }
 
         let mut fields: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut indexes: BTreeMap<&str, Vec<Option<usize>>> = BTreeMap::new();
         for (name, error) in &self.fields {
             fields
                 .entry(name.as_ref())
                 .or_default()
                 .push(error.message.as_str());
+            indexes.entry(name.as_ref()).or_default().push(error.index);
         }
+        indexes.retain(|_, rows| rows.iter().any(Option::is_some));
         Repr {
             form: self.form.iter().map(|e| e.message.as_str()).collect(),
             fields,
+            indexes,
         }
         .serialize(serializer)
     }

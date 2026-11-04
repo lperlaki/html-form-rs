@@ -354,3 +354,119 @@ fn an_option_with_no_label_shows_its_value() {
     assert_eq!(choices[0].label_key, None);
     assert_eq!(choices[1].label, "Switzerland");
 }
+
+// ─── Several copies of one form ───────────────────────────────────────────────
+
+mod scoped {
+    use html_form::Form;
+
+    #[derive(Form, Debug)]
+    #[form(id = "rule")]
+    struct Rule {
+        #[field(help = "Short.")]
+        name: String,
+        #[option("a", "A")]
+        #[option("b", "B")]
+        #[field(type = "radio")]
+        kind: String,
+    }
+
+    fn ids(html: &str) -> Vec<&str> {
+        html.split(" id=\"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect()
+    }
+
+    #[test]
+    fn two_scoped_views_of_one_form_share_no_id() {
+        let one = Rule::render().scoped("row-1").to_html();
+        let two = Rule::render().scoped("row-2").to_html();
+        assert!(!ids(&one).is_empty());
+        for id in ids(&one) {
+            assert!(!ids(&two).contains(&id), "{id}");
+        }
+    }
+
+    #[test]
+    fn every_pointer_moves_with_what_it_points_at() {
+        let html = Rule::render().scoped("r").to_html();
+        assert!(html.contains(r#"<form id="r-rule""#));
+        assert!(html.contains(r#"for="r-name""#));
+        assert!(html.contains(r#"aria-describedby="r-name-help""#));
+        assert!(html.contains(r#"id="r-name-help""#));
+        assert!(html.contains(r#"aria-labelledby="r-kind-label""#));
+        assert!(html.contains(r#"id="r-kind-1""#));
+        assert!(html.contains(r#"name="name""#), "a name does not change");
+    }
+}
+
+// ─── Messages of the built-in checks ──────────────────────────────────────────
+
+mod localize_errors {
+    use html_form::{ErrorKind, Form, Outcome, Text};
+
+    #[derive(Form, Debug)]
+    struct Signup {
+        #[field(minlength = 12)]
+        name: String,
+        age: u32,
+    }
+
+    #[test]
+    fn a_kind_with_words_is_replaced_and_one_without_stays() {
+        let Outcome::Invalid { mut view, .. } = Signup::submit_urlencoded("name=ada") else {
+            panic!("too short");
+        };
+        view.localize_errors(|kind| match kind {
+            ErrorKind::TooShort { minlength, .. } => Some(format!("Mindestens {minlength}.")),
+            _ => None,
+        });
+        assert_eq!(view.field("name").unwrap().errors, ["Mindestens 12."]);
+        assert_eq!(
+            view.field("age").unwrap().errors,
+            ["This field is required."]
+        );
+    }
+
+    #[test]
+    fn a_view_keeps_the_kind_of_every_message_in_step() {
+        let Outcome::Invalid { mut view, .. } = Signup::submit_urlencoded("name=ada") else {
+            panic!("too short");
+        };
+        let field = view.field_mut("name").unwrap();
+        field.add_error("Taken.");
+        field.add_error(Text::key("name.taken"));
+        assert_eq!(field.error_kinds.len(), field.errors.len());
+        assert_eq!(field.error_kinds[0].name(), "too-short");
+        assert_eq!(field.error_kinds[1], ErrorKind::Custom { code: None });
+        assert_eq!(
+            field.error_kinds[2],
+            ErrorKind::Custom {
+                code: Some("name.taken".into())
+            }
+        );
+    }
+
+    /// A template reads the constraint the same way.
+    #[test]
+    fn the_kind_reaches_a_template() {
+        let Outcome::Invalid { view, .. } = Signup::submit_urlencoded("name=ada") else {
+            panic!("too short");
+        };
+        let json = serde_json::to_value(&view).unwrap();
+        let kind = &json["fields"][0]["error_kinds"][0];
+        assert_eq!(kind["kind"], "too_short");
+        assert_eq!(kind["minlength"], 12);
+    }
+}
+
+/// A Topcoat component holds a view across an `.await`, and a handler hands one
+/// to another task.
+#[test]
+fn a_view_and_a_submission_can_cross_threads() {
+    fn shared<T: Send + Sync + 'static>() {}
+    shared::<html_form::FormView>();
+    shared::<html_form::Values>();
+    shared::<html_form::FormErrors>();
+}

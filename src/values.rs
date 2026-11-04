@@ -117,6 +117,32 @@ impl Values {
         self.pairs.push((name, value.into()));
     }
 
+    /// Drop every value stored under `name`.
+    pub fn remove(&mut self, name: &str) {
+        self.pairs.retain(|(k, _)| k != name);
+    }
+
+    /// The row on the page of the value a `Vec<T>` field holds at `position`.
+    ///
+    /// A parsed `Vec` holds no blanks, and a blank row is still a row, so the
+    /// two count differently. This is the translation, for a caller that found
+    /// something wrong with `form.ip[2]` and wants the input it came from.
+    /// [`FieldError::at`](crate::FieldError::at) inside a `validate` function
+    /// gets it for free.
+    ///
+    /// ```
+    /// let values = html_form::Values::parse("ip=a&ip=&ip=b");
+    /// assert_eq!(values.row_of("ip", 1), Some(2));
+    /// assert_eq!(values.row_of("ip", 2), None);
+    /// ```
+    pub fn row_of(&self, name: &str, position: usize) -> Option<usize> {
+        self.all(name)
+            .enumerate()
+            .filter(|(_, value)| !is_blank(value))
+            .nth(position)
+            .map(|(row, _)| row)
+    }
+
     /// The first value submitted under `name`.
     pub fn get(&self, name: &str) -> Option<&str> {
         self.pairs

@@ -45,7 +45,9 @@ mod value;
 /// | `required` / `optional` | Overrides the default, which is required unless the type is `Option`, `Vec` or `bool` |
 /// | `default = "…"` | The value a blank form shows |
 /// | `default = path::to::fn` | A default the crate produces once per render, such as a CSRF token or a nonce, in place of a fixed one |
-/// | `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept` | Validation. The browser *and* the server enforce these |
+/// | `pattern`, `minlength`, `maxlength`, `min`, `max`, `step`, `accept` | Validation. The browser *and* the server enforce these. All but `accept` also take a constant: `min = MTU_MIN` |
+/// | `list(min = 1, max = 5, distinct, split)` | The rules of a `Vec<T>` field |
+/// | `when(field = "mode", is_one_of = ["static"])` | The field applies only while `mode` holds one of these values. On an `Option<T>`, a `Vec<T>` or a `bool` |
 /// | `placeholder`, `help`, `autocomplete`, `id`, `class`, `rows`, `cols` | Presentation |
 /// | `disabled`, `readonly`, `autofocus`, `multiple` | Flags |
 /// | `choices = SOME_CONST` | A `&'static [Choice]` of options |

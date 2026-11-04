@@ -14,7 +14,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{Error, Ident, Result};
 
-use crate::attrs::{Constraints, OptionAttr, opt_str, opt_u32, opt_usize};
+use crate::attrs::{Constraints, OptionAttr, opt_bound, opt_expr, opt_str, opt_u32};
 
 /// The `Control` const for one field or one type.
 ///
@@ -40,12 +40,12 @@ pub fn control_tokens(
     let choices = choices_tokens(constraints, options)?;
     let multiple = constraints.multiple.unwrap_or(multiple);
 
-    let pattern = opt_str(&constraints.pattern);
-    let minlength = opt_usize(&constraints.minlength);
-    let maxlength = opt_usize(&constraints.maxlength);
-    let min = opt_str(&constraints.min);
-    let max = opt_str(&constraints.max);
-    let step = opt_str(&constraints.step);
+    let pattern = opt_expr(&constraints.pattern);
+    let minlength = opt_expr(&constraints.minlength);
+    let maxlength = opt_expr(&constraints.maxlength);
+    let min = opt_bound(&constraints.min);
+    let max = opt_bound(&constraints.max);
+    let step = opt_bound(&constraints.step);
     let accept = opt_str(&constraints.accept);
     let rows = opt_u32(&constraints.rows);
     let cols = opt_u32(&constraints.cols);

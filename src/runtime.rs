@@ -9,7 +9,7 @@ use std::borrow::Cow;
 
 use crate::Form;
 use crate::context::Provides;
-use crate::error::{FieldError, FormErrors};
+use crate::error::{ErrorKind, FieldError, FormErrors};
 use crate::spec::{FieldSpec, Flattened};
 use crate::validate::{self, FieldValidator, FormValidator};
 use crate::value::FormValue;
@@ -49,6 +49,9 @@ pub struct ParseCtx<'a, C = ()> {
     context: &'a C,
     prefix: String,
     errors: FormErrors,
+    /// The [`split`](crate::ListSpec::split) lists read so far. A row of one is
+    /// an item rather than a value, so the two count alike.
+    split: Vec<Cow<'static, str>>,
 }
 
 impl<'a, C> ParseCtx<'a, C> {
@@ -58,6 +61,7 @@ impl<'a, C> ParseCtx<'a, C> {
             context,
             prefix: String::new(),
             errors: FormErrors::new(),
+            split: Vec::new(),
         }
     }
 
@@ -119,12 +123,37 @@ impl<'a, C> ParseCtx<'a, C> {
     /// Add a whole [`FormErrors`], and put the active prefix on each of its
     /// field names. The errors of a `#[form(validate = ...)]` function come in
     /// this way.
-    pub fn merge_errors(&mut self, errors: FormErrors) {
+    ///
+    /// A function like that knows a list as the `Vec` it holds, so an error it
+    /// pinned to a position comes out pinned to the row.
+    pub fn merge_errors(&mut self, mut errors: FormErrors) {
         // Lent out and put back, not copied, so a sub-form's errors cost
         // nothing to qualify.
         let prefix = std::mem::take(&mut self.prefix);
+        for (name, error) in errors.fields_mut() {
+            if let Some(position) = error.index {
+                error.index = self.row_of(&format!("{prefix}{name}"), position);
+            }
+        }
         self.errors.merge_prefixed(&prefix, errors);
         self.prefix = prefix;
+    }
+
+    /// Whether `spec` applies to this submission. See
+    /// [`When`](crate::When).
+    fn applies(&self, spec: &FieldSpec) -> bool {
+        spec.when.is_none_or(|when| {
+            let value = self.values.get(&self.full_name(when.field));
+            when.matches(value.unwrap_or_default())
+        })
+    }
+
+    /// The row of the value at `position` in the `Vec` a list parsed to.
+    fn row_of(&self, full_name: &str, position: usize) -> Option<usize> {
+        match self.split.iter().any(|name| name == full_name) {
+            true => Some(position),
+            false => self.values.row_of(full_name, position),
+        }
     }
 
     /// Parse a scalar field, which is required by default.
@@ -135,10 +164,11 @@ impl<'a, C> ParseCtx<'a, C> {
     /// truly optional field as an `Option<T>`.
     pub fn field<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<T> {
         let full = self.full_name(spec.name);
+        let applies = self.applies(spec);
         match read(self.values, &full) {
-            Raw::Present(raw) => self.convert::<T>(spec, &full, raw, None),
-            Raw::Absent | Raw::Blank => {
-                if spec.required {
+            Raw::Present(raw) if applies => self.convert::<T>(spec, &full, raw, None),
+            _ => {
+                if spec.required && applies {
                     self.errors.push(full, validate::required_error(spec));
                     return None;
                 }
@@ -156,6 +186,9 @@ impl<'a, C> ParseCtx<'a, C> {
     /// Parse an `Option<T>` field. A blank value and an absent one both mean
     /// `None`.
     pub fn optional<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<Option<T>> {
+        if !self.applies(spec) {
+            return Some(None);
+        }
         let full = self.full_name(spec.name);
         match read(self.values, &full) {
             Raw::Present(raw) => self.convert::<T>(spec, &full, raw, None).map(Some),
@@ -173,21 +206,40 @@ impl<'a, C> ParseCtx<'a, C> {
     /// This drops blank entries. An unselected `<select multiple>` and the
     /// hidden empty option of a checkbox group both produce one.
     pub fn many<T: FormValue>(&mut self, spec: &FieldSpec) -> Option<Vec<T>> {
+        if !self.applies(spec) {
+            return Some(Vec::new());
+        }
         let full = self.full_name(spec.name);
-        // The submission outlives the parse, so this walks the values as it
-        // converts them, in place of collecting them first.
+        if spec.list.is_some_and(|list| list.split) {
+            self.split.push(full.clone());
+        }
+        let repeats = spec.repeats();
+        let distinct = spec.list.is_some_and(|list| list.distinct);
+
+        // The submission outlives the parse, so the rows borrow from it.
         let values = self.values;
+        let rows = spec.rows(values, &full);
         let mut out = Vec::new();
+        let mut count = 0;
         let mut ok = true;
         // Every value under the name is counted, blank ones included, so an
         // error's index is the position of the input that carries it. A blank
         // input is one the user added and left empty: it is not a value, but it
         // is still a row on the page, and the rows after it moved.
-        for (index, raw) in values.all(&full).enumerate() {
+        for (row, raw) in rows.iter().copied().enumerate() {
             if is_blank(raw) {
                 continue;
             }
-            match self.convert::<T>(spec, &full, raw, Some(index)) {
+            count += 1;
+            let index = repeats.then_some(row);
+            if distinct && rows[..row].contains(&raw) {
+                let mut error = FieldError::new(ErrorKind::Duplicate);
+                error.index = index;
+                self.errors.push(full.clone(), error);
+                ok = false;
+                continue;
+            }
+            match self.convert::<T>(spec, &full, raw, index) {
                 Some(value) => out.push(value),
                 None => ok = false,
             }
@@ -200,6 +252,10 @@ impl<'a, C> ParseCtx<'a, C> {
             }
             return Some(Vec::new());
         }
+        if let Some(kind) = spec.list.and_then(|list| list.count_error(count)) {
+            self.errors.push(full, FieldError::new(kind));
+            ok = false;
+        }
         ok.then_some(out)
     }
 
@@ -208,6 +264,9 @@ impl<'a, C> ParseCtx<'a, C> {
     /// A user must check a *required* checkbox. That is the HTML rule, and it
     /// is useful for "I accept the terms".
     pub fn flag(&mut self, spec: &FieldSpec) -> Option<bool> {
+        if !self.applies(spec) {
+            return Some(false);
+        }
         let full = self.full_name(spec.name);
         let checked = match self.values.get(&full) {
             None => false,
@@ -247,11 +306,13 @@ impl<'a, C> ParseCtx<'a, C> {
             context: Provides::provide(self.context),
             prefix: std::mem::take(&mut self.prefix),
             errors: std::mem::take(&mut self.errors),
+            split: std::mem::take(&mut self.split),
         };
         let parsed = T::parse_in(&mut nested);
 
         self.prefix = nested.prefix;
         self.errors = nested.errors;
+        self.split = nested.split;
         self.prefix.truncate(restore);
         parsed
     }
@@ -261,14 +322,25 @@ impl<'a, C> ParseCtx<'a, C> {
     /// The function may take the value alone, or the value and the context. It
     /// may return a `bool`, or any `Result` whose error becomes a message. See
     /// [`FieldValidator`] and [`FieldValidation`](crate::FieldValidation).
+    ///
+    /// The function sees a list as the `Vec` it holds, which has no blank rows,
+    /// so an error it pinned to a position comes out pinned to the row. A field
+    /// that does not apply is not checked.
     pub fn check_custom<T, M>(
         &mut self,
         spec: &FieldSpec,
         value: &T,
         validator: impl FieldValidator<T, C, M>,
     ) {
-        if let Some(error) = validator.check(value, self.context) {
+        if !self.applies(spec) {
+            return;
+        }
+        if let Some(mut error) = validator.check(value, self.context) {
             let full = self.full_name(spec.name);
+            error.index = error
+                .index
+                .filter(|_| spec.repeats())
+                .and_then(|position| self.row_of(&full, position));
             self.errors.push(full, error);
         }
     }
@@ -343,7 +415,7 @@ pub mod __private {
     use crate::context::{DefaultSource, Provides};
     use crate::error::{FieldError, ValueError};
     use crate::spec::{
-        Bounds, Choice, ChoiceStyle, ChooseControl, Control, FieldDefault, FileControl,
+        Bounds, Choice, ChoiceStyle, ChooseControl, Control, FieldDefault, FileControl, ListSpec,
         NumberControl, TextControl, TextFormat, TextareaControl,
     };
     use crate::validate::FieldValidation;
@@ -504,22 +576,87 @@ pub mod __private {
     ///
     /// `#[field(reset)]` settles it outright, and `reset = false` settles it
     /// the other way. The macro emits what you wrote in that case and never
-    /// calls this. Where the field says nothing, one kind of field resets on
-    /// its own: a hidden control whose default the form *produces*. Nobody
-    /// typed such a field, it can hold nothing a caller would miss, and a
-    /// rejected token sent back would make the retry fail exactly as the first
-    /// attempt did.
+    /// calls this. Where the field says nothing, two kinds of field reset on
+    /// their own. A password box does, because a password must not travel back
+    /// into a page. So does a hidden control whose default the form *produces*.
+    /// Nobody typed such a field, it can hold nothing a caller would miss, and
+    /// a rejected token sent back would make the retry fail exactly as the
+    /// first attempt did.
     ///
     /// This is a `const fn` because the macro cannot see either half of that
     /// rule. A control can come from the field's Rust type, and so can a
     /// default. [`FieldSpec::reset`](crate::FieldSpec::reset) is what the
     /// renderer reads, and it is the whole answer by the time a spec exists.
     pub const fn or_reset(control: &Control, default: &Option<FieldDefault>) -> bool {
+        if matches!(control.kind(), crate::FieldKind::Password) {
+            return true;
+        }
         match default {
             Some(default) => {
                 default.is_generated() && matches!(control.kind(), crate::FieldKind::Hidden)
             }
             None => false,
+        }
+    }
+
+    /// A field's list rules: the ones written on it, or, for a `Vec<T>` behind
+    /// a control that holds one value, none in particular. That still makes it
+    /// a list, which is what says it renders a row per value.
+    ///
+    /// A `const fn` because the macro cannot see the control, as with
+    /// [`or_reset`].
+    pub const fn or_list(
+        control: &Control,
+        many: bool,
+        written: Option<ListSpec>,
+    ) -> Option<ListSpec> {
+        match written {
+            Some(list) => Some(list),
+            None if many && !control.multiple() && !control.is_checkable() => {
+                Some(ListSpec::DEFAULT)
+            }
+            None => None,
+        }
+    }
+
+    /// Whether a list needs a first entry, which makes it required unless the
+    /// field says otherwise.
+    pub const fn needs_entry(list: &Option<ListSpec>) -> bool {
+        matches!(list, Some(ListSpec { min: Some(1..), .. }))
+    }
+
+    /// An integer as the text a [`Bounds`] holds, made while a spec is built:
+    /// `#[field(min = MTU_MIN)]`. Its longest value is `i128::MIN`, 40 bytes.
+    pub struct Int {
+        digits: [u8; 40],
+        start: usize,
+    }
+
+    impl Int {
+        pub const fn new(value: i128) -> Self {
+            let mut digits = [0; 40];
+            let mut start = digits.len();
+            let mut rest = value.unsigned_abs();
+            loop {
+                start -= 1;
+                digits[start] = b'0' + (rest % 10) as u8;
+                rest /= 10;
+                if rest == 0 {
+                    break;
+                }
+            }
+            if value < 0 {
+                start -= 1;
+                digits[start] = b'-';
+            }
+            Self { digits, start }
+        }
+
+        pub const fn as_str(&self) -> &str {
+            match std::str::from_utf8(self.digits.split_at(self.start).1) {
+                Ok(text) => text,
+                Err(_) => unreachable!(),
+            }
         }
     }
 

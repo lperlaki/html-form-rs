@@ -107,6 +107,23 @@ impl FieldView {
     }
 
     fn write_html(&self, out: &mut String) {
+        let Some(when) = &self.when else {
+            return self.write_field(out);
+        };
+        // Always there, so that a script can open it when the field it depends
+        // on changes. Shut, it hides its controls, keeps them out of the
+        // submission, and keeps the browser from enforcing their `required`.
+        out.push_str("  <fieldset class=\"html-form__when\"");
+        attr(out, "data-when-field", &when.field);
+        attr(out, "data-when-values", &when.is_one_of.join(","));
+        flag(out, "disabled", !self.applies);
+        flag(out, "hidden", !self.applies);
+        out.push_str(">\n");
+        self.write_field(out);
+        out.push_str("  </fieldset>\n");
+    }
+
+    fn write_field(&self, out: &mut String) {
         // A hidden field has nothing to label and nothing to describe.
         if self.kind == FieldKind::Hidden {
             self.write_control(out);
@@ -145,19 +162,37 @@ impl FieldView {
             out.push_str("</p>\n");
         }
 
-        if self.has_errors {
-            out.push_str("    <ul class=\"html-form__errors\" id=\"");
-            escape_into(out, &self.error_id);
-            out.push_str("\">\n");
-            for message in &self.errors {
-                out.push_str("      <li>");
-                escape_into(out, message);
-                out.push_str("</li>\n");
-            }
-            out.push_str("    </ul>\n");
-        }
+        self.write_errors(out);
 
         out.push_str("  </div>\n");
+    }
+
+    fn write_errors(&self, out: &mut String) {
+        let mut messages = self.field_errors().peekable();
+        if messages.peek().is_none() {
+            return;
+        }
+        out.push_str("    <ul class=\"html-form__errors\" id=\"");
+        escape_into(out, &self.error_id);
+        out.push_str("\">\n");
+        for message in messages {
+            out.push_str("      <li>");
+            escape_into(out, message);
+            out.push_str("</li>\n");
+        }
+        out.push_str("    </ul>\n");
+    }
+
+    /// One control per value, each with the messages of its own row.
+    fn write_rows(&self, out: &mut String) {
+        out.push_str("<div class=\"html-form__rows\">\n");
+        for row in self.rows() {
+            out.push_str("      <div class=\"html-form__row\">");
+            row.write_control(out);
+            out.push_str("</div>\n");
+            row.write_errors(out);
+        }
+        out.push_str("    </div>");
     }
 
     fn write_label(&self, out: &mut String) {
@@ -188,12 +223,21 @@ impl FieldView {
     }
 
     fn write_control(&self, out: &mut String) {
+        if self.repeated {
+            return self.write_rows(out);
+        }
         match self.kind {
             FieldKind::Textarea => self.write_textarea(out),
             FieldKind::Select => self.write_select(out),
             FieldKind::Radio if !self.choices.is_empty() => self.write_radio_group(out),
             FieldKind::CheckboxGroup if !self.choices.is_empty() => self.write_checkbox_group(out),
             _ => self.write_input(out),
+        }
+        for value in self.companion_values() {
+            out.push_str("<input type=\"hidden\"");
+            attr(out, "name", &self.name);
+            attr(out, "value", value);
+            out.push('>');
         }
     }
 

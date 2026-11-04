@@ -68,7 +68,7 @@ struct Allowlist {
 const TEMPLATE: &str = r#"
 <form action="{{ form.action }}" method="{{ form.method }}">
   {%- for field in form.fields %}
-  {%- if field.name == "ip" %}
+  {%- if field.repeated %}
   <fieldset class="repeat" id="ip-rows">
     <legend>{{ field.label }}</legend>
     {%- for value in field.values or [""] %}

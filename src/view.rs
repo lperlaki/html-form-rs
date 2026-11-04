@@ -19,9 +19,10 @@
 //! `error_keys[i]` belongs to `errors[i]`, and the two lists always have the
 //! same length. A template that only prints the messages can ignore this.
 //!
-//! [`FieldView::error_indexes`] runs alongside them the same way. It says which
-//! input each message came from, for a field that renders a row of inputs under
-//! one name.
+//! [`FieldView::error_indexes`] and [`FieldView::error_kinds`] run alongside them
+//! the same way. The first says which row each message came from, on a field
+//! that renders a row of inputs under one name. The second says which constraint
+//! it broke, for [`FormView::localize_errors`].
 //!
 //! # Why every string here is a `Cow`
 //!
@@ -41,10 +42,13 @@ use std::borrow::Cow;
 use serde::Serialize;
 
 use crate::Form;
-use crate::error::{FieldError, FormErrors};
+use crate::error::{ErrorKind, FieldError, FormErrors};
 use crate::kind::FieldKind;
-use crate::spec::{Attr, Choice, FormEncType, FormMethod, ResolvedField, Text, sanitize_id};
-use crate::values::Values;
+use crate::spec::{
+    Attr, Choice, FormEncType, FormMethod, ListSpec, ResolvedField, Text, is_one_of, join,
+    sanitize_id,
+};
+use crate::values::{Values, is_blank};
 
 /// Split a spec [`Text`] into the string to render now and the key that still
 /// waits for a lookup. Both borrow the spec, unless the spec itself was built
@@ -101,6 +105,12 @@ fn resolve_str(
     *key = None;
 }
 
+/// The kind of a message added after the parse: a custom one, whose code is the
+/// key it carries, if it carries one.
+fn custom(key: Option<&Cow<'static, str>>) -> ErrorKind {
+    ErrorKind::Custom { code: key.cloned() }
+}
+
 /// Resolve a list of messages against its list of keys, in step.
 fn resolve_messages(
     messages: &mut [Cow<'static, str>],
@@ -109,6 +119,22 @@ fn resolve_messages(
 ) {
     for (message, key) in messages.iter_mut().zip(keys) {
         resolve_str(message, key, translate);
+    }
+}
+
+/// Replace each message whose kind `translate` has words for, in step. The key
+/// goes with it, so that nothing later translates the message twice.
+fn resolve_kinds(
+    messages: &mut [Cow<'static, str>],
+    keys: &mut [Option<Cow<'static, str>>],
+    kinds: &[ErrorKind],
+    translate: &dyn Fn(&ErrorKind) -> Option<Cow<'static, str>>,
+) {
+    for ((message, key), kind) in messages.iter_mut().zip(keys).zip(kinds) {
+        if let Some(found) = translate(kind) {
+            *message = found;
+            *key = None;
+        }
     }
 }
 
@@ -139,6 +165,9 @@ pub struct FormView {
     /// same length. An entry is set while its message is still an unresolved
     /// i18n key.
     pub error_keys: Vec<Option<Cow<'static, str>>>,
+    /// One entry per [`FormView::errors`] message, in the same order and of the
+    /// same length: the constraint it broke.
+    pub error_kinds: Vec<ErrorKind>,
     /// True when the form, or any of its fields, has an error.
     pub has_errors: bool,
     pub fields: Vec<FieldView>,
@@ -200,13 +229,18 @@ pub struct FieldView {
     /// unresolved i18n key.
     pub error_keys: Vec<Option<Cow<'static, str>>>,
     /// One entry per [`FieldView::errors`] message, in the same order and of
+    /// the same length: the constraint it broke, for a caller that writes its
+    /// own text. See [`FormView::localize_errors`].
+    pub error_kinds: Vec<ErrorKind>,
+    /// One entry per [`FieldView::errors`] message, in the same order and of
     /// the same length: the index into [`values`](FieldView::values) of the
     /// input the message belongs to, or `None` for a message about the field as
     /// a whole. See [`FieldError::index`](crate::FieldError::index).
     ///
-    /// A field with one input leaves every entry `None`. A field the browser
-    /// submits several times — a `Vec<T>` behind a row of text inputs — uses it
-    /// to put each message under the input that caused it:
+    /// A field with one control leaves every entry `None`. A
+    /// [`repeated`](FieldView::repeated) field uses it to put each message
+    /// under the input that caused it. [`rows`](FieldView::rows) does that for
+    /// a renderer written in Rust, and a template does it like this:
     ///
     /// ```jinja
     /// {% for value in field.values %}{% set row = loop.index0 %}
@@ -230,6 +264,30 @@ pub struct FieldView {
     pub help_id: Cow<'static, str>,
     /// The id of the caption that names a radio or checkbox group.
     pub label_id: Cow<'static, str>,
+    /// This field renders one control per value, all under
+    /// [`name`](FieldView::name), rather than one control that holds them.
+    /// [`rows`](FieldView::rows) gives a view of each.
+    pub repeated: bool,
+    /// The rules of a list, for a renderer that adds and removes rows to stay
+    /// inside them. The server enforces them either way.
+    pub list: Option<ListSpec>,
+    /// The field this one depends on, if it applies only under a condition.
+    pub when: Option<WhenView>,
+    /// Whether the field applies, going by what [`when`](FieldView::when) names
+    /// holds in this view. A field that does not should be hidden and disabled.
+    /// A browser then neither submits it nor enforces `required`, and nothing
+    /// it sends anyway would be read. The built-in renderer does this with a
+    /// `<fieldset>`.
+    pub applies: bool,
+}
+
+/// When a field applies, ready to render. See [`When`](crate::When).
+#[derive(Debug, Clone, Serialize)]
+pub struct WhenView {
+    /// The full name of the field that decides.
+    pub field: Cow<'static, str>,
+    /// What it has to hold. A checked box holds `on`.
+    pub is_one_of: Vec<Cow<'static, str>>,
 }
 
 /// One custom attribute, ready to render.
@@ -327,7 +385,27 @@ impl FormView {
         });
         let spec = F::SPEC;
 
+        // Last, because a condition can name a field that comes after it.
+        let applies: Vec<bool> = fields
+            .iter()
+            .map(|field: &FieldView| {
+                field.when.as_ref().is_none_or(|when| {
+                    let driver = fields.iter().find(|other| other.name == when.field);
+                    let value = driver.map_or("", FieldView::condition_value);
+                    is_one_of(when.is_one_of.iter().map(Cow::as_ref), value)
+                })
+            })
+            .collect();
+        for (field, applies) in fields.iter_mut().zip(applies) {
+            field.applies = applies;
+        }
+
         let (form_errors, form_error_keys) = split_messages(errors.form_errors().iter());
+        let form_error_kinds = errors
+            .form_errors()
+            .iter()
+            .map(|error| error.kind.clone())
+            .collect();
 
         let (submit_label, submit_label_key) = split(spec.submit_label.as_ref());
 
@@ -345,6 +423,7 @@ impl FormView {
             has_errors: !form_errors.is_empty() || fields.iter().any(|f| f.has_errors),
             errors: form_errors,
             error_keys: form_error_keys,
+            error_kinds: form_error_kinds,
             fields,
         }
     }
@@ -386,6 +465,86 @@ impl FormView {
         S: Into<Cow<'static, str>>,
     {
         self.localize(translate);
+        self
+    }
+
+    /// Replace the text of every error whose [kind](ErrorKind) `translate` has
+    /// words for. The rest keep the text they have.
+    ///
+    /// [`localize`](FormView::localize) resolves keys, and the built-in checks
+    /// have none: their English message is built from the constraint. This is
+    /// their half, and [`ErrorKind::name`] and [`ErrorKind::args`] are what a
+    /// message catalogue needs, so one call covers every kind:
+    ///
+    /// ```
+    /// # use html_form::{Form, Outcome};
+    /// # #[derive(Form, Debug)]
+    /// # struct Signup {
+    /// #     #[field(minlength = 12)]
+    /// #     name: String,
+    /// # }
+    /// let Outcome::Invalid { mut view, .. } = Signup::submit_urlencoded("name=ada") else {
+    ///     panic!("too short");
+    /// };
+    /// view.localize_errors(|kind| match kind.name() {
+    ///     "too-short" => Some(format!("Mindestens {} Zeichen.", kind.args()[0].1)),
+    ///     _ => None,
+    /// });
+    /// assert_eq!(view.field("name").unwrap().errors[0], "Mindestens 12 Zeichen.");
+    /// ```
+    pub fn localize_errors<S, F>(&mut self, translate: F)
+    where
+        F: Fn(&ErrorKind) -> Option<S>,
+        S: Into<Cow<'static, str>>,
+    {
+        let translate = |kind: &ErrorKind| translate(kind).map(Into::into);
+        resolve_kinds(
+            &mut self.errors,
+            &mut self.error_keys,
+            &self.error_kinds,
+            &translate,
+        );
+        for field in &mut self.fields {
+            resolve_kinds(
+                &mut field.errors,
+                &mut field.error_keys,
+                &field.error_kinds,
+                &translate,
+            );
+        }
+    }
+
+    /// Give every id in this view the prefix `scope`, so that several copies of
+    /// one form can share a page: a table with an edit dialog per row, say.
+    ///
+    /// It covers the `<form>`, each control, and the ids of its error list,
+    /// help text and caption, so labels and `aria-*` keep pointing at their own
+    /// copy. Names do not change, and neither do custom attributes, which the
+    /// crate knows nothing about.
+    ///
+    /// ```
+    /// # use html_form::Form;
+    /// # #[derive(Form)]
+    /// # struct Rule {
+    /// #     name: String,
+    /// # }
+    /// let view = Rule::render().scoped("row-7");
+    /// let field = view.field("name").unwrap();
+    /// assert_eq!(field.id, "row-7-name");
+    /// assert_eq!(field.error_id, "row-7-name-error");
+    /// ```
+    #[must_use]
+    pub fn scoped(mut self, scope: &str) -> Self {
+        let scoped = |id: &mut Cow<'static, str>| *id = format!("{scope}-{id}").into();
+        if let Some(id) = &mut self.id {
+            scoped(id);
+        }
+        for field in &mut self.fields {
+            scoped(&mut field.id);
+            scoped(&mut field.error_id);
+            scoped(&mut field.help_id);
+            scoped(&mut field.label_id);
+        }
         self
     }
 
@@ -452,6 +611,7 @@ impl FormView {
     /// Add a form-level error, as text or as an i18n key.
     pub fn add_error(&mut self, message: impl Into<Text>) {
         let (message, key) = parts(message.into());
+        self.error_kinds.push(custom(key.as_ref()));
         self.errors.push(message);
         self.error_keys.push(key);
         self.has_errors = true;
@@ -527,8 +687,9 @@ impl FieldView {
             // it holds. A form that filled it in would put a value the caller
             // never had in front of the user, for them to save without
             // noticing.
-            Some(values) => values
-                .all(full_name)
+            Some(values) => spec
+                .rows(values, full_name)
+                .into_iter()
                 .map(|value| Cow::Owned(value.to_owned()))
                 .collect(),
             // A checkbox default says whether the box starts checked. It does
@@ -565,7 +726,16 @@ impl FieldView {
             .collect();
 
         let (messages, message_keys) = split_messages(errors.field(full_name));
-        let message_indexes = errors.field(full_name).map(|error| error.index).collect();
+        let message_kinds = errors
+            .field(full_name)
+            .map(|error| error.kind.clone())
+            .collect();
+        // A row that is not in this view is a row the message cannot go to, as
+        // on a field that resets. It then belongs to the field as a whole.
+        let message_indexes = errors
+            .field(full_name)
+            .map(|error| error.index.filter(|row| *row < current.len()))
+            .collect();
 
         let base = sanitize_id(full_name);
         let id = spec.id_for(full_name);
@@ -574,6 +744,16 @@ impl FieldView {
         let (help, help_key) = split(spec.help.as_ref());
         let (placeholder, placeholder_key) = split(spec.placeholder.as_ref());
         let (group, group_key) = split(group);
+        let repeated = spec.repeats();
+        let when = spec.when.map(|when| {
+            // The name is the prefix and then the name in the spec, and the
+            // field that decides sits under the same prefix.
+            let prefix = name.strip_suffix(spec.name).unwrap_or_default();
+            WhenView {
+                field: join(prefix, when.field),
+                is_one_of: when.is_one_of.iter().copied().map(Cow::Borrowed).collect(),
+            }
+        });
 
         FieldView {
             error_id: suffixed(&base, "-error"),
@@ -590,7 +770,7 @@ impl FieldView {
             name,
             checked,
             required: spec.required,
-            multiple: control.multiple(),
+            multiple: control.multiple() && !repeated,
             disabled: spec.disabled,
             readonly: spec.readonly,
             autofocus: spec.autofocus,
@@ -614,9 +794,112 @@ impl FieldView {
             has_errors: !messages.is_empty(),
             errors: messages,
             error_keys: message_keys,
+            error_kinds: message_kinds,
             error_indexes: message_indexes,
             group,
             group_key,
+            repeated,
+            list: spec.list,
+            when,
+            applies: true,
+        }
+    }
+
+    /// What this field holds, as a [condition](WhenView) on another field reads
+    /// it: the value a browser would submit, or nothing.
+    fn condition_value(&self) -> &str {
+        match self.kind {
+            FieldKind::Checkbox if self.checked => "on",
+            FieldKind::Checkbox => "",
+            _ => self.value.as_deref().unwrap_or_default(),
+        }
+    }
+
+    /// A view of each row of a [`repeated`](FieldView::repeated) field, for a
+    /// renderer written in Rust. Each is an ordinary field with one control:
+    /// the constraints of this one, its own value, its own id, and the messages
+    /// that belong to that row. Whatever renders one control renders a row.
+    ///
+    /// Blank rows stay. After the last value comes one more blank row, so a page
+    /// without a script can grow the list, unless the last row is blank already
+    /// or the list is at its `max`. The field's own label, help text and
+    /// [`field_errors`](FieldView::field_errors) belong around the rows.
+    ///
+    /// A field that is not repeated is its own only row.
+    pub fn rows(&self) -> Vec<FieldView> {
+        if !self.repeated {
+            return vec![self.clone()];
+        }
+        let room = self
+            .list
+            .and_then(|list| list.max)
+            .is_none_or(|max| self.values.len() < max);
+        let open = !self.disabled && !self.readonly && self.kind != FieldKind::Hidden;
+        let blank_last = self.values.last().is_some_and(|value| is_blank(value));
+        let rows = self.values.len() + usize::from(open && room && !blank_last);
+        // A list that shows nothing still shows a control to fill in.
+        let rows = rows.max(usize::from(self.kind != FieldKind::Hidden));
+        (0..rows).map(|row| self.row(row)).collect()
+    }
+
+    fn row(&self, row: usize) -> FieldView {
+        let value = self.values.get(row).cloned();
+        let mine: Vec<usize> = (0..self.errors.len())
+            .filter(|at| self.error_indexes.get(*at).copied().flatten() == Some(row))
+            .collect();
+        let mut view = self.clone();
+        view.repeated = false;
+        view.values = value.iter().cloned().collect();
+        for choice in &mut view.choices {
+            choice.selected = value.as_ref() == Some(&choice.value);
+        }
+        view.value = value;
+        // The first row is the one the field's label points at.
+        if row > 0 {
+            view.id = format!("{}-{row}", self.id).into();
+        }
+        view.error_id = format!("{}-{row}", self.error_id).into();
+        view.required = self.required && row == 0;
+        view.autofocus = self.autofocus && row == 0;
+        view.has_errors = !mine.is_empty();
+        view.errors = mine.iter().map(|at| self.errors[*at].clone()).collect();
+        view.error_keys = mine.iter().map(|at| self.error_keys[*at].clone()).collect();
+        view.error_kinds = mine
+            .iter()
+            .map(|at| self.error_kinds[*at].clone())
+            .collect();
+        view.error_indexes = vec![Some(row); mine.len()];
+        view
+    }
+
+    /// The messages that belong to the field as a whole, and to no row: every
+    /// message, on a field that is not repeated.
+    pub fn field_errors(&self) -> impl Iterator<Item = &Cow<'static, str>> {
+        self.errors
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| {
+                !self.repeated || self.error_indexes.get(*at).copied().flatten().is_none()
+            })
+            .map(|(_, message)| message)
+    }
+
+    /// What a [`disabled`](FieldView::disabled) control has to submit through a
+    /// hidden input of the same name, because a browser does not submit the
+    /// control itself. Without it an unchanged box would read as unticked, and
+    /// an unchanged required field as missing.
+    ///
+    /// The built-in renderer writes those inputs, and a renderer of your own
+    /// should too. Nothing stops a client from changing what they hold, so a
+    /// value the user may not change is a value the server refuses to change,
+    /// whatever was posted.
+    pub fn companion_values(&self) -> Vec<&str> {
+        match self.kind {
+            _ if !self.disabled => Vec::new(),
+            FieldKind::File => Vec::new(),
+            FieldKind::Checkbox if self.checked => vec!["on"],
+            FieldKind::Checkbox => Vec::new(),
+            _ => self.values.iter().map(Cow::as_ref).collect(),
         }
     }
 
@@ -711,6 +994,7 @@ impl FieldView {
 
     fn push_error(&mut self, message: impl Into<Text>, index: Option<usize>) {
         let (message, key) = parts(message.into());
+        self.error_kinds.push(custom(key.as_ref()));
         self.errors.push(message);
         self.error_keys.push(key);
         self.error_indexes.push(index);
