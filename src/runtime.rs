@@ -1,8 +1,9 @@
 //! The parsing machinery that hand-written and derived [`Form`] impls share.
 //!
-//! [`ParseCtx`] carries four things through a parse. They are the raw
+//! [`ParseCtx`] carries five things through a parse. They are the raw
 //! submission, the context the caller passed in, the flatten prefix in scope,
-//! and the growing error list. Nothing here stops early. A failed field records
+//! the growing error list, and the split lists read so far. Nothing here stops
+//! early. A failed field records
 //! its error and returns `None`, and the parse goes on to the next field.
 
 use std::borrow::Cow;

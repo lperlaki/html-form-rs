@@ -687,11 +687,18 @@ impl FieldView {
             // it holds. A form that filled it in would put a value the caller
             // never had in front of the user, for them to save without
             // noticing.
-            Some(values) => spec
-                .rows(values, full_name)
-                .into_iter()
-                .map(|value| Cow::Owned(value.to_owned()))
-                .collect(),
+            Some(values) => match spec.list.is_some_and(|list| list.split) {
+                true => spec
+                    .rows(values, full_name)
+                    .into_iter()
+                    .map(|value| Cow::Owned(value.to_owned()))
+                    .collect(),
+                // Every other field copies what came in, and nothing else.
+                false => values
+                    .all(full_name)
+                    .map(|value| Cow::Owned(value.to_owned()))
+                    .collect(),
+            },
             // A checkbox default says whether the box starts checked. It does
             // not say what to put in a `value` attribute, because a box with no
             // value submits "on".

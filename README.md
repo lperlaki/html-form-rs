@@ -70,6 +70,8 @@ assert!(signup.newsletter);
 | **Re-render** | `Outcome::Invalid` gives back a `FormView` with the submitted values and the messages for each field | [docs](https://docs.rs/html-form/latest/html_form/enum.Outcome.html) |
 | **Reuse** | `#[field(flatten)]` puts one form into another. A name prefix is optional | [docs](https://docs.rs/html-form/latest/html_form/guide/index.html#reuse-flattening-one-form-into-another) |
 | **Localize** | Every label, help text, placeholder, legend and option label takes an i18n key in place of the text | [docs](https://docs.rs/html-form/latest/html_form/guide/index.html#localization) |
+| **Lists** | A `Vec<T>` renders one input per value, with `list(min, max, distinct)` and an error on the row that caused it | [docs](https://docs.rs/html-form/latest/html_form/guide/index.html#lists) |
+| **Conditions** | `when(field = "mode", is_one_of = ["static"])` hides a field and skips it on the server while it does not apply | [docs](https://docs.rs/html-form/latest/html_form/guide/index.html#fields-that-do-not-always-apply) |
 | **Context** | `#[form(context = Session)]` gives the session to the form's own `default` and `validate` functions. A connection or the clock works the same way | [docs](https://docs.rs/html-form/latest/html_form/guide/index.html#what-the-forms-own-functions-receive) |
 
 Beyond the checks HTML can express, `validate = ...` names a function: per field,

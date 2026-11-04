@@ -16,8 +16,8 @@
 //! page. Counting only the values that parsed would drift: a row the user added
 //! and left empty never reaches the parse.
 //!
-//! `each_message_lands_on_its_own_input` asserts the whole of that, and runs
-//! before the server comes up.
+//! `each_message_lands_on_its_own_input` asserts the whole of that, and
+//! `cargo test --all-features` runs it.
 //!
 //! Run with: `cargo run --example multi_ip --features axum`
 //! then open <http://127.0.0.1:3000>.
@@ -28,7 +28,8 @@ use std::net::IpAddr;
 use axum::Router;
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
-use html_form::{Control, Form, FormValue, FormView, Outcome, ValueError};
+use html_form::{Control, Form, FormValue, FormView, ValueError};
+use minijinja::value::Serde;
 use minijinja::{Environment, context};
 
 /// `IpAddr` is `FromStr`, so `#[field(from_str)]` would do this too. It is
@@ -127,7 +128,7 @@ fn page(view: FormView) -> Html<String> {
     let form = env
         .get_template("allowlist.html")
         .unwrap()
-        .render(context! { form => view })
+        .render(context! { form => Serde(&view) })
         .unwrap();
 
     Html(format!(
@@ -140,8 +141,6 @@ fn page(view: FormView) -> Html<String> {
 
 #[tokio::main]
 async fn main() {
-    each_message_lands_on_its_own_input();
-
     let app = Router::new()
         .route("/", get(async || page(Allowlist::render())))
         .route("/allowlist", post(saved));
@@ -171,7 +170,10 @@ async fn saved(allowlist: Allowlist) -> impl IntoResponse {
 }
 
 /// Two good rows, one the user added and left empty, and two typos.
+#[test]
 fn each_message_lands_on_its_own_input() {
+    use html_form::Outcome;
+
     let body = "name=Office&ip=203.0.113.7&ip=192.168.1.999&ip=&ip=nope&ip=2001:db8::1";
     let Outcome::Invalid { errors, mut view } = Allowlist::submit_urlencoded(body) else {
         panic!("unexpectedly accepted");

@@ -25,7 +25,8 @@ jobs:
       - run: cargo test --workspace
 
   # The examples assert what they demonstrate, so running them is a test. Nothing
-  # else builds or runs them, and `axum_signup` binds a port, so it is only built.
+  # else builds or runs them. `axum_signup` binds a port, so it is only built, and
+  # `multi_ip` binds one too, so `cargo test` above runs its assertions.
   examples:
     name: Examples
     runs-on: ubuntu-latest

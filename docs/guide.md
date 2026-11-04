@@ -289,9 +289,11 @@ engine, turn the feature off. You lose `to_html`, the `Display` impls and
 
 ### MiniJinja
 
-`FormView` is `Serialize`, so it goes straight into a context:
+`FormView` is `Serialize`, so it goes into a context through MiniJinja's `Serde`
+wrapper, which takes the crate's `serde` feature:
 
 ```rust
+use minijinja::value::Serde;
 use minijinja::{Environment, context};
 # use html_form::Form;
 # #[derive(Form)]
@@ -299,7 +301,7 @@ use minijinja::{Environment, context};
 # let mut env = Environment::new();
 # env.add_template("signup.html", "{% for f in form.fields %}{{ f.label }}{% endfor %}")?;
 # let template = env.get_template("signup.html")?;
-let html = template.render(context! { form => Signup::render() })?;
+let html = template.render(context! { form => Serde(Signup::render()) })?;
 # assert_eq!(html, "Email address");
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```

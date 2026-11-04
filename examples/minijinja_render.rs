@@ -8,6 +8,7 @@
 //! Run with: `cargo run --example minijinja_render`
 
 use html_form::{Form, Outcome};
+use minijinja::value::Serde;
 use minijinja::{Environment, context};
 
 #[derive(Form, Debug)]
@@ -103,7 +104,7 @@ fn main() {
     // 1. GET /signup: a blank form, where each field shows its default.
     println!("── GET /signup ─────────────────────────────────────────────");
     let html = template
-        .render(context! { form => Signup::render() })
+        .render(context! { form => Serde(Signup::render()) })
         .unwrap();
     println!("{html}");
 
@@ -117,7 +118,10 @@ fn main() {
         Outcome::Valid(signup) => panic!("unexpectedly accepted: {signup:?}"),
         Outcome::Invalid { errors, view } => {
             println!("// {} error(s): {errors}\n", errors.len());
-            println!("{}", template.render(context! { form => view }).unwrap());
+            println!(
+                "{}",
+                template.render(context! { form => Serde(&view) }).unwrap()
+            );
         }
     }
 
